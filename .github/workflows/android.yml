@@ -1,0 +1,87 @@
+name: Android build
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | head -n1)"
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build debug APK
+        working-directory: android
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
+
+      - name: Report build errors
+        if: failure()
+        shell: bash
+        run: |
+          LOG="$RUNNER_TEMP/gradle-build.log"
+          [ -f "$LOG" ] || { echo "::error::No Gradle log was produced"; exit 0; }
+          # Kotlin compiler errors, plus the "What went wrong" block of Gradle
+          grep -n -E '^e: |What went wrong|Could not |Execution failed|FAILURE:' "$LOG" | head -n 10 | while IFS= read -r line; do
+            msg="${line//%/%25}"
+            printf '::error title=Gradle build::%s\n' "$msg"
+          done
+          # the first lines of the "What went wrong" section, if present
+          awk '/What went wrong/{f=1} f{print; n++} n>=8{exit}' "$LOG" | while IFS= read -r line; do
+            msg="${line//%/%25}"
+            printf '::error title=What went wrong::%s\n' "$msg"
+          done
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: ${{ runner.temp }}/gradle-build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cineaura-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <script src="js/prefs.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title data-i18n-title="common.playlistTitle">Playlist — CineAura</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/pages.css" />
+  <link rel="stylesheet" href="css/dashboard.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/facebook.css" />
+</head>
+<body class="page-inner">
+  <div class="bg-orbs" aria-hidden="true"><div class="orb orb-cyan"></div></div>
+  <div class="site-wrap">
+    <header class="header scrolled" id="site-header">
+      <div class="header-inner">
+        <a class="logo" href="./"><span class="logo-word">Cine<span>Aura</span></span></a>
+        <div class="auth auth-guest" id="auth-guest"><a class="btn btn-sm btn-ghost" href="./login.html" data-i18n="nav.signin">Sign In</a></div>
+        <div class="auth auth-user" id="auth-user">
+          <div class="header-bell-wrap">
+            <button class="header-bell-btn" id="header-bell-btn" type="button" aria-label="Notifications" data-i18n-aria="prof.notif">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <span class="header-bell-dot" id="header-bell-dot" hidden></span>
+            </button>
+            <div class="glass header-bell-panel" id="header-bell-panel" hidden></div>
+          </div><a class="btn btn-sm btn-primary" href="./dashboard.html" data-i18n="nav.dashboard">Dashboard</a></div>
+      </div>
+    </header>
+    <main class="page-main" id="root"></main>
+  </div>
+  <script src="js/i18n.js"></script>
+  <script src="js/lang.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", async () => {
+      const { setupChrome, supabaseRequest, restValue, escapeHtml, initialsAvatar, getSession, imgUrl, t, shareRowHtml } = CineAura;
+      setupChrome();
+      const id = new URLSearchParams(location.search).get("ID");
+      const root = document.getElementById("root");
+      const deny = (msg) => { root.innerHTML = `<section class="glass dash-gate"><h1>${t("pl.locked")}</h1><p>${msg}</p></section>`; };
+      if (!id) return deny(t("pl.missing"));
+      const res = await supabaseRequest(`/rest/v1/playlists?playlist_id=eq.${restValue(id)}&select=*`);
+      const pl = res.ok && res.data && res.data[0];
+      if (!pl) return deny(t("pl.gone"));
+      const session = getSession();
+      const vis = String(pl.visibility || "private").toLowerCase();
+      if (session?.member_id && vis !== "public" && pl.owner_id && pl.owner_id !== session.member_id) {
+        const blocked = await supabaseRequest(`/rest/v1/blocks?blocker_id=eq.${restValue(pl.owner_id)}&blocked_id=eq.${restValue(session.member_id)}&select=kind,features`);
+        const b = blocked.data && blocked.data[0];
+        if (b && (b.kind === "full" || String(b.features || "").split(",").map((s) => s.trim()).includes("playlists"))) {
+          return deny(t("pl.deny"));
+        }
+      }
+      let allowed = vis === "public";
+      if (vis === "private") {
+        if (session && (session.member_id === pl.owner_id || session.username === pl.owner_username)) allowed = true;
+        else {
+          const acc = await supabaseRequest(`/rest/v1/playlist_access?playlist_id=eq.${restValue(id)}&select=username`);
+          const names = (acc.data || []).map((x) => String(x.username).toLowerCase());
+          allowed = !!(session && (names.includes(String(session.username).toLowerCase()) || names.includes(String(session.member_id).toLowerCase())));
+        }
+      }
+      if (vis === "exclusive") {
+        if (!session || (pl.require_member && !session.member_id)) allowed = false;
+        else {
+          const mem = await supabaseRequest(`/rest/v1/members?member_id=eq.${restValue(session.member_id)}&select=country,gender,birth_date`);
+          const me = mem.data && mem.data[0];
+          const allowedCountries = String(pl.countries || "").toLowerCase().split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+          const okCountry = !allowedCountries.length || (me && allowedCountries.includes(String(me.country || "").toLowerCase()));
+          const okGender = !pl.gender || pl.gender === "any" || (me && me.gender === pl.gender);
+          let okAge = true;
+          if (pl.max_age && me && me.birth_date) {
+            const age = new Date().getFullYear() - new Date(me.birth_date).getFullYear();
+            okAge = age <= Number(pl.max_age);
+          }
+          allowed = Boolean(okCountry && okGender && okAge);
+        }
+      }
+      if (!allowed) return deny(t("pl.publisher"));
+      const items = await supabaseRequest(`/rest/v1/playlist_items?playlist_id=eq.${restValue(id)}&select=*&order=added_at.desc`);
+      const list = items.data || [];
+      root.innerHTML = `<section class="glass dash-main" style="width:min(900px,calc(100% - 40px));margin:0 auto">
+        <p class="eyebrow">${escapeHtml(pl.owner_username)} · ${escapeHtml({public:t("common.public"),private:t("common.private"),exclusive:t("common.exclusive")}[vis] || pl.visibility)}</p>
+        <h1>${escapeHtml(pl.name)}</h1>
+        <p class="muted">${escapeHtml(pl.description||"")} · ${t("common.nViewers", { n: Number(pl.viewers||0) })}</p>
+        <div class="pl-share">${shareRowHtml(`./Playlist.html?ID=${encodeURIComponent(id)}`, `${pl.name} — @${pl.owner_username} · CineAura`)}</div>
+        ${pl.rules && vis === "exclusive" ? `<p class="muted">${t("common.conditions")}: ${escapeHtml(pl.rules)}</p>` : ""}
+        ${list.map((it)=>`<div class="item-row">
+          <img src="${it.poster_path?imgUrl(it.poster_path,"w92"):initialsAvatar(it.title)}" alt="" />
+          <div><strong>${escapeHtml(it.title||t("common.title"))}</strong></div>
+          <a class="btn btn-sm btn-primary" href="./watch.html?${it.media_type}=${it.tmdb_id}&Playlist=${id}">${t("common.watch")}</a>
+        </div>`).join("") || `<p class='empty'>${t("pl.empty")}</p>`}
+      </section>`;
+    });
+  </script>
+</body>
+</html>

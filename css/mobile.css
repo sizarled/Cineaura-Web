@@ -1,0 +1,676 @@
+/* ════════════════════════════════════════════════════════════════
+   CineAura — mobile & tablet layer.
+   Loaded last on every page, so it only overrides what must change on
+   small screens. Desktop (> 900px) is untouched.
+   ════════════════════════════════════════════════════════════════ */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* The Ken Burns zoom of the hero background must never widen the page */
+.hero {
+  overflow: hidden;
+}
+
+body {
+  overflow-x: clip;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+/* Tap feedback & touch comfort on every screen size */
+a,
+button,
+input,
+select,
+textarea,
+label,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+.btn,
+select {
+  touch-action: manipulation;
+}
+
+/* ── Tablet and below ─────────────────────────────────────────── */
+@media (max-width: 900px) {
+  /* Header: the burger must always stay visible */
+  .header-inner,
+  .header.scrolled .header-inner {
+    gap: 8px;
+    padding-inline: 10px;
+    padding-top: env(safe-area-inset-top, 0);
+  }
+
+  .header {
+    padding-inline: env(safe-area-inset-left, 0) env(safe-area-inset-right, 0);
+  }
+
+  .logo-word {
+    font-size: 20px;
+  }
+
+  .hamburger {
+    display: flex;
+    flex: 0 0 auto;
+    margin-inline-start: 2px;
+  }
+
+  .auth {
+    min-width: 0;
+    margin-inline-start: auto;
+    gap: 6px;
+  }
+
+  /* Dashboard / Logout live in the burger menu on phones and tablets */
+  .auth-user .btn,
+  #auth-user .btn {
+    display: none !important;
+  }
+
+  .header-bell-wrap {
+    position: static;
+  }
+
+  .header-bell-panel {
+    position: fixed;
+    top: 62px;
+    inset-inline: 10px;
+    width: auto;
+    max-height: calc(100vh - 80px);
+    max-height: calc(100dvh - 80px);
+  }
+
+  /* Burger menu panel */
+  .mobile-menu {
+    top: 62px;
+    inset-inline: 10px;
+    bottom: auto;
+    max-height: calc(100vh - 78px);
+    max-height: calc(100dvh - 78px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    z-index: 55;
+  }
+
+  .mobile-menu a,
+  .mobile-menu button {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    text-align: start;
+  }
+
+  /* Sections breathe less */
+  .section {
+    padding: 48px 0;
+  }
+
+  .section-head p {
+    max-width: none;
+  }
+
+  /* Plans: the "Most Popular" ribbon must not sit on the plan name */
+  .plan-ribbon {
+    top: -11px;
+    right: 16px;
+  }
+
+  [dir="rtl"] .plan-ribbon,
+  html[dir="rtl"] .plan-ribbon {
+    right: auto;
+    left: 16px;
+  }
+
+  /* Hero: keep the copy inside the page margins */
+  .hero-content {
+    margin-inline: auto;
+  }
+
+  /* Grid children may shrink: without this a long nav strip stretches the page */
+  .dash-layout,
+  .prof-layout,
+  .panel-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dash-side,
+  .prof-side,
+  .dash-main,
+  .prof-main {
+    min-width: 0;
+  }
+
+  /* Dashboard: the sidebar becomes a swipeable tab strip, so content comes first */
+  .dash-layout,
+  .prof-layout {
+    gap: 12px;
+  }
+
+  .dash-side,
+  .prof-side {
+    padding: 12px;
+    border-radius: 14px;
+    position: static;
+  }
+
+  .dash-side .side-user {
+    flex-direction: row;
+    align-items: center;
+    text-align: start;
+    gap: 12px;
+    display: flex;
+    margin-bottom: 8px;
+    padding-bottom: 10px;
+  }
+
+  .dash-side .side-user img,
+  .dash-side .side-user .avatar,
+  .dash-side .side-user .avatar-img {
+    width: 44px;
+    height: 44px;
+    flex: none;
+  }
+
+  .dash-side .side-nav,
+  .dash-side .side-lists {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 6px;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dash-side .side-nav::-webkit-scrollbar,
+  .dash-side .side-lists::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dash-side .side-nav button,
+  .dash-side .side-nav a,
+  .dash-side .side-lists button,
+  .dash-side .side-lists a {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+    min-height: 40px;
+    text-align: center;
+    border: 1px solid var(--line);
+  }
+
+  .dash-side .side-nav button.active {
+    border-color: var(--cyan);
+  }
+
+  .dash-side .side-label {
+    margin: 10px 0 6px;
+  }
+
+  .dash-main {
+    min-height: 0;
+    padding: 16px;
+    border-radius: 14px;
+  }
+
+  /* Wide tables scroll inside their own box, never the whole page */
+  .table-wrap,
+  .tbl-wrap,
+  .pl-table-wrap,
+  .table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Safety net: any table scrolls inside itself instead of widening the page */
+  table,
+  .table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pl-table {
+    min-width: 0;
+  }
+
+  .pl-table td:last-child {
+    min-width: 0;
+  }
+
+  /* Long usernames, e-mails and URLs wrap instead of pushing the layout */
+  p,
+  li,
+  h1,
+  h2,
+  h3,
+  h4,
+  td,
+  th,
+  dd,
+  dt,
+  label,
+  .muted {
+    overflow-wrap: anywhere;
+  }
+
+  .dash-main,
+  .prof-main,
+  .panel-main {
+    min-width: 0;
+  }
+
+  /* Tab bars scroll sideways instead of wrapping into a tall block */
+  [data-tabbar],
+  .dash-tabs,
+  .follow-tabs,
+  .panel-tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  [data-tabbar]::-webkit-scrollbar,
+  .dash-tabs::-webkit-scrollbar,
+  .panel-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  [data-tabbar] > *,
+  .dash-tabs > *,
+  .panel-tabs > * {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}
+
+/* ── Phones ───────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  :root {
+    --header-h: 56px;
+  }
+
+  /* 16px inputs: iOS Safari zooms the page on focus for anything smaller */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+    min-height: 44px;
+  }
+
+  .btn,
+  .btn-sm {
+    min-height: 40px;
+  }
+
+  .btn-lg {
+    min-height: 46px;
+  }
+
+  .container,
+  .hero-content,
+  .trust,
+  .dash-layout,
+  .prof-layout,
+  .auth-shell,
+  .player-wrap,
+  .title-layout,
+  .watch-panel,
+  .people-section,
+  .rail-section {
+    width: calc(100% - 24px);
+  }
+
+  .header-inner,
+  .header.scrolled .header-inner {
+    padding-inline: 10px;
+  }
+
+  .logo-mark {
+    width: 34px;
+    height: 34px;
+  }
+
+  .logo-word {
+    font-size: 18px;
+  }
+
+  .auth .btn-sm {
+    padding-inline: 12px;
+    font-size: 13px;
+  }
+
+  /* Hero */
+  .hero-copy h1 {
+    font-size: clamp(32px, 10vw, 44px);
+    line-height: 1;
+  }
+
+  .hero-content {
+    padding: 84px 0 120px;
+    gap: 16px;
+  }
+
+  .hero-copy .btn,
+  .hero-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .hero-nav {
+    width: calc(100% - 24px);
+  }
+
+  /* Trust strip becomes 2 x 2 instead of one tall column */
+  .trust {
+    grid-template-columns: 1fr 1fr;
+    margin-top: -20px;
+  }
+
+  .trust div {
+    padding: 14px 8px;
+  }
+
+  .trust strong {
+    font-size: 11.5px;
+  }
+
+  .trust span {
+    font-size: 11.5px;
+  }
+
+  /* Features, IPTV, support, footer */
+  /* Feature cards: icon beside the text so the list stays short */
+  .feat-card {
+    padding: 16px;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    column-gap: 14px;
+    row-gap: 2px;
+    align-items: start;
+  }
+
+  .feat-card .feat-ico {
+    grid-row: 1 / span 2;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+  }
+
+  .feat-card h3 {
+    font-size: 16.5px;
+    align-self: end;
+  }
+
+  .feat-card p {
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+
+  .iptv-card {
+    min-height: 0;
+    padding: 20px;
+  }
+
+  .iptv-card h3 {
+    font-size: 26px;
+  }
+
+  .iptv-card .btn {
+    width: 100%;
+    align-self: stretch;
+  }
+
+  .search-box {
+    padding: 18px;
+  }
+
+  .contact-grid {
+    gap: 14px;
+  }
+
+  .footer-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .footer-grid > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  /* Auth pages */
+  .auth-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-card,
+  .form-card {
+    padding: 20px 16px;
+  }
+
+  .auth-grid,
+  .form-grid,
+  .form-row,
+  .choice-grid,
+  .plan-pick {
+    grid-template-columns: 1fr;
+  }
+
+  .success-actions {
+    flex-direction: column;
+  }
+
+  .success-actions .btn {
+    width: 100%;
+  }
+
+  /* Dashboard cards */
+  .dash-main h1 {
+    font-size: 21px;
+  }
+
+  .stats,
+  .stat-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* Toasts must not sit under the home indicator */
+  .toast {
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0));
+    max-width: none;
+    transform: none;
+  }
+}
+
+/* ── Small phones ─────────────────────────────────────────────── */
+@media (max-width: 380px) {
+  .logo-word {
+    display: none;
+  }
+
+  .auth .btn-sm {
+    padding-inline: 10px;
+  }
+
+  .trust {
+    grid-template-columns: 1fr;
+  }
+
+  .footer-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── RTL (Arabic) on small screens ────────────────────────────── */
+@media (max-width: 900px) {
+  html[dir="rtl"] .auth {
+    margin-inline-start: auto;
+    margin-left: 0;
+  }
+
+  html[dir="rtl"] .mobile-menu a,
+  html[dir="rtl"] .mobile-menu button {
+    text-align: right;
+  }
+}
+
+/* Landscape phones: the hero must not eat the whole viewport */
+@media (max-height: 520px) and (orientation: landscape) {
+  .hero {
+    min-height: 0;
+  }
+
+  .hero-content {
+    padding: 80px 0 90px;
+  }
+}
+
+/* ── Gap fixes found in the CSS audit ─────────────────────────── */
+/* A 320px minimum column overflows phones narrower than ~345px */
+.review-wall {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+}
+
+@media (max-width: 640px) {
+  /* Analytics totals: five numbers in one row are unreadable on a phone */
+  .pa-totals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pa-totals > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ── Watch page on phones/tablets: access-code message & countdown ─────────
+   The code form no longer fills the player. It floats, compact, above the page
+   content (the player is already stopped while it is shown). The countdown
+   moves to the bottom of the screen instead of sitting on the iframe. */
+@media (max-width: 900px) {
+  .player-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    display: none;
+    place-items: start center;
+    padding: 70px 12px 0;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .player-gate.show {
+    display: grid;
+  }
+
+  .gate-card {
+    width: 100%;
+    max-width: 420px;
+    padding: 14px 14px 12px;
+    border-radius: 16px;
+    pointer-events: auto;
+    background: var(--surface, rgba(8, 22, 36, 0.97));
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+    animation: gate-drop 0.22s ease-out;
+  }
+
+  .gate-card .eyebrow {
+    display: none;
+  }
+
+  .gate-card h2 {
+    font-size: 18px;
+    margin: 0 0 4px;
+  }
+
+  .gate-card p {
+    font-size: 12.5px;
+    line-height: 1.45;
+    margin-bottom: 10px;
+  }
+
+  .gate-msg {
+    min-height: 0;
+    margin-bottom: 8px;
+    font-size: 12.5px;
+  }
+
+  .gate-msg:empty {
+    display: none;
+  }
+
+  .pin-input {
+    height: 46px;
+    font-size: 22px;
+    letter-spacing: 0.3em;
+    margin-bottom: 8px;
+  }
+
+  .gate-actions .btn,
+  .gate-actions .btn-lg {
+    min-height: 42px;
+    font-size: 14px;
+  }
+
+  /* Countdown: pinned to the bottom of the screen, off the video */
+  .countdown-dock {
+    position: fixed;
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    z-index: 60;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: rgba(7, 18, 30, 0.96);
+    border: 1px solid rgba(1, 180, 228, 0.35);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+
+  .countdown-dock p {
+    font-size: 12.5px;
+    line-height: 1.4;
+  }
+
+  .countdown-dock .btn {
+    flex: none;
+  }
+
+  /* Keep the dock from covering the page end and the toasts */
+  body:has(.countdown-dock.show) .page-main {
+    padding-bottom: 96px;
+  }
+
+  body:has(.countdown-dock.show) .toast {
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@keyframes gate-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

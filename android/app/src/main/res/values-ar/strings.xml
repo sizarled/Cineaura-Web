@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CineAura</string>
+    <string name="loader_title">جاري الإعداد والتحميل…</string>
+    <string name="loader_percent">%1$d%%</string>
+    <string name="setup_title">مرحباً بك في CineAura</string>
+    <string name="setup_subtitle">اختر إعداداتك مرة واحدة، ويمكنك تغييرها لاحقاً من إعدادات الموقع.</string>
+    <string name="setup_language">لغة الموقع</string>
+    <string name="setup_region">المنطقة</string>
+    <string name="setup_theme">مظهر الموقع</string>
+    <string name="theme_dark">داكن</string>
+    <string name="theme_light">فاتح</string>
+    <string name="region_auto">تلقائي (حسب عنوان IP)</string>
+    <string name="setup_save">حفظ</string>
+    <string name="save_failed">تعذر حفظ اختياراتك. حاول مرة أخرى.</string>
+    <string name="error_message">تعذر تحميل CineAura. تحقق من اتصال الإنترنت.</string>
+    <string name="retry">إعادة المحاولة</string>
+    <string name="download_saved">تم حفظ الملف في مجلد التنزيلات</string>
+    <string name="download_failed">تعذر حفظ الملف</string>
+    <string name="open_failed">لا يوجد تطبيق لفتح هذا الرابط</string>
+</resources>

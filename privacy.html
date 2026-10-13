@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <script src="js/prefs.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title data-i18n-title="common.privacyFull">Privacy Policy — CineAura</title>
+  <meta name="description" content="What CineAura collects, why it collects it, and the control you keep over your account, your watch activity and your data." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230d253f'/%3E%3Cpolygon points='26,18 48,32 26,46' fill='%2390cea1'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/pages.css" />
+  <link rel="stylesheet" href="css/facebook.css" />
+  <link rel="stylesheet" href="css/legal.css" />
+  <link rel="stylesheet" href="css/mobile.css" />
+</head>
+<body class="page-inner">
+  <div class="bg-orbs" aria-hidden="true">
+    <div class="orb orb-cyan"></div>
+    <div class="orb orb-green"></div>
+  </div>
+  <div class="grain" aria-hidden="true"></div>
+  <div class="site-wrap">
+    <header class="header scrolled" id="site-header">
+      <div class="header-inner">
+        <a class="logo" href="./">
+          <span class="logo-mark" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4 2.5L13 8L4 13.5V2.5Z" fill="#90cea1"/></svg>
+          </span>
+          <span class="logo-word">Cine<span>Aura</span></span>
+        </a>
+        <nav class="nav" aria-label="Primary">
+          <a href="./movies.html" data-i18n="nav.movies">Movies</a>
+          <a href="./series.html" data-i18n="nav.series">Series</a>
+          <a href="./#iptv" data-i18n="nav.iptv">IPTV</a>
+          <a href="./Prize.html" data-i18n="nav.prizes">Prizes</a>
+          <a href="./#plans" data-i18n="nav.plansShort">Plans</a>
+        </nav>
+        <div class="auth auth-guest" id="auth-guest">
+          <a class="btn btn-sm btn-ghost" href="./login.html" data-i18n="nav.signin">Sign In</a>
+          <a class="btn btn-sm btn-primary" href="./register.html" data-i18n="nav.signup">Sign Up</a>
+        </div>
+        <div class="auth auth-user" id="auth-user">
+          <div class="header-bell-wrap">
+            <button class="header-bell-btn" id="header-bell-btn" type="button" aria-label="Notifications" data-i18n-aria="prof.notif">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <span class="header-bell-dot" id="header-bell-dot" hidden></span>
+            </button>
+            <div class="glass header-bell-panel" id="header-bell-panel" hidden></div>
+          </div>
+          <a class="btn btn-sm btn-primary" href="./dashboard.html" data-i18n="nav.dashboard">Dashboard</a>
+          <button class="btn btn-sm btn-danger" id="logout-btn" type="button" data-i18n="nav.logout">Log Out</button>
+        </div>
+        <button class="hamburger" id="hamburger" type="button" data-i18n-aria="nav.openMenu" aria-label="Open menu"><span></span><span></span><span></span></button>
+      </div>
+    </header>
+    <div class="mobile-menu" id="mobile-menu">
+      <a href="./login.html" data-i18n="nav.signin">Sign In</a>
+      <a href="./register.html" data-i18n="nav.signup">Sign Up</a>
+      <a href="./dashboard.html" data-i18n="nav.dashboard">Dashboard</a>
+      <div class="mobile-auth-user"><button type="button" data-logout data-i18n="nav.logout">Log Out</button></div>
+    </div>
+
+    <main class="page-main">
+      <div class="lg-wrap">
+        <header class="lg-head">
+          <span class="eyebrow" data-i18n="legal.kicker">CineAura information</span>
+          <h1 data-i18n="priv.h1">Privacy Policy</h1>
+          <p class="lg-lead" data-i18n="priv.lead">What CineAura collects, why it collects it, and the control you keep over your data.</p>
+          <p class="lg-updated">
+            <span data-i18n="legal.updated">Last updated</span>
+            <time id="legal-updated" datetime="2026-10-11">October 11, 2026</time>
+          </p>
+        </header>
+
+        <div class="lg-layout">
+          <nav class="glass lg-toc" id="lg-toc" aria-label="On this page" data-i18n-aria="legal.contents">
+            <span class="lg-toc-title" data-i18n="legal.contents">On this page</span>
+            <ol id="lg-toc-list"></ol>
+          </nav>
+
+          <div class="lg-body">
+            <section class="glass lg-card" id="priv-short">
+              <h2 data-i18n="priv.s1.t">The short version</h2>
+              <p data-i18n="priv.s1.p">We store your account details, your watch activity and what you publish. We never sell your data, and you can ask us to delete your account at any time.</p>
+              <ul class="lg-list">
+                <li data-i18n="priv.s1.b1">We collect only what the service needs: an email, a username, a password hash and your activity.</li>
+                <li data-i18n="priv.s1.b2">Watch minutes are counted because they feed the points system.</li>
+                <li data-i18n="priv.s1.b3">Catalog data comes from TMDB. Your searches are not sent to advertisers.</li>
+                <li data-i18n="priv.s1.b4">You can ask for a copy of your data or for its deletion from the support page.</li>
+              </ul>
+            </section>
+
+            <section class="glass lg-card" id="priv-who">
+              <h2 data-i18n="priv.s2.t">Who we are</h2>
+              <p data-i18n="priv.s2.p">CineAura is a discovery and streaming platform for movies, series and live IPTV channels. This policy covers the website, the member dashboard, the staff panel and every page linked from them.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-collect">
+              <h2 data-i18n="priv.s3.t">What we collect</h2>
+              <p data-i18n="priv.s3.p">Five kinds of data reach our servers:</p>
+              <ul class="lg-list">
+                <li data-i18n="priv.s3.b1">Account data — email, username, password hash, plan, activation codes, country, chosen language.</li>
+                <li data-i18n="priv.s3.b2">Profile data — avatar, bio and the followers, follows and blocks you create.</li>
+                <li data-i18n="priv.s3.b3">Activity data — watch minutes, published watch links, playlists, recommendations, reviews, comments, shares, points and prize entries.</li>
+                <li data-i18n="priv.s3.b4">Technical data — browser and device type, approximate country from your IP address, and errors.</li>
+                <li data-i18n="priv.s3.b5">Messages — what you send through the contact form, WhatsApp or Telegram, and the reports you file.</li>
+              </ul>
+            </section>
+
+            <section class="glass lg-card" id="priv-use">
+              <h2 data-i18n="priv.s4.t">Why we use it</h2>
+              <ul class="lg-list">
+                <li data-i18n="priv.s4.b1">To run your account, your plan and your activation codes.</li>
+                <li data-i18n="priv.s4.b2">To count watch minutes and turn them into points.</li>
+                <li data-i18n="priv.s4.b3">To run prizes, verify conditions and contact winners.</li>
+                <li data-i18n="priv.s4.b4">To moderate links, comments and reports, and to apply bans when the rules are broken.</li>
+                <li data-i18n="priv.s4.b5">To improve the catalog, the player and the pages members use most.</li>
+              </ul>
+            </section>
+
+            <section class="glass lg-card" id="priv-points">
+              <h2 data-i18n="priv.s5.t">Points, watch time and prizes</h2>
+              <p data-i18n="priv.s5.p1">Watch minutes for a Free member are counted only while ads are visible; premium members can switch counting off in the site settings. Points and prize entries stay attached to your member ID so a win can be verified later.</p>
+              <p data-i18n="priv.s5.p2">Delivering a prize may need a phone number or an address. That information is used only for the delivery and is deleted once the draw is closed.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-cookies">
+              <h2 data-i18n="priv.s6.t">Cookies and local storage</h2>
+              <p data-i18n="priv.s6.p1">CineAura keeps your session, language, theme, country and ad-free preference in your browser's local storage. Clearing site data signs you out and resets those choices.</p>
+              <p data-i18n="priv.s6.p2">Advertising partners may place their own cookies when an ad is displayed. Blocking ads stops that — and stops watch minutes from being counted on a Free plan.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-third">
+              <h2 data-i18n="priv.s7.t">Third parties</h2>
+              <ul class="lg-list">
+                <li data-i18n="priv.s7.b1">TMDB — posters, titles and cast come from The Movie Database. Your search terms reach TMDB as a normal API request.</li>
+                <li data-i18n="priv.s7.b2">Supabase — our database and account host. Account and activity data are stored there.</li>
+                <li data-i18n="priv.s7.b3">Advertising — Adsterra serves banners and popunders to Free members only.</li>
+                <li data-i18n="priv.s7.b4">Stream sources — watch links and IPTV playlists are played from member or public servers, not from ours.</li>
+                <li data-i18n="priv.s7.b5">WhatsApp and Telegram are independent services with their own privacy policies.</li>
+              </ul>
+            </section>
+
+            <section class="glass lg-card" id="priv-never">
+              <h2 data-i18n="priv.s8.t">What we never do</h2>
+              <ul class="lg-list">
+                <li data-i18n="priv.s8.b1">We do not sell your personal data.</li>
+                <li data-i18n="priv.s8.b2">We do not read your messages to staff in order to target ads.</li>
+                <li data-i18n="priv.s8.b3">We do not show your email address to other members.</li>
+                <li data-i18n="priv.s8.b4">We do not keep a permanent record of every page you open beyond what the points system needs.</li>
+              </ul>
+            </section>
+
+            <section class="glass lg-card" id="priv-retention">
+              <h2 data-i18n="priv.s9.t">How long we keep it</h2>
+              <p data-i18n="priv.s9.p1">Account and activity data stay as long as your account is open. Deleted comments, links and reports disappear from the public pages at once and from backups within 30 days.</p>
+              <p data-i18n="priv.s9.p2">When you ask us to close your account we erase the profile, the points and the prize history, and keep only what the law requires.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-security">
+              <h2 data-i18n="priv.s10.t">Security</h2>
+              <p data-i18n="priv.s10.p">Passwords are stored as hashes, every request runs over HTTPS, and staff accounts only see what their role needs. No system is perfect — treat your activation and recovery codes as secrets.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-rights">
+              <h2 data-i18n="priv.s11.t">Your rights</h2>
+              <p data-i18n="priv.s11.p">Wherever you live, you can ask us to:</p>
+              <ul class="lg-list">
+                <li data-i18n="priv.s11.b1">show you every piece of data we hold about you;</li>
+                <li data-i18n="priv.s11.b2">correct anything inaccurate;</li>
+                <li data-i18n="priv.s11.b3">delete your account and its history;</li>
+                <li data-i18n="priv.s11.b4">export your data in a readable file;</li>
+                <li data-i18n="priv.s11.b5">object to one specific use, such as being contacted about a prize.</li>
+              </ul>
+              <p data-i18n="priv.s11.p2">Send the request from the Support &amp; Contact page using your account email. We answer within 30 days.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-children">
+              <h2 data-i18n="priv.s12.t">Children</h2>
+              <p data-i18n="priv.s12.p">CineAura is not intended for children under 16. If we learn that an account belongs to a younger child, we close it and delete the data.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-changes">
+              <h2 data-i18n="priv.s13.t">Changes to this policy</h2>
+              <p data-i18n="priv.s13.p">When this policy changes, the date at the top of the page changes with it. Important changes are announced on the home page and in the member dashboard.</p>
+            </section>
+
+            <section class="glass lg-card" id="priv-contact">
+              <h2 data-i18n="priv.s14.t">Contact</h2>
+              <p data-i18n="priv.s14.p">Privacy questions go to the support team through the Support &amp; Contact page, WhatsApp or Telegram.</p>
+            </section>
+
+            <aside class="glass lg-cta">
+              <div>
+                <h3 data-i18n="legal.helpTitle">Still need a hand?</h3>
+                <p data-i18n="legal.helpText">The support team answers the contact form, WhatsApp and Telegram within a few hours.</p>
+              </div>
+              <div class="lg-cta-actions">
+                <a class="btn btn-primary" href="./support.html" data-i18n="nav.supportFull">Support &amp; Contact</a>
+                <a class="btn btn-ghost" href="./terms" data-i18n="common.termsFull">Terms of Service</a>
+              </div>
+            </aside>
+          </div>
+        </div>
+
+        <div class="lg-foot">
+          <span data-i18n="home.footer.copy">© 2026 CineAura. All rights reserved.</span>
+          <span class="lg-foot-links">
+            <a href="./" data-i18n="legal.backHome">Back to CineAura</a>
+            <a class="lg-top" href="#" data-lg-top data-i18n="legal.top">Back to top</a>
+          </span>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="container">
+        <div class="footer-grid">
+          <div>
+            <a class="logo" href="./">
+              <span class="logo-mark" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                  <path d="M4 2.5L13 8L4 13.5V2.5Z" fill="#90cea1"/>
+                </svg>
+              </span>
+              <span class="logo-word">Cine<span>Aura</span></span>
+            </a>
+            <p data-i18n="home.footer.blurb">CineAura is your glass-tinted gateway to films, series, and live IPTV. Discover trending titles, search the world’s catalog, and watch in up to 1080p.</p>
+          </div>
+          <div>
+            <h4 data-i18n="home.footer.browse">Browse</h4>
+            <a href="./movies.html" data-i18n="nav.movies">Movies</a>
+            <a href="./series.html" data-i18n="nav.series">Series</a>
+            <a href="./#iptv" data-i18n="nav.iptv">IPTV</a>
+            <a href="./Prize.html" data-i18n="nav.prizes">Prizes</a>
+            <a href="./#plans" data-i18n="nav.plans">Plans &amp; Pricing</a>
+          </div>
+          <div>
+            <h4 data-i18n="home.footer.account">Account</h4>
+            <a class="link-guest" href="./login.html" data-i18n="nav.signin">Sign In</a>
+            <a class="link-guest" href="./register.html" data-i18n="nav.signup">Sign Up</a>
+            <a class="link-dashboard" href="./dashboard.html" data-i18n="nav.dashboard">Dashboard</a>
+            <a class="link-dashboard" href="./Profile.html" data-i18n="nav.profile">Profile</a>
+          </div>
+          <div>
+            <h4 data-i18n="home.footer.help">Help</h4>
+            <a href="./support.html" data-i18n="nav.supportFull">Support &amp; Contact</a>
+            <a href="./about" data-i18n="common.aboutFull">About CineAura</a>
+            <a href="./privacy" data-i18n="common.privacy">Privacy</a>
+            <a href="./terms" data-i18n="common.terms">Terms</a>
+            <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">The Movie Database</a>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <span data-i18n="home.footer.copy">© 2026 CineAura. All rights reserved.</span>
+          <span data-i18n="home.footer.tmdb">This product uses the TMDB API but is not endorsed or certified by TMDB.</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="js/i18n.js"></script>
+  <script src="js/lang.js"></script>
+  <script src="js/common.js"></script>
+  <script src="js/legal.js"></script>
+</body>
+</html>

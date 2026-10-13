@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same palette as the website (css/style.css) -->
+    <color name="cine_ink">#FF070F18</color>
+    <color name="cine_navy">#FF0D253F</color>
+    <color name="cine_cyan">#FF01B4E4</color>
+    <color name="cine_green">#FF90CEA1</color>
+    <color name="cine_text">#FFF4FBFF</color>
+    <color name="cine_muted">#FF9BB0C2</color>
+    <color name="cine_line">#FF2A3F52</color>
+    <color name="ic_launcher_background">#FF0D253F</color>
+</resources>

@@ -1,0 +1,72 @@
+/* Browse pages (movies.html, series.html) and the "View all" link beside the home page titles.
+   The search toolbar reuses the .pz-toolbar styles from prize.css. */
+
+.br-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 16px; }
+.br-title-row h2 { margin: 0; }
+
+.br-wrap { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 8px 0 60px; }
+.br-head { margin: 8px 0 24px; }
+.br-head h1 { font-size: clamp(30px, 5vw, 44px); margin: 6px 0; }
+
+.br-person {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 14px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+  border-radius: 18px;
+}
+.br-person img { width: 46px; height: 46px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; }
+.br-person strong { flex: 1 1 200px; min-width: 0; font-size: 16px; }
+
+.br-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 16px; }
+.br-grid .poster-card { width: auto; }
+.br-grid .empty,
+.br-grid .loader { grid-column: 1 / -1; }
+
+.br-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px 14px;
+  margin-top: 30px;
+}
+.br-nums { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }
+.br-num {
+  min-width: 40px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.br-num:hover { border-color: var(--cyan); }
+.br-num.on { background: var(--cyan); border-color: transparent; color: #0d253f; }
+.br-gap { color: var(--muted); padding: 0 4px; }
+.br-pager .btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+
+@media (max-width: 600px) {
+  .br-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+}
+
+/* Search toolbar: search, genre, rating, year and sort share one row on wide screens (the sort
+   list gets a wider column so its labels fit). "Reset filters" sits in the row under the count. */
+.br-toolbar { grid-template-columns: minmax(200px, 1.6fr) repeat(3, minmax(120px, 1fr)) minmax(190px, 1.2fr); }
+.br-toolbar .pz-field-search { grid-column: auto; }
+.br-meta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; }
+@media (max-width: 900px) {
+  .br-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .br-toolbar .pz-field-search { grid-column: 1 / -1; }
+}
+@media (max-width: 600px) {
+  .br-toolbar { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The toolbar sits in a glass panel, like the search panel of the prize page. */
+.br-toolbar { padding: clamp(14px, 2.4vw, 22px); border-radius: 24px; }
