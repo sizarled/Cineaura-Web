@@ -1983,4 +1983,18 @@
  "No channels marked as not working here.": "Hier zijn geen kanalen gemarkeerd als niet werkend.",
  "Clear filters": "Filters wissen",
  "Show more ({n})": "Meer tonen ({n})",
+
+ /* ── Notifications page and the bell's View all ── */
+ "Notifications — CineAura": "Meldingen — CineAura",
+ "Older": "Ouder",
+ "Time period": "Periode",
+ "Total: {n}": "Totaal: {n}",
+ "New: {n}": "Nieuw: {n}",
+ "Unread": "Ongelezen",
+ "Show more": "Meer tonen",
+ "Follow requests, messages, votes on your posts and new prizes show up here.": "Volgverzoeken, berichten, stemmen op je berichten en nieuwe prijzen verschijnen hier.",
+ "No notifications in this period.": "Geen meldingen in deze periode.",
+ "Notifications could not be loaded. Try again later.": "Meldingen konden niet worden geladen. Probeer het later opnieuw.",
+ "Sign in to see your notifications": "Log in om je meldingen te zien",
+ "All your notifications are kept here, sorted by day, week, month and year.": "Al je meldingen staan hier, gesorteerd op dag, week, maand en jaar.",
 };

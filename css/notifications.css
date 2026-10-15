@@ -1,0 +1,228 @@
+/* ==========================================================
+   Notifications page — notifications.html (js/notifications.js).
+   Loaded after facebook.css: uses its theme variables, so night
+   and day themes both work.
+   ========================================================== */
+
+.nts-page {
+  width: min(800px, calc(100% - 32px));
+  margin: 0 auto;
+  min-height: 60vh;
+}
+
+.nts-gate .btn { margin-top: 4px; }
+
+.nts-head h1 { margin: 0 0 4px; }
+.nts-head .muted { margin: 0; }
+.nts-head .muted[hidden] { display: none; }
+
+/* one row of tabs: it scrolls sideways when the labels are long */
+.nts-tabs {
+  margin: 14px 0 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.nts-tabs::-webkit-scrollbar { display: none; }
+.nts-tabs .follow-tab { flex: none; gap: 6px; padding: 12px; }
+.nts-tabs .follow-tab:disabled { opacity: 0.45; cursor: default; }
+.nts-tabs .follow-tab:disabled:hover { background: none; }
+
+/* ---------- Sections: Today, This week, This month, This year, older years ---------- */
+.nts-sec { margin-top: 18px; }
+
+.nts-sec-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin: 0 0 6px;
+  padding: 0 6px;
+  font-size: 17px;
+}
+
+.nts-sec-head small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.nts-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+/* ---------- One notification ---------- */
+.nts-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 12px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 10px;
+  color: var(--text);
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.nts-row:hover { background: var(--sub-bg); }
+.nts-row:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
+.nts-row.is-new { background: rgba(24, 119, 242, 0.08); }
+.nts-row.is-new:hover { background: rgba(24, 119, 242, 0.14); }
+
+.nts-ava {
+  position: relative;
+  width: 52px;
+  height: 52px;
+}
+
+.nts-ava img {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--sub-bg);
+}
+
+.nts-ava-ico {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+}
+
+.nts-ava-ico svg { width: 24px; height: 24px; }
+
+/* the kind of notification, on the sender's picture */
+.nts-kind {
+  position: absolute;
+  inset-inline-end: -3px;
+  bottom: -3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+.nts-kind svg { width: 13px; height: 13px; }
+
+.k-message { background: #2d88ff; }
+.k-follow { background: #42b72a; }
+.k-up { background: #1d9b5f; }
+.k-down { background: #e4405f; }
+.k-post { background: #7b5cf0; }
+.k-recommend { background: #e9a300; }
+.k-prize { background: #f07b14; }
+.k-info { background: #6b7280; }
+
+.nts-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nts-title { overflow-wrap: anywhere; }
+
+.nts-msg {
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.nts-time {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.nts-row.is-new .nts-time {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.nts-dot {
+  grid-column: 3;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--cyan);
+}
+
+/* ---------- Loading, empty, more ---------- */
+.nts-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 6px;
+}
+
+.nts-spin {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line);
+  border-top-color: var(--cyan);
+  border-radius: 50%;
+  animation: nts-spin 0.8s linear infinite;
+}
+
+@keyframes nts-spin {
+  to { transform: rotate(360deg); }
+}
+
+.nts-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 48px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.nts-empty svg {
+  width: 44px;
+  height: 44px;
+  opacity: 0.6;
+}
+
+.nts-empty strong {
+  color: var(--text);
+  font-size: 17px;
+}
+
+.nts-empty p { max-width: 420px; margin: 0; }
+.nts-empty .btn { margin-top: 6px; }
+
+.nts-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.nts-more .btn[hidden] { display: none; }
+
+@media (max-width: 640px) {
+  .nts-page { width: calc(100% - 20px); }
+  .nts-tabs .follow-tab { padding: 10px 9px; font-size: 14px; }
+  .nts-row {
+    grid-template-columns: 44px minmax(0, 1fr) 10px;
+    gap: 10px;
+    padding: 9px 6px;
+  }
+  .nts-ava,
+  .nts-ava img { width: 44px; height: 44px; }
+  .nts-dot { width: 10px; height: 10px; }
+  .nts-sec-head { font-size: 16px; padding: 0 4px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nts-spin { animation-duration: 2.4s; }
+}

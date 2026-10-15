@@ -2264,6 +2264,30 @@
     "chan.noneBad": "No channels marked as not working here.",
     "chan.clear": "Clear filters",
     "chan.more": "Show more ({n})",
+
+    // ── Notifications page and the bell's View all ────
+    "notes.pageTitle": "Notifications — CineAura",
+    "notes.title": "Notifications",
+    "notes.viewAll": "View all",
+    "notes.all": "All",
+    "notes.today": "Today",
+    "notes.week": "This week",
+    "notes.month": "This month",
+    "notes.year": "This year",
+    "notes.older": "Older",
+    "notes.periods": "Time period",
+    "notes.total": "Total: {n}",
+    "notes.newCount": "New: {n}",
+    "notes.unread": "Unread",
+    "notes.more": "Show more",
+    "notes.moreN": "Show more ({n})",
+    "notes.empty": "No notifications.",
+    "notes.emptyHint": "Follow requests, messages, votes on your posts and new prizes show up here.",
+    "notes.emptyPeriod": "No notifications in this period.",
+    "notes.loadFail": "Notifications could not be loaded. Try again later.",
+    "notes.retry": "Try again",
+    "notes.signinTitle": "Sign in to see your notifications",
+    "notes.signinText": "All your notifications are kept here, sorted by day, week, month and year.",
   };
 
   const dict = {};

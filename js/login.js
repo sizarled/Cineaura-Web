@@ -23,10 +23,11 @@
     el.innerHTML = html;
   }
 
-  // ?next=dashboard.html%23iptv — only a dashboard section is accepted as a target.
+  // ?next=dashboard.html%23iptv — only a dashboard section or the notifications
+  // page (with its period) is accepted as a target.
   function nextTarget() {
     const next = new URLSearchParams(location.search).get("next") || "";
-    return /^dashboard\.html(#[a-z]+)?$/.test(next) ? "./" + next : "";
+    return /^(dashboard\.html(#[a-z]+)?|notifications\.html(\?period=[a-z]+)?)$/.test(next) ? "./" + next : "";
   }
 
   function showSuccess(member) {

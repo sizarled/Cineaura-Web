@@ -514,7 +514,7 @@
  "Others via your lists": "آخرون عبر قوائمك",
  "Others via your links": "آخرون عبر روابطك",
  "All time": "كل الوقت",
- "This year": "هذه السنة",
+ "This year": "هذا العام",
  "This month": "هذا الشهر",
  "This week": "هذا الأسبوع",
  "Today": "اليوم",
@@ -2017,4 +2017,18 @@
  "No channels marked as not working here.": "لا توجد قنوات مغلقة هنا.",
  "Clear filters": "مسح الفلاتر",
  "Show more ({n})": "عرض المزيد ({n})",
+
+ /* ── Notifications page and the bell's View all ── */
+ "Notifications — CineAura": "الإشعارات — CineAura",
+ "Older": "أقدم",
+ "Time period": "الفترة الزمنية",
+ "Total: {n}": "الإجمالي: {n}",
+ "New: {n}": "الجديدة: {n}",
+ "Unread": "غير مقروء",
+ "Show more": "عرض المزيد",
+ "Follow requests, messages, votes on your posts and new prizes show up here.": "طلبات المتابعة والرسائل والتصويتات على منشوراتك والجوائز الجديدة تظهر هنا.",
+ "No notifications in this period.": "لا توجد إشعارات في هذه الفترة.",
+ "Notifications could not be loaded. Try again later.": "تعذّر تحميل الإشعارات. حاول مرة أخرى لاحقًا.",
+ "Sign in to see your notifications": "سجّل الدخول لرؤية إشعاراتك",
+ "All your notifications are kept here, sorted by day, week, month and year.": "كل إشعاراتك محفوظة هنا، مقسّمة حسب اليوم والأسبوع والشهر والعام.",
 };

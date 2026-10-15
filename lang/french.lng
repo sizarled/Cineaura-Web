@@ -1325,3 +1325,18 @@ No working channels here yet. Use “Check channels” to test them. = Aucune ch
 No channels marked as not working here. = Aucune chaîne marquée hors service ici.
 Clear filters = Effacer les filtres
 Show more ({n}) = Afficher plus ({n})
+
+# ── Notifications page and the bell's View all ──
+Notifications — CineAura = Notifications — CineAura
+View all = Voir tout
+Older = Plus anciennes
+Time period = Période
+Total: {n} = Total : {n}
+New: {n} = Nouvelles : {n}
+Unread = Non lue
+Show more = Afficher plus
+Follow requests, messages, votes on your posts and new prizes show up here. = Les demandes d’abonnement, les messages, les votes sur vos publications et les nouveaux prix apparaissent ici.
+No notifications in this period. = Aucune notification sur cette période.
+Notifications could not be loaded. Try again later. = Impossible de charger les notifications. Réessayez plus tard.
+Sign in to see your notifications = Connectez-vous pour voir vos notifications
+All your notifications are kept here, sorted by day, week, month and year. = Toutes vos notifications sont conservées ici, classées par jour, semaine, mois et année.

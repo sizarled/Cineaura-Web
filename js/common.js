@@ -1199,6 +1199,117 @@
     $$(".mobile-auth-user").forEach((el) => inject(el, false));
   }
 
+  /* ---------- Notifications: shared by the header bell and notifications.html ---------- */
+  const NOTES_PAGE = "./notifications.html";
+
+  // The title follows the reader's language. The sender's page stored it in the
+  // sender's language, so the kinds the site creates use their own interface
+  // text; anything else shows the stored title (translated when it is English).
+  const NOTE_TITLES = {
+    follow: "prof.reqTitle",
+    recommend: "prof.recAcc",
+    vote_up: "prof.notifVote",
+    vote_down: "prof.notifVote",
+    post: "prof.newPost",
+    message: "prof.newMsg",
+  };
+
+  function noteTitle(n) {
+    const kind = String(n?.kind || "");
+    if (NOTE_TITLES[kind]) return t(NOTE_TITLES[kind]);
+    return tr(n?.title || kind);
+  }
+
+  // Anyone can insert a notification, so its link is checked: only web links,
+  // never javascript: or data: URLs.
+  function noteHref(n) {
+    const raw = String(n?.href || "").trim();
+    if (raw) {
+      try {
+        const url = new URL(raw, location.href);
+        if (url.protocol === "http:" || url.protocol === "https:") return raw;
+      } catch {
+        /* not a link */
+      }
+    }
+    return "./Profile.html";
+  }
+
+  function dateFormat(options) {
+    try {
+      return new Intl.DateTimeFormat(getLocale(), { ...options, numberingSystem: "latn" });
+    } catch {
+      return new Intl.DateTimeFormat(undefined, options);
+    }
+  }
+
+  // When a notification arrived, in the reader's language and local time:
+  // "now", "5 minutes ago", "3 hours ago" today; the weekday and time during the
+  // last 7 days; the date and time this year; the date before that.
+  function noteWhen(value, now = new Date()) {
+    const d = new Date(value);
+    if (!value || Number.isNaN(d.getTime())) return "";
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const diff = now.getTime() - d.getTime();
+    if (d >= today || diff < 60000) {
+      const mins = Math.max(0, Math.floor(diff / 60000));
+      try {
+        const rtf = new Intl.RelativeTimeFormat(`${getLocale()}-u-nu-latn`, { numeric: "auto" });
+        if (mins < 1) return rtf.format(0, "second");
+        return mins < 60 ? rtf.format(-mins, "minute") : rtf.format(-Math.floor(mins / 60), "hour");
+      } catch {
+        return dateFormat({ hour: "numeric", minute: "2-digit" }).format(d);
+      }
+    }
+    const weekAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6);
+    if (d >= weekAgo) return dateFormat({ weekday: "long", hour: "numeric", minute: "2-digit" }).format(d);
+    if (d.getFullYear() === now.getFullYear()) {
+      return dateFormat({ day: "numeric", month: "long", hour: "numeric", minute: "2-digit" }).format(d);
+    }
+    return dateFormat({ day: "numeric", month: "long", year: "numeric" }).format(d);
+  }
+
+  // Notification text as HTML, isolated from the page direction: an English
+  // line keeps its order in an Arabic page ("@ali: hello?" never turns into
+  // "?ali: hello@"), and every @username stays in one piece.
+  function noteTextHtml(text) {
+    const html = escapeHtml(text).replace(/@[A-Za-z0-9_](?:[A-Za-z0-9._]*[A-Za-z0-9_])?/g, (m) => `<bdi>${m}</bdi>`);
+    return `<bdi>${html}</bdi>`;
+  }
+
+  // The full local date and time, for a tooltip.
+  function noteFullDate(value) {
+    const d = new Date(value);
+    if (!value || Number.isNaN(d.getTime())) return "";
+    try {
+      return dateFormat({ dateStyle: "full", timeStyle: "short" }).format(d);
+    } catch {
+      return d.toLocaleString();
+    }
+  }
+
+  // Marks notifications of the signed-in member as read: one request per 100
+  // notifications instead of one per row. The bell hears about it too.
+  async function markNotesRead(ids) {
+    const me = getSession()?.member_id;
+    const list = [...new Set((ids || []).map((id) => String(id ?? "")).filter((id) => /^\d+$/.test(id)))];
+    if (!me || !list.length) return true;
+    document.dispatchEvent(new CustomEvent("cineaura:notes-read", { detail: { ids: list } }));
+    let ok = true;
+    for (let i = 0; i < list.length; i += 100) {
+      try {
+        const res = await supabaseRequest(
+          `/rest/v1/notifications?member_id=eq.${restValue(me)}&id=in.(${list.slice(i, i + 100).join(",")})`,
+          { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ read: true }) }
+        );
+        ok = ok && res.ok;
+      } catch {
+        ok = false;
+      }
+    }
+    return ok;
+  }
+
   /* ---------- Header Bell Notifications ---------- */
   function initHeaderBell() {
     const bellBtn = $("#header-bell-btn");
@@ -1207,43 +1318,63 @@
     if (!bellBtn || !bellPanel) return;
 
     let notes = [];
+    const syncDot = () => {
+      if (bellDot) bellDot.hidden = !notes.some((n) => !n.read);
+    };
+
+    function paint() {
+      const rows = notes.length
+        ? notes
+            .map((n) => {
+              const when = noteWhen(n.created_at);
+              const time = when
+                ? `<time datetime="${escapeHtml(n.created_at)}" title="${escapeHtml(noteFullDate(n.created_at))}">${escapeHtml(when)}</time>`
+                : "";
+              return `
+          <a class="hnote-row" href="${escapeHtml(noteHref(n))}" data-note="${escapeHtml(n.id)}">
+            <div class="hnote-dot ${n.read ? "read" : ""}"></div>
+            <div>
+              <strong>${noteTextHtml(noteTitle(n) || t("prof.notif"))}</strong>
+              <div class="hnote-sub">${n.body ? noteTextHtml(n.body) : ""}${n.body && time ? " · " : ""}${time}</div>
+            </div>
+          </a>`;
+            })
+            .join("")
+        : `<p class="hnote-empty">${escapeHtml(t("prof.noNotes"))}</p>`;
+      bellPanel.innerHTML = `
+        <div class="hnote-head"><strong>${escapeHtml(t("prof.notif"))}</strong></div>
+        <div class="hnote-list">${rows}</div>
+        <div class="hnote-foot"><a class="hnote-all" href="${NOTES_PAGE}">${escapeHtml(t("notes.viewAll"))}</a></div>`;
+    }
 
     bellBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const open = !bellPanel.hidden;
       bellPanel.hidden = open;
       if (open) return;
-      // render notes
-      if (notes.length) {
-        bellPanel.innerHTML = notes.map((n) => {
-          const href = n.href || "./Profile.html";
-          return `
-          <a class="hnote-row" href="${escapeHtml(href)}" data-note="${escapeHtml(n.id)}">
-            <div class="hnote-dot ${n.read ? 'read' : ''}"></div>
-            <div>
-              <strong>${escapeHtml(tr(n.title || n.kind))}</strong>
-              <div style="color:var(--muted);font-size:12px;margin-top:2px">${escapeHtml(n.body || "")} · ${String(n.created_at || "").slice(0, 16).replace("T", " ")}</div>
-            </div>
-          </a>`;
-        }).join("");
-      } else {
-        bellPanel.innerHTML = `<p style="color:var(--muted);text-align:center;padding:16px 0">${t("prof.noNotes")}</p>`;
-      }
-      // mark all as read
-      notes.filter((n) => !n.read).forEach((n) => {
-        supabaseRequest(`/rest/v1/notifications?id=eq.${n.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ read: true }),
-        });
+      paint();
+      // opening the bell marks what it shows as read
+      const unread = notes.filter((n) => !n.read);
+      unread.forEach((n) => {
         n.read = true;
       });
-      if (bellDot) bellDot.hidden = true;
+      syncDot();
+      markNotesRead(unread.map((n) => n.id));
     });
 
     document.addEventListener("click", (e) => {
       if (!bellPanel.hidden && !e.target.closest(".header-bell-wrap")) {
         bellPanel.hidden = true;
       }
+    });
+
+    // notifications.html marked some as read
+    document.addEventListener("cineaura:notes-read", (e) => {
+      const ids = new Set((e.detail?.ids || []).map(String));
+      notes.forEach((n) => {
+        if (ids.has(String(n.id))) n.read = true;
+      });
+      syncDot();
     });
 
     async function poll() {
@@ -1253,9 +1384,11 @@
         const res = await supabaseRequest(
           `/rest/v1/notifications?member_id=eq.${restValue(sess.member_id)}&select=*&order=created_at.desc&limit=30`
         );
-        notes = res.ok && Array.isArray(res.data) ? res.data : [];
-        const unread = notes.some((n) => !n.read);
-        if (bellDot) bellDot.hidden = !unread;
+        if (!res.ok || !Array.isArray(res.data)) return;
+        notes = res.data;
+        syncDot();
+        // notifications.html follows the bell to show new notifications
+        document.dispatchEvent(new CustomEvent("cineaura:notes", { detail: { notes } }));
       } catch { /* offline */ }
     }
 
@@ -2851,6 +2984,13 @@
     pointsHtml,
     normalizeAccountStatus,
     notifyFollowers,
+    NOTES_PAGE,
+    noteTitle,
+    noteHref,
+    noteWhen,
+    noteFullDate,
+    noteTextHtml,
+    markNotesRead,
     showAuthGate,
     hideAuthGate,
     syncAuthGate,

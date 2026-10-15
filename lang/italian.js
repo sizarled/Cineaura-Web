@@ -1983,4 +1983,18 @@
  "No channels marked as not working here.": "Qui non ci sono canali segnati come non funzionanti.",
  "Clear filters": "Cancella filtri",
  "Show more ({n})": "Mostra altro ({n})",
+
+ /* ── Notifications page and the bell's View all ── */
+ "Notifications — CineAura": "Notifiche — CineAura",
+ "Older": "Meno recenti",
+ "Time period": "Periodo",
+ "Total: {n}": "Totale: {n}",
+ "New: {n}": "Nuove: {n}",
+ "Unread": "Non letta",
+ "Show more": "Mostra altro",
+ "Follow requests, messages, votes on your posts and new prizes show up here.": "Richieste di follow, messaggi, voti sui tuoi post e nuovi premi appaiono qui.",
+ "No notifications in this period.": "Nessuna notifica in questo periodo.",
+ "Notifications could not be loaded. Try again later.": "Impossibile caricare le notifiche. Riprova più tardi.",
+ "Sign in to see your notifications": "Accedi per vedere le tue notifiche",
+ "All your notifications are kept here, sorted by day, week, month and year.": "Tutte le tue notifiche sono raccolte qui, ordinate per giorno, settimana, mese e anno.",
 };

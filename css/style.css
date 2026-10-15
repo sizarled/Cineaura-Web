@@ -1528,16 +1528,81 @@ html[dir="rtl"] .bubble.mine {
   animation: pulse 2s infinite;
 }
 
+/* Title on top, the rows scroll in between, "View all" stays at the bottom. */
 .header-bell-panel {
   position: absolute;
   right: 0;
   top: 46px;
   width: min(380px, 88vw);
   max-height: 440px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   z-index: 60;
-  padding: 12px;
+  padding: 0;
   border-radius: 16px;
+}
+
+.header-bell-panel[hidden] {
+  display: none;
+}
+
+.header-bell-panel .hnote-head {
+  flex: none;
+  padding: 12px 16px 8px;
+  font-size: 16px;
+}
+
+.header-bell-panel .hnote-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px;
+}
+
+.header-bell-panel .hnote-sub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.header-bell-panel .hnote-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 16px 0;
+}
+
+.header-bell-panel .hnote-foot {
+  flex: none;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* Not a .btn: phones hide every .btn of the header (they move to the menu). */
+.header-bell-panel .hnote-all {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--cyan);
+  background: var(--sub-bg, rgba(255, 255, 255, 0.06));
+  transition: background 0.15s;
+}
+
+.header-bell-panel .hnote-all:hover {
+  background: rgba(24, 119, 242, 0.14);
+}
+
+.header-bell-panel .hnote-all:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
 }
 
 .header-bell-panel .hnote-row {
