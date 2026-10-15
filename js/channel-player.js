@@ -8,8 +8,11 @@
  *     options   { report: true,        show the "Report channel" button
  *                 accounts: [...],     iptv rows of the package (stream lookup)
  *                 onChange(index),     the dialog moved to another channel
+ *                 onResult(row, ok),   a channel started (true) or failed (false)
  *                 onClose() }
  *   CineAuraChannels.close()
+ *   CineAuraChannels.resolveStream(row, accounts)  -> Promise<stream link | "">
+ *     the channel's own link, else the one found in the package playlist
  *
  * Engines, loaded on demand from js/vendor/ the first time a channel opens:
  *   hls.js     HLS (.m3u8); native HLS where Media Source is missing (iPhone)
@@ -276,6 +279,14 @@
     return map.get(norm(ch.channel_name)) || "";
   }
 
+  async function resolveStream(ch, accounts) {
+    const own = String(ch.stream_url || "").trim();
+    if (own) return own;
+    const found = await lookupStream(ch, accounts).catch(() => "");
+    if (found) ch.stream_url = found;
+    return found;
+  }
+
   // ---------- dialog state ----------
   const S = {
     root: null,
@@ -300,6 +311,16 @@
   };
 
   const current = () => S.list[S.index] || null;
+
+  // tell the page how a channel did (Listchannels.html colours its status dot)
+  function result(ch, ok) {
+    if (!ch || typeof S.opts.onResult !== "function") return;
+    try {
+      S.opts.onResult(ch, ok);
+    } catch {
+      /* a problem of the page, not of the player */
+    }
+  }
 
   function teardown() {
     if (S.cancel) S.cancel();
@@ -416,19 +437,20 @@
     let url = String(ch.stream_url || "").trim();
     if (!url) {
       veil("loading", t("chan.lookup"));
-      url = await lookupStream(ch, S.opts.accounts).catch(() => "");
+      url = await resolveStream(ch, S.opts.accounts);
       if (run !== S.run) return;
-      if (url) ch.stream_url = url;
     }
     S.url = url;
     if (!url) {
       S.error = "no stream link saved for this channel";
       veil("error", "nostream");
+      result(ch, false);
       return;
     }
     if (!/^https?:\/\//i.test(url)) {
       S.error = `unsupported protocol ${url.split(":")[0]}`;
       veil("error", "format");
+      result(ch, false);
       return;
     }
     veil("loading", t("chan.connecting"));
@@ -450,14 +472,17 @@
           S.error = detail.slice(0, 900);
           teardown();
           veil("error", "failed");
+          result(ch, false);
         };
         veil(null);
+        result(ch, true);
         return;
       }
       errors.push(res.detail);
     }
     S.error = (errors.join(" | ") || "no route: http stream on an https page and no /api/stream relay").slice(0, 900);
     veil("error", "failed");
+    result(ch, false);
   }
 
   // ---------- UI ----------
@@ -817,6 +842,7 @@
     open,
     close,
     isOpen: () => Boolean(S.root),
+    resolveStream,
     logoHtml,
     typeLabel,
     streamKind,

@@ -568,7 +568,7 @@ def looks_like_media(head):
     return len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0  # AAC (ADTS)
 
 
-def open_stream(url, headers):
+def open_stream(url, headers, timeout=STREAM_TIMEOUT):
     """Open an upstream stream, following redirects through the SSRF guard.
 
     Returns (response, final_url): relative URIs in a playlist are resolved
@@ -581,7 +581,7 @@ def open_stream(url, headers):
             raise PermissionError("blocked")
         req = urllib.request.Request(url, headers=headers)
         try:
-            return opener.open(req, timeout=STREAM_TIMEOUT), url
+            return opener.open(req, timeout=timeout), url
         except urllib.error.HTTPError as err:
             if err.code in (301, 302, 303, 307, 308) and err.headers.get("Location"):
                 url = urljoin(url, err.headers["Location"])
@@ -589,6 +589,140 @@ def open_stream(url, headers):
                 continue
             raise
     raise ValueError("too many redirects")
+
+
+# ---------- /api/stream-check: does a channel answer right now? ----------
+# "Check channels" on Listchannels.html asks once per channel. The server opens
+# the stream as the relay would, reads only its first bytes and answers with a
+# small JSON verdict, so a check costs almost no bandwidth. An HLS playlist is
+# followed down to one variant and one media segment: a playlist alone proves
+# little, because dead channels often keep serving it.
+
+CHECK_TIMEOUT = 7  # seconds per connection or read
+CHECK_BUDGET = 12  # seconds for the whole check of one link
+CHECK_HEAD = 2048  # bytes read to recognise the media
+
+
+class StreamCheckError(Exception):
+    """The link answered, but not with something a player can use."""
+
+
+def read_head(resp, want, deadline):
+    """Read up to `want` bytes (less at the end of the body or of the time budget)."""
+    buf = b""
+    while len(buf) < want and time.monotonic() < deadline:
+        chunk = resp.read1(min(STREAM_CHUNK, want - len(buf)))
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+def looks_like_text(head):
+    """An error page or message rather than media (HTML, JSON, plain words)."""
+    sample = head[:64].lstrip()
+    if not sample:
+        return True
+    if sample[:1] in (b"<", b"{", b"["):
+        return True
+    return all(32 <= b < 127 or b in (9, 10, 13) for b in sample)
+
+
+def hls_next(text, base):
+    """One step down an HLS playlist: (url, is_variant, encrypted).
+
+    A master playlist leads to its first variant; a media playlist to its newest
+    segment (the oldest one of a live window may already be gone).
+    """
+    encrypted = False
+    variant_next = False
+    segments = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#EXT-X-STREAM-INF"):
+            variant_next = True
+        elif s.startswith("#EXT-X-KEY") and "METHOD=NONE" not in s.upper():
+            encrypted = True
+        elif not s.startswith("#"):
+            if variant_next:
+                return urljoin(base, s), True, False
+            segments.append(s)
+    if not segments:
+        return "", False, encrypted
+    return urljoin(base, segments[-1]), False, encrypted
+
+
+def check_link(url, headers, deadline, depth=0):
+    """Return the kind of media behind `url` ("media" or "hls"), or raise."""
+    if time.monotonic() >= deadline:
+        raise TimeoutError("check took too long")
+    resp, final_url = open_stream(url, headers, timeout=CHECK_TIMEOUT)
+    with resp:
+        content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        head = read_head(resp, CHECK_HEAD, deadline)
+        if not head:
+            raise StreamCheckError("empty answer")
+        if not is_hls_playlist(content_type, head):
+            if looks_like_media(head):
+                return "media"
+            if is_relayable_media(content_type) and len(head) >= 188 and not looks_like_text(head):
+                return "media"
+            raise StreamCheckError("not media")
+        if depth >= 3:
+            raise StreamCheckError("playlist loop")
+        raw = head + read_head(resp, MAX_HLS_PLAYLIST - len(head), deadline)
+    text = raw.decode("utf-8", "replace").lstrip("\ufeff")
+    nxt, is_variant, encrypted = hls_next(text, final_url)
+    if not nxt:
+        raise StreamCheckError("empty playlist")
+    if is_variant:
+        return check_link(nxt, headers, deadline, depth + 1)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("check took too long")
+    seg, _ = open_stream(nxt, headers, timeout=CHECK_TIMEOUT)
+    with seg:
+        content_type = (seg.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        head = read_head(seg, CHECK_HEAD, deadline)
+    if looks_like_media(head):
+        return "hls"
+    # AES-128 segments are encrypted bytes: nothing to recognise, only no error page
+    if (encrypted or is_relayable_media(content_type)) and len(head) >= 16 and not looks_like_text(head):
+        return "hls"
+    raise StreamCheckError("segment is not media")
+
+
+def check_stream(links, user_agent):
+    """Verdict for one channel: its link, then its alternative (Xtream HLS)."""
+    headers = {"User-Agent": user_agent or "Mozilla/5.0 CineAura-Player", "Accept": "*/*"}
+    started = time.monotonic()
+    verdict = {"ok": False, "error": "unreachable"}
+    for n, link in enumerate(links):
+        try:
+            kind = check_link(link, headers, started + CHECK_BUDGET)
+            verdict = {"ok": True, "kind": kind, "via": "alt" if n else "url"}
+            break
+        except PermissionError:
+            verdict = {"ok": False, "error": "blocked"}
+            break
+        except urllib.error.HTTPError as err:
+            verdict = {"ok": False, "error": "http %d" % err.code}
+            err.close()  # an error answer: the alternative link may still work
+        except StreamCheckError as err:
+            verdict = {"ok": False, "error": str(err)}
+        except (socket.timeout, TimeoutError):
+            verdict = {"ok": False, "error": "timeout"}
+            break  # the same server would keep us waiting again
+        except urllib.error.URLError as err:
+            timed_out = isinstance(err.reason, (socket.timeout, TimeoutError))
+            verdict = {"ok": False, "error": "timeout" if timed_out else "unreachable"}
+            break
+        except Exception:
+            verdict = {"ok": False, "error": "unreachable"}
+            break
+    verdict["ms"] = int((time.monotonic() - started) * 1000)
+    return verdict
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -737,6 +871,30 @@ class Handler(SimpleHTTPRequestHandler):
             except OSError:  # viewer gone (broken pipe / reset) or upstream stalled
                 self.close_connection = True
 
+    def stream_check(self, parsed):
+        query = parse_qs(parsed.query)
+        if (query.get("probe") or [""])[0]:
+            # the channel list asks once whether this server can check channels
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        links = []
+        for name in ("url", "alt"):
+            value = (query.get(name) or [""])[0].strip()
+            if value.startswith(("http://", "https://")) and len(value) <= 4000 and value not in links:
+                links.append(value)
+        if not links:
+            self.send_error(400, "A full http(s) url is required")
+            return
+        body = json.dumps(check_stream(links, self.headers.get("User-Agent"))).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/m3u":
@@ -747,6 +905,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.proxy_providers(parsed)
         if parsed.path == "/api/stream":
             return self.proxy_stream(parsed)
+        if parsed.path == "/api/stream-check":
+            return self.stream_check(parsed)
         mapped = ROUTES.get(parsed.path)
         if mapped and not os.path.exists(os.path.join(ROOT, mapped)):
             # the page may sit in the checkout with another case (listchannels.html)
