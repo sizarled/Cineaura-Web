@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urljoin, unquote
+from urllib.parse import urlparse, parse_qs, urljoin, unquote, quote
 import base64
 import io
 import html as html_module
@@ -501,6 +501,96 @@ def fetch_m3u(url):
     raise ValueError("too many redirects")
 
 
+# ---------- /api/stream: same-origin relay for the IPTV channel player ----------
+# The site is served over https while most IPTV servers speak plain http and send
+# no CORS headers, so the browser refuses to play them directly. The player on
+# Listchannels.html tries a stream directly first and falls back to this relay.
+# Only media passes: HLS playlists (rewritten so every variant, segment and key
+# comes back through here), MPEG-TS and other audio/video. Web pages, scripts,
+# JSON or images are refused, so the relay cannot be used to fetch other sites.
+
+STREAM_TIMEOUT = 20
+STREAM_CHUNK = 64 * 1024
+MAX_HLS_PLAYLIST = 4 * 1024 * 1024
+STREAM_MEDIA_TYPES = (
+    "application/octet-stream",
+    "binary/octet-stream",
+    "application/mp2t",
+    "application/x-mpegts",
+    "application/mp4",
+    "application/x-flv",
+    "application/ogg",
+)
+_HLS_URI_RE = re.compile(r'URI="([^"]*)"')
+
+
+def stream_relay_url(url):
+    """Address of `url` through the relay (relative, so it stays same-origin)."""
+    if not url.startswith(("http://", "https://")):
+        return url  # data: URIs and DRM key schemes stay as they are
+    return "/api/stream?url=" + quote(url, safe="")
+
+
+def rewrite_hls(text, base):
+    """Point every URI of an HLS playlist (variants, segments, keys, maps) at the relay."""
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            if 'URI="' in s:
+                s = _HLS_URI_RE.sub(lambda m: 'URI="%s"' % stream_relay_url(urljoin(base, m.group(1))), s)
+            out.append(s)
+        else:
+            out.append(stream_relay_url(urljoin(base, s)))
+    return "\n".join(out) + "\n"
+
+
+def is_hls_playlist(content_type, head):
+    return "mpegurl" in content_type or head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"#EXTM3U")
+
+
+def is_relayable_media(content_type):
+    if not content_type:
+        return True  # unlabelled: answered as application/octet-stream + nosniff
+    return content_type.startswith(("video/", "audio/")) or content_type in STREAM_MEDIA_TYPES
+
+
+def looks_like_media(head):
+    """Media behind a wrong label (some IPTV servers send segments as text/plain)."""
+    if len(head) >= 189 and head[0] == 0x47 and head[188] == 0x47:
+        return True  # MPEG-TS packets
+    if head[4:8] in (b"ftyp", b"styp", b"moof", b"sidx", b"moov"):
+        return True  # MP4 / fragmented MP4
+    if head[:3] in (b"ID3", b"FLV") or head[:4] == b"\x1aE\xdf\xa3":
+        return True  # ID3-tagged audio, FLV, WebM / Matroska
+    return len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0  # AAC (ADTS)
+
+
+def open_stream(url, headers):
+    """Open an upstream stream, following redirects through the SSRF guard.
+
+    Returns (response, final_url): relative URIs in a playlist are resolved
+    against the address the playlist really came from (IPTV servers often
+    redirect to a load balancer with a token).
+    """
+    opener = urllib.request.build_opener(_NoRedirect)
+    for _ in range(6):
+        if not is_public_http_url(url):
+            raise PermissionError("blocked")
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            return opener.open(req, timeout=STREAM_TIMEOUT), url
+        except urllib.error.HTTPError as err:
+            if err.code in (301, 302, 303, 307, 308) and err.headers.get("Location"):
+                url = urljoin(url, err.headers["Location"])
+                err.close()
+                continue
+            raise
+    raise ValueError("too many redirects")
+
+
 class Handler(SimpleHTTPRequestHandler):
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
@@ -560,6 +650,93 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def proxy_stream(self, parsed):
+        query = parse_qs(parsed.query)
+        if (query.get("probe") or [""])[0]:
+            # the player asks once whether this server offers the relay at all
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        url = (query.get("url") or [""])[0].strip()
+        if not url.startswith(("http://", "https://")):
+            self.send_error(400, "A full http(s) url is required")
+            return
+        headers = {
+            "User-Agent": self.headers.get("User-Agent") or "Mozilla/5.0 CineAura-Player",
+            "Accept": "*/*",
+        }
+        wanted_range = (self.headers.get("Range") or "").strip()
+        if re.fullmatch(r"bytes=\d*-\d*", wanted_range):
+            headers["Range"] = wanted_range  # seeking inside films and series episodes
+        try:
+            resp, final_url = open_stream(url, headers)
+        except PermissionError:
+            self.send_error(403, "Address not allowed")
+            return
+        except urllib.error.HTTPError as err:
+            code = err.code if 400 <= err.code < 600 else 502
+            err.close()
+            self.send_error(code, "Upstream error")
+            return
+        except (socket.timeout, TimeoutError):
+            self.send_error(504, "Upstream timeout")
+            return
+        except Exception:
+            self.send_error(502, "Could not reach the stream")
+            return
+        with resp:
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            try:
+                head = resp.read1(STREAM_CHUNK)
+            except Exception:
+                self.send_error(502, "Could not read the stream")
+                return
+            if is_hls_playlist(content_type, head):
+                try:
+                    raw = head + resp.read(MAX_HLS_PLAYLIST + 1 - len(head))
+                except Exception:
+                    self.send_error(502, "Could not read the playlist")
+                    return
+                if len(raw) > MAX_HLS_PLAYLIST:
+                    self.send_error(502, "Playlist too large")
+                    return
+                body = rewrite_hls(raw.decode("utf-8", "replace").lstrip("\ufeff"), final_url).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            labelled = is_relayable_media(content_type)
+            try:
+                length = int(resp.headers.get("Content-Length") or -1)
+            except ValueError:
+                length = -1
+            # an HLS AES-128 key is exactly 16 bytes, whatever its label
+            if not (labelled or looks_like_media(head) or length == 16):
+                self.send_error(415, "Only audio and video can be relayed")
+                return
+            self.send_response(resp.status if resp.status in (200, 206) else 200)
+            self.send_header("Content-Type", (content_type if labelled else "") or "application/octet-stream")
+            for name in ("Content-Length", "Content-Range", "Accept-Ranges"):
+                value = resp.headers.get(name)
+                if value:
+                    self.send_header(name, value)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            # a live channel never ends: copy until the viewer closes the player
+            try:
+                chunk = head
+                while chunk:
+                    self.wfile.write(chunk)
+                    chunk = resp.read1(STREAM_CHUNK)
+            except OSError:  # viewer gone (broken pipe / reset) or upstream stalled
+                self.close_connection = True
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/m3u":
@@ -568,7 +745,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self.proxy_thumb(parsed)
         if parsed.path == "/api/providers":
             return self.proxy_providers(parsed)
-        mapped = ROUTES.get(parsed.path) or resolve_clean_url(parsed.path)
+        if parsed.path == "/api/stream":
+            return self.proxy_stream(parsed)
+        mapped = ROUTES.get(parsed.path)
+        if mapped and not os.path.exists(os.path.join(ROOT, mapped)):
+            # the page may sit in the checkout with another case (listchannels.html)
+            mapped = resolve_clean_url("/" + mapped)
+        mapped = mapped or resolve_clean_url(parsed.path)
         if mapped:
             self.path = "/" + mapped
         return super().do_GET()
