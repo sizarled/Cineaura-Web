@@ -395,9 +395,14 @@
     };
   }
 
+  // ---------- Overview: account, points and the member's watch codes ----------
+  let overviewTimer = 0;
+
   async function viewOverview(main) {
     const p = state.profile || {};
     const m = state.member;
+    const plan = codeLimit();
+    clearInterval(overviewTimer);
     main.innerHTML = `
       <p class="eyebrow">${t("dash.overview")}</p>
       <h1>${t("common.hello", { name: escapeHtml(m.full_name || m.username) })}</h1>
@@ -407,7 +412,184 @@
         <div class="stat"><b>${Number(p.private_minutes||0)+Number(p.public_minutes||0)}</b><span>${t("dash.totalMin")}</span></div>
         <div class="stat"><b>${Number(p.followers||0)}</b><span>${t("dash.followers")}</span></div>
       </div>
-      <p class="muted">${t("dash.expiresOn", { date: escapeHtml(String(m.membership_expires_at||"—").slice(0,10)) })}</p>`;
+      <p class="muted">${t("dash.expiresOn", { date: escapeHtml(String(m.membership_expires_at||"—").slice(0,10)) })}</p>
+
+      <section class="ov-block" aria-labelledby="ov-points-h">
+        <div class="ov-head">
+          <h2 id="ov-points-h">${t("points.title")}</h2>
+          <button class="btn btn-sm btn-ghost" type="button" data-section="prizes">${t("dash.ov.toPrizes")}</button>
+        </div>
+        <div class="stat-row ov-points">
+          <div class="stat ov-accent"><b data-pt="available">…</b><span>${t("points.available")}</span></div>
+          <div class="stat"><b data-pt="earned">…</b><span>${t("points.earned")}</span></div>
+          <div class="stat"><b data-pt="spent">…</b><span>${t("points.spent")}</span></div>
+        </div>
+        <p class="muted" id="ov-points-msg">${t("points.loading")}</p>
+        <details class="ov-more" id="ov-points-more" hidden>
+          <summary>${t("dash.ov.howEarned")}</summary>
+          <div id="ov-points-box"></div>
+        </details>
+      </section>
+
+      <section class="ov-block" aria-labelledby="ov-codes-h">
+        <div class="ov-head">
+          <div>
+            <h2 id="ov-codes-h">${t("dash.ov.codes")}</h2>
+            <p class="muted" id="ov-codes-lead"></p>
+          </div>
+          <button class="btn btn-sm btn-ghost" type="button" data-section="codes">${t("dash.ov.manage")}</button>
+        </div>
+        <div class="ov-codes" id="ov-codes"><p class="muted">${t("common.loading")}</p></div>
+      </section>`;
+
+    const memberId = m.member_id;
+    const [mp, codesRes] = await Promise.all([
+      C.memberPoints(memberId, state.profile || {}).catch(() => null),
+      supabaseRequest(`/rest/v1/codes?owner=eq.${restValue(memberId)}&select=*&order=created_at.desc`).catch(() => ({ ok: false })),
+    ]);
+    if (!main.isConnected || state.section !== "overview") return; // the member moved on
+
+    const msg = main.querySelector("#ov-points-msg");
+    ["available", "earned", "spent"].forEach((k) => {
+      const el = main.querySelector(`[data-pt="${k}"]`);
+      if (el) el.textContent = mp ? String(Number(mp[k] || 0)) : "—";
+    });
+    if (mp) {
+      main.querySelector("#ov-points-box").innerHTML = C.pointsHtml(mp);
+      main.querySelector("#ov-points-more").hidden = false;
+      msg?.remove();
+    } else if (msg) {
+      msg.textContent = t("points.loadFail");
+    }
+
+    const codes = codesRes.ok && Array.isArray(codesRes.data) ? codesRes.data : null;
+    const lead = main.querySelector("#ov-codes-lead");
+    if (lead && codes) {
+      lead.textContent = t("dash.ov.codesLead", { n: codes.length, max: plan.maxCodes, plan: tr(m.membership_type || "Free") });
+    }
+    const paint = () => {
+      const box = main.querySelector("#ov-codes");
+      if (box) box.innerHTML = overviewCodesHtml(codes);
+    };
+    paint();
+    // the time left counts down while the overview stays open
+    if (codes && codes.length) {
+      overviewTimer = setInterval(() => {
+        if (!main.isConnected) {
+          clearInterval(overviewTimer);
+          return;
+        }
+        paint();
+      }, 60000);
+    }
+  }
+
+  // Codes saved before the age tiers existed carry no limit.
+  function codeAgeText(value) {
+    return value ? t(ageTier(value).label) : t("code.ageNone");
+  }
+
+  function codeTiming(c, now = Date.now()) {
+    const exp = Date.parse(c.expires_at || "");
+    if (!Number.isFinite(exp)) return { exp: null, left: Infinity, share: 1 };
+    const created = Date.parse(c.created_at || "");
+    const total = Number.isFinite(created) && exp > created ? exp - created : 0;
+    const left = exp - now;
+    const share = left <= 0 ? 0 : total ? Math.min(1, left / total) : 1;
+    return { exp, left, share };
+  }
+
+  function codeState(c, timing) {
+    const st = String(c.status || "active").trim().toLowerCase();
+    if (st === "banned" || st === "disabled") return st;
+    if (st === "expired" || timing.left <= 0) return "expired";
+    return "active";
+  }
+
+  // "3 days, 4 hours" in the member's language (plural rules come from Intl).
+  function unitText(n, unit) {
+    try {
+      return new Intl.NumberFormat(C.getLocale(), { style: "unit", unit, unitDisplay: "long", numberingSystem: "latn" }).format(n);
+    } catch {
+      return `${n} ${unit}${n === 1 ? "" : "s"}`;
+    }
+  }
+
+  function joinUnits(parts) {
+    try {
+      return new Intl.ListFormat(C.getLocale(), { style: "long", type: "unit" }).format(parts);
+    } catch {
+      return parts.join(" ");
+    }
+  }
+
+  function timeLeftText(ms) {
+    const mins = Math.floor(ms / 60000);
+    if (mins < 1) return t("dash.ov.lessMin");
+    const d = Math.floor(mins / 1440);
+    const h = Math.floor((mins % 1440) / 60);
+    const m = mins % 60;
+    if (d >= 7) return unitText(d, "day");
+    if (d >= 1) return joinUnits(h ? [unitText(d, "day"), unitText(h, "hour")] : [unitText(d, "day")]);
+    if (h >= 1) return joinUnits(m ? [unitText(h, "hour"), unitText(m, "minute")] : [unitText(h, "hour")]);
+    return unitText(m, "minute");
+  }
+
+  function whenText(ms) {
+    try {
+      return new Date(ms).toLocaleString(C.getLocale(), { dateStyle: "medium", timeStyle: "short", numberingSystem: "latn" });
+    } catch {
+      return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+    }
+  }
+
+  function overviewCodesHtml(codes) {
+    if (!codes) return `<p class="muted">${t("dash.ov.codesFail")}</p>`;
+    if (!codes.length) {
+      return `
+        <div class="ov-empty">
+          <p>${t("dash.noCodes")}</p>
+          <button class="btn btn-sm btn-primary" type="button" data-section="codes">${t("dash.ov.create")}</button>
+        </div>`;
+    }
+    const now = Date.now();
+    const rank = { active: 0, disabled: 1, banned: 2, expired: 3 };
+    const rows = codes.map((c) => {
+      const timing = codeTiming(c, now);
+      return { c, timing, st: codeState(c, timing) };
+    });
+    // still valid first, soonest to run out on top; expired ones last
+    rows.sort((a, b) => rank[a.st] - rank[b.st] || (a.st === "expired" ? (b.timing.exp || 0) - (a.timing.exp || 0) : a.timing.left - b.timing.left));
+    return rows.map(({ c, timing, st }) => {
+      let left;
+      let until = "";
+      if (timing.exp === null) left = t("dash.ov.noExpiry");
+      else if (timing.left <= 0) {
+        left = t("dash.ov.expired");
+        until = t("dash.ov.expiredOn", { date: whenText(timing.exp) });
+      } else {
+        left = t("dash.ov.left", { time: timeLeftText(timing.left) });
+        until = t("dash.ov.expiresOn", { date: whenText(timing.exp) });
+      }
+      const tone = timing.left <= 0 ? "off" : timing.share < 0.15 ? "low" : timing.share < 0.5 ? "mid" : "";
+      return `
+        <article class="ov-code-card is-${st}">
+          <div class="ov-code-top">
+            <span class="ov-code" dir="ltr">${escapeHtml(c.code)}</span>
+            <span class="ov-st ${st}">${t(`dash.ov.st.${st}`)}</span>
+          </div>
+          <div class="ov-cat">
+            <span class="ov-label">${t("dash.ov.category")}</span>
+            <span class="chip">${escapeHtml(codeAgeText(c.age_rating))}</span>
+          </div>
+          <div class="ov-left">
+            <span class="ov-label">${t("dash.ov.validity")}</span>
+            <b>${escapeHtml(left)}</b>
+            <div class="ov-bar ${tone}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(timing.share * 100)}" aria-label="${escapeHtml(t("dash.ov.validity"))}"><i style="width:${Math.max(timing.share > 0 ? 3 : 0, Math.round(timing.share * 100))}%"></i></div>
+            ${until ? `<small>${escapeHtml(until)}</small>` : ""}
+          </div>
+        </article>`;
+    }).join("");
   }
 
   function visibilityFieldsHtml(prefix, pl = {}) {
