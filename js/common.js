@@ -1936,6 +1936,44 @@
     return r2.text();
   }
 
+  // M3U playlist -> public.listchannels rows (Panel > IPTV import, channel player).
+  // "Animation;Kids;Religious" puts the channel once inside each of those groups.
+  // stream_url is the URL line under #EXTINF: the link the channel player opens.
+  function parseM3U(text) {
+    const out = [];
+    let cur = null;
+    String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).forEach((raw) => {
+      const line = raw.trim();
+      if (!line) return;
+      if (/^#EXTINF/i.test(line)) {
+        const attrs = {};
+        const stripped = line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ""; });
+        const name = stripped.slice(stripped.indexOf(",") + 1).trim() || attrs["tvg-name"] || "";
+        cur = { name, group: (attrs["group-title"] || "").trim() || "General", logo: attrs["tvg-logo"] || "" };
+      } else if (/^#EXTGRP:/i.test(line) && cur) {
+        cur.group = line.slice(8).trim() || cur.group;
+      } else if (!line.startsWith("#")) {
+        if (cur && cur.name) {
+          const u = line.toLowerCase();
+          const type = u.includes("/movie/") ? "movie" : u.includes("/series/") ? "series" : "live";
+          const stream = /^[a-z][a-z0-9+.-]*:\/\//i.test(line) ? line.slice(0, 2000) : "";
+          const groups = [...new Set(cur.group.split(";").map((g) => g.trim()).filter(Boolean))];
+          (groups.length ? groups : ["General"]).forEach((g) => {
+            out.push({
+              channel_name: cur.name.slice(0, 200),
+              group_name: g.slice(0, 120),
+              logo_url: /^https?:\/\//i.test(cur.logo) ? cur.logo : "",
+              channel_type: type,
+              stream_url: stream,
+            });
+          });
+        }
+        cur = null;
+      }
+    });
+    return out;
+  }
+
   async function iptvDownloadM3u(a) {
     const url = iptvM3uUrl(a);
     if (!url) return toast(t("dash.iptvDlFail"));
@@ -2746,6 +2784,8 @@
     fetchProviderOffers,
     iptvKind,
     iptvM3uUrl,
+    fetchPlaylistText,
+    parseM3U,
     iptvDetailRows,
     iptvActionsHtml,
     bindIptvActions,

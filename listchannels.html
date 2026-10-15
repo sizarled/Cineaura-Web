@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="css/dashboard.css" />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/facebook.css" />
+  <link rel="stylesheet" href="css/channels.css" />
   <link rel="stylesheet" href="css/mobile.css" />
 </head>
 <body class="page-inner">
@@ -31,34 +32,11 @@
     </header>
     <main class="page-main" id="root"></main>
   </div>
+  <div class="toast" id="toast" role="status"></div>
   <script src="js/i18n.js"></script>
   <script src="js/lang.js"></script>
   <script src="js/common.js"></script>
-  <script>
-    document.addEventListener("DOMContentLoaded", async () => {
-      const { setupChrome, supabaseRequest, restValue, escapeHtml } = CineAura;
-      setupChrome();
-      const pack = new URLSearchParams(location.search).get("package") || "";
-      const root = document.getElementById("root");
-      const res = await supabaseRequest(`/rest/v1/listchannels?package_name=eq.${restValue(pack)}&select=*&order=group_name.asc`);
-      const rows = res.ok && Array.isArray(res.data) ? res.data : [];
-      const groups = {};
-      rows.forEach((r) => {
-        groups[r.group_name || "General"] = groups[r.group_name || "General"] || [];
-        groups[r.group_name || "General"].push(r);
-      });
-      root.innerHTML = `<section class="glass dash-main" style="width:min(900px,calc(100% - 40px));margin:0 auto">
-        <p class="eyebrow">IPTV</p>
-        <h1>${escapeHtml(pack || "Channels")}</h1>
-        ${Object.keys(groups).length ? Object.entries(groups).map(([g, arr]) => `
-          <h2 style="margin:18px 0 8px">${escapeHtml(g)}</h2>
-          <div class="cards">${arr.map((c)=>`
-            <article class="mini-card" style="display:flex;gap:10px;align-items:center">
-              <img src="${escapeHtml(c.logo_url || "")}" alt="" style="width:42px;height:42px;object-fit:contain;background:#031a2d;border-radius:8px" onerror="this.style.opacity=0" />
-              <div><strong>${escapeHtml(c.channel_name)}</strong><div class="muted">${escapeHtml(c.channel_type||"live")}</div></div>
-            </article>`).join("")}</div>`).join("") : `<p class="empty">No channels in this package yet.</p>`}
-      </section>`;
-    });
-  </script>
+  <script src="js/channel-player.js"></script>
+  <script src="js/listchannels.js"></script>
 </body>
 </html>

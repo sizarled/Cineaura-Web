@@ -291,6 +291,7 @@
     };
     hydrateAvatars($("#panel-root"));
     hydrateMedals($("#panel-root"));
+    if (allowed.includes("reports")) refreshChannelReportCount();
     renderSection();
   }
 
@@ -633,7 +634,30 @@
     };
   }
 
+  // ---------- Reports: watch links (reportlinks) + channels (channel_reports) ----------
   async function viewReports(main) {
+    const tab = state.reportTab === "channels" ? "channels" : "links";
+    main.innerHTML = `
+      <p class="eyebrow">${t("panel.nav.reports")}</p>
+      <h1>${t("panel.reportsTitle")}</h1>
+      <div class="tabs follow-tabs" role="tablist">
+        <button type="button" role="tab" class="follow-tab${tab === "links" ? " active" : ""}" aria-selected="${tab === "links"}" data-rtab="links">${t("panel.chr.tabLinks")}</button>
+        <button type="button" role="tab" class="follow-tab${tab === "channels" ? " active" : ""}" aria-selected="${tab === "channels"}" data-rtab="channels">${t("panel.chr.tabChannels")}<span class="follow-count" id="chr-open-count" hidden></span></button>
+      </div>
+      <div class="follow-pane" id="rp-pane"></div>`;
+    main.onclick = (e) => {
+      const btn = e.target.closest("[data-rtab]");
+      if (!btn || btn.dataset.rtab === tab) return;
+      state.reportTab = btn.dataset.rtab;
+      viewReports(main);
+    };
+    const pane = main.querySelector("#rp-pane");
+    if (tab === "channels") await viewChannelReports(pane);
+    else await viewLinkReports(pane);
+    refreshChannelReportCount();
+  }
+
+  async function viewLinkReports(pane) {
     const res = await supabaseRequest("/rest/v1/reportlinks?select=*&order=reported_at.desc&limit=300");
     const rows = res.ok && Array.isArray(res.data) ? res.data : [];
     const subjects = {
@@ -644,9 +668,7 @@
       bad: t("dash.rpt.bad"),
       indirect: t("dash.rpt.indirect"),
     };
-    main.innerHTML = `
-      <p class="eyebrow">${t("panel.nav.reports")}</p>
-      <h1>${t("panel.reportsTitle")}</h1>
+    pane.innerHTML = `
       <p class="muted">${t("panel.reportsLead")}</p>
       ${rows.map((r) => `
         <div class="mini-card" style="margin-bottom:10px">
@@ -660,7 +682,7 @@
             <button class="btn btn-sm btn-ghost" data-verdict="ended" data-url="${escapeHtml(r.watch_url)}" data-sub="${escapeHtml(r.subject)}" type="button">${t("panel.ended")}</button>
           </div>
         </div>`).join("") || `<p class="empty">${t("dash.noReportsIn")}</p>`}`;
-    main.onclick = async (e) => {
+    pane.onclick = async (e) => {
       const btn = e.target.closest("[data-verdict]");
       if (!btn) return;
       const verdict = btn.dataset.verdict;
@@ -672,8 +694,168 @@
       );
       if (!patch.ok) return toast(t("panel.actFail"));
       toast(t("panel.verdictApplied"));
-      viewReports(main);
+      viewLinkReports(pane);
     };
+  }
+
+  // Open channel reports: the badge in the side menu and the count on the tab.
+  async function refreshChannelReportCount() {
+    const n = await window.CineAura.countRows("/rest/v1/channel_reports?status=eq.open&select=id").catch(() => 0);
+    const nav = $('#panel-root .side-nav [data-section="reports"]');
+    if (nav) {
+      nav.querySelector(".crp-badge")?.remove();
+      if (n) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge">${n > 99 ? "99+" : n}</span>`);
+    }
+    const tabCount = $("#chr-open-count");
+    if (tabCount) {
+      tabCount.textContent = String(n);
+      tabCount.hidden = !n;
+    }
+  }
+
+  const chrKey = (r) => `${String(r.package_name || "").trim().toLowerCase()}\n${String(r.channel_name || "").trim().toLowerCase()}`;
+
+  // Reports on the same channel (package + name) form one card; an action on
+  // the card applies to every report inside it.
+  async function viewChannelReports(pane) {
+    const filter = ["open", "closed", "all"].includes(state.chrFilter) ? state.chrFilter : "open";
+    const where = filter === "open" ? "&status=eq.open" : filter === "closed" ? "&status=neq.open" : "";
+    const res = await supabaseRequest(`/rest/v1/channel_reports?select=*${where}&order=reported_at.desc&limit=600`);
+    const chip = (k) => `<button type="button" class="crp-filter${filter === k ? " active" : ""}" data-chr-filter="${k}">${t(`panel.chr.${k}`)}</button>`;
+    const head = `
+      <p class="muted">${t("panel.chr.lead")}</p>
+      <div class="crp-bar"><div class="crp-filters">${chip("open")}${chip("closed")}${chip("all")}</div></div>`;
+    if (!res.ok) {
+      const raw = JSON.stringify(res.data || {});
+      const setup = /PGRST205|42P01|schema cache|does not exist/i.test(raw);
+      pane.innerHTML = `${head}<div class="form-alert show warn">${t(setup ? "panel.chr.setup" : "panel.actFail")}</div>`;
+      pane.onclick = (e) => onChannelReportClick(e, pane, []);
+      return;
+    }
+    const groups = [];
+    const byKey = new Map();
+    (Array.isArray(res.data) ? res.data : []).forEach((r) => {
+      const key = chrKey(r);
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, package_name: r.package_name, channel_name: r.channel_name, group_name: r.group_name, logo_url: r.logo_url, stream_url: r.stream_url, channel_id: r.channel_id, items: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      g.items.push(r);
+      if (!g.logo_url && r.logo_url) g.logo_url = r.logo_url;
+      if (!g.stream_url && r.stream_url) g.stream_url = r.stream_url;
+    });
+    const P = window.CineAuraChannels;
+    const reasonText = (r) => t(`chan.rpt.${r}`);
+    const statusOf = (g) => (g.items.some((x) => x.status === "open") ? "open" : g.items.every((x) => x.status === "dismissed") ? "dismissed" : "resolved");
+    const card = (g, i) => {
+      const status = statusOf(g);
+      const counts = {};
+      g.items.forEach((x) => { counts[x.reason] = (counts[x.reason] || 0) + 1; });
+      const reasons = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      return `
+        <article class="crp-card ${status}" data-crp="${i}">
+          <div class="crp-top">
+            ${P ? P.logoHtml(g, "crp-logo") : ""}
+            <div class="crp-title">
+              <h3>${escapeHtml(g.channel_name)}</h3>
+              <p>${t("panel.chr.package")}: <strong>${escapeHtml(g.package_name)}</strong>${g.group_name ? ` · ${escapeHtml(g.group_name)}` : ""}</p>
+              <p>${t("panel.chr.last", { date: escapeHtml(fmtWhen(g.items[0].reported_at)) })}</p>
+            </div>
+            <span class="crp-count">${t("panel.chr.reports", { n: g.items.length })}</span>
+          </div>
+          <div class="crp-tags">
+            <span class="crp-tag st-${status}">${t(`panel.chr.st.${status}`)}</span>
+            ${reasons.map(([r, n]) => `<span class="crp-tag">${escapeHtml(reasonText(r))} × ${n}</span>`).join("")}
+          </div>
+          <div class="crp-url" title="${escapeHtml(g.stream_url || "")}">${escapeHtml(g.stream_url || t("panel.chr.noUrl"))}</div>
+          <details class="crp-details">
+            <summary>${t("panel.chr.reporters")} (${g.items.length})</summary>
+            <ul class="crp-items">${g.items.map((x) => `
+              <li class="crp-item">
+                <strong>${escapeHtml(x.reporter_name ? `@${x.reporter_name}` : x.reporter_id)}</strong>
+                <span class="muted">${x.reporter_name ? ` · ${escapeHtml(x.reporter_id)}` : ""} · ${escapeHtml(reasonText(x.reason))} · ${escapeHtml(fmtWhen(x.reported_at))} · ${t(`panel.chr.st.${x.status}`)}</span>
+                ${x.note ? `<p>${escapeHtml(x.note)}</p>` : ""}
+                ${x.error_detail ? `<code>${t("panel.chr.error")}: ${escapeHtml(x.error_detail)}</code>` : ""}
+                ${x.handled_by && x.status !== "open" ? `<p class="muted">${escapeHtml(x.handled_by)} · ${escapeHtml(fmtWhen(x.handled_at))}</p>` : ""}
+              </li>`).join("")}
+            </ul>
+          </details>
+          <div class="crp-actions">
+            ${P ? `<button class="btn btn-sm btn-ghost" type="button" data-crp-test>${t("panel.chr.test")}</button>` : ""}
+            ${status === "open" ? `
+              <button class="btn btn-sm btn-primary" type="button" data-crp-set="resolved">${t("panel.chr.fixed")}</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-crp-set="dismissed">${t("panel.chr.dismiss")}</button>
+              <button class="btn btn-sm btn-danger" type="button" data-crp-remove>${t("panel.chr.remove")}</button>` : `
+              <button class="btn btn-sm btn-ghost" type="button" data-crp-set="open">${t("panel.chr.reopen")}</button>`}
+            <button class="btn btn-sm btn-danger" type="button" data-crp-delete>${t("panel.chr.delete")}</button>
+          </div>
+        </article>`;
+    };
+    pane.innerHTML = `${head}<div class="crp-list">${groups.map(card).join("") || `<p class="empty">${t("panel.chr.none")}</p>`}</div>`;
+    pane.onclick = (e) => onChannelReportClick(e, pane, groups);
+  }
+
+  async function onChannelReportClick(e, pane, groups) {
+    const f = e.target.closest("[data-chr-filter]");
+    if (f) {
+      state.chrFilter = f.dataset.chrFilter;
+      viewChannelReports(pane);
+      return;
+    }
+    const btn = e.target.closest("[data-crp-test], [data-crp-set], [data-crp-remove], [data-crp-delete]");
+    const g = btn && groups[Number(btn.closest("[data-crp]")?.dataset.crp)];
+    if (!g) return;
+    const ids = (list) => list.map((x) => Number(x.id)).filter(Boolean).join(",");
+    const stamp = () => ({ handled_by: state.staff?.username || roleLabel(state.staff?.role) || "", handled_at: new Date().toISOString() });
+    const done = (msg) => {
+      toast(msg);
+      viewChannelReports(pane).then(refreshChannelReportCount);
+    };
+    if (btn.hasAttribute("data-crp-test")) {
+      btn.disabled = true;
+      const [row, acc] = await Promise.all([
+        supabaseRequest(`/rest/v1/listchannels?package_name=eq.${restValue(g.package_name)}&channel_name=eq.${restValue(g.channel_name)}&select=*&limit=1`),
+        supabaseRequest(`/rest/v1/iptv?name=eq.${restValue(g.package_name)}&select=*`),
+      ]).catch(() => [{}, {}]);
+      btn.disabled = false;
+      const live = row?.ok && Array.isArray(row.data) ? row.data[0] : null;
+      const channel = live || { id: g.channel_id, package_name: g.package_name, channel_name: g.channel_name, group_name: g.group_name, logo_url: g.logo_url, channel_type: "live", stream_url: g.stream_url };
+      if (!channel.stream_url && g.stream_url) channel.stream_url = g.stream_url;
+      window.CineAuraChannels.open([channel], 0, { report: false, accounts: acc?.ok && Array.isArray(acc.data) ? acc.data : undefined });
+      return;
+    }
+    if (btn.hasAttribute("data-crp-set")) {
+      const status = btn.dataset.crpSet;
+      const items = status === "open" ? g.items.filter((x) => x.status !== "open") : g.items.filter((x) => x.status === "open");
+      if (!items.length) return;
+      const body = status === "open" ? { status, handled_by: "", handled_at: null } : { status, ...stamp() };
+      const r = await supabaseRequest(`/rest/v1/channel_reports?id=in.(${ids(items)})`, { method: "PATCH", body: JSON.stringify(body) });
+      if (!r.ok) return toast(t("panel.actFail"));
+      done(t("panel.chr.updated"));
+      return;
+    }
+    if (btn.hasAttribute("data-crp-remove")) {
+      if (!confirm(t("panel.chr.removeAsk", { name: g.channel_name, pkg: g.package_name }))) return;
+      const del = await supabaseRequest(
+        `/rest/v1/listchannels?package_name=eq.${restValue(g.package_name)}&channel_name=eq.${restValue(g.channel_name)}`,
+        { method: "DELETE" }
+      );
+      if (!del.ok) return toast(t("panel.actFail"));
+      const open = g.items.filter((x) => x.status === "open");
+      if (open.length) {
+        await supabaseRequest(`/rest/v1/channel_reports?id=in.(${ids(open)})`, { method: "PATCH", body: JSON.stringify({ status: "resolved", ...stamp() }) });
+      }
+      done(t("panel.chr.removed"));
+      return;
+    }
+    if (btn.hasAttribute("data-crp-delete")) {
+      if (!confirm(t("panel.chr.deleteAsk"))) return;
+      const r = await supabaseRequest(`/rest/v1/channel_reports?id=in.(${ids(g.items)})`, { method: "DELETE" });
+      if (!r.ok) return toast(t("panel.actFail"));
+      done(t("panel.chr.deleted"));
+    }
   }
 
   // Prizes: three tabs (add / manage / statistics) live in js/panel-prizes.js.
@@ -1199,35 +1381,7 @@
   }
 
   // ---------- M3U import -> public.listchannels ----------
-  function parseM3U(text) {
-    const out = [];
-    let cur = null;
-    String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).forEach((raw) => {
-      const line = raw.trim();
-      if (!line) return;
-      if (/^#EXTINF/i.test(line)) {
-        const attrs = {};
-        const stripped = line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ""; });
-        const name = stripped.slice(stripped.indexOf(",") + 1).trim() || attrs["tvg-name"] || "";
-        cur = { name, group: (attrs["group-title"] || "").trim() || "General", logo: attrs["tvg-logo"] || "" };
-      } else if (/^#EXTGRP:/i.test(line) && cur) {
-        cur.group = line.slice(8).trim() || cur.group;
-      } else if (!line.startsWith("#")) {
-        if (cur && cur.name) {
-          const u = line.toLowerCase();
-          const type = u.includes("/movie/") ? "movie" : u.includes("/series/") ? "series" : "live";
-          // "Animation;Kids;Religious" => the channel is added once inside each of those groups.
-          const groups = [...new Set(cur.group.split(";").map((g) => g.trim()).filter(Boolean))];
-          (groups.length ? groups : ["General"]).forEach((g) => {
-            out.push({ channel_name: cur.name.slice(0, 200), group_name: g.slice(0, 120), logo_url: /^https?:\/\//i.test(cur.logo) ? cur.logo : "", channel_type: type });
-          });
-        }
-        cur = null;
-      }
-    });
-    return out;
-  }
-
+  // The parser lives in js/common.js (CineAura.parseM3U): the channel player uses it too.
   async function readM3uText({ url, file }) {
     if (file) {
       if (file.size > 30 * 1024 * 1024) throw new Error("too large");
@@ -1246,14 +1400,22 @@
   async function importChannels(pkg, source, replace) {
     let text;
     try { text = await readM3uText(source); } catch { toast(t("panel.iptv.impFail")); return 0; }
-    const rows = parseM3U(text).slice(0, 20000).map((r) => ({ package_name: pkg, ...r }));
+    let rows = window.CineAura.parseM3U(text).slice(0, 20000).map((r) => ({ package_name: pkg, ...r }));
     if (!rows.length) { toast(t("panel.iptv.impEmpty")); return 0; }
     if (replace) await supabaseRequest(`/rest/v1/listchannels?package_name=eq.${encodeURIComponent(pkg)}`, { method: "DELETE" });
+    let noStreamColumn = false;
     for (let i = 0; i < rows.length; i += 500) {
-      const r = await supabaseRequest("/rest/v1/listchannels", { method: "POST", body: JSON.stringify(rows.slice(i, i + 500)) });
+      let r = await supabaseRequest("/rest/v1/listchannels", { method: "POST", body: JSON.stringify(rows.slice(i, i + 500)) });
+      // A database without sql/channels.sql has no stream_url column: keep the
+      // import working without the links, and say how to get them.
+      if (!r.ok && !noStreamColumn && /PGRST204|stream_url|schema cache/i.test(JSON.stringify(r.data || {}))) {
+        noStreamColumn = true;
+        rows = rows.map(({ stream_url, ...rest }) => rest);
+        r = await supabaseRequest("/rest/v1/listchannels", { method: "POST", body: JSON.stringify(rows.slice(i, i + 500)) });
+      }
       if (!r.ok) { toast(t("panel.actFail")); return i; }
     }
-    toast(t("panel.iptv.imported", { n: rows.length }));
+    toast(t(noStreamColumn ? "panel.iptv.noStreamCol" : "panel.iptv.imported", { n: rows.length }));
     return rows.length;
   }
 
