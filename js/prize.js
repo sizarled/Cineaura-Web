@@ -700,9 +700,9 @@
       const sub = e.target.closest("[data-sub-mode]");
       if (sub) return subscribeMode(p, modesOf(p).find((row) => modeKey(row) === sub.dataset.subMode));
       const claim = e.target.closest("[data-claim-challenge]");
-      if (claim) return claimChallenge(p, modesOf(p).find((row) => String(row.id) === String(claim.dataset.claimChallenge)));
+      if (claim) return claimChallenge(p, modeOfEntry(p, claim.dataset.claimChallenge));
       const request = e.target.closest("[data-request-claim]");
-      if (request) return requestPrizeClaim(p, modesOf(p).find((row) => String(row.id) === String(request.dataset.requestClaim)));
+      if (request) return requestPrizeClaim(p, modeOfEntry(p, request.dataset.requestClaim));
       const coupon = e.target.closest("[data-coupon-apply]");
       if (coupon) return applyCoupon(p, modesOf(p).find((row) => modeKey(row) === coupon.dataset.couponApply), coupon.parentElement.querySelector("[data-coupon-input]")?.value);
       const withdrawButton = e.target.closest("[data-withdraw]");
@@ -862,6 +862,9 @@
     return Boolean(id && e && String(e.member_id || "").toLowerCase() === String(id).toLowerCase());
   };
   const myEntry = (p, m) => entriesOf(p, m).find(isMine) || null;
+  // "Claim prize" / "Confirm my win" carry the id of the member's entry: the mode
+  // is the one that entry belongs to (an entry id is not a mode id).
+  const modeOfEntry = (p, entryId) => modesOf(p).find((m) => String(myEntry(p, m)?.id ?? "") === String(entryId)) || null;
   const statusLabel = (e) => {
     const s = String(e?.status || "competitor").toLowerCase();
     return ["winner", "excluded", "withdrawn"].includes(s) ? t(`prize.status.${s}`) : t("prize.status.competitor");
@@ -1385,9 +1388,9 @@
         const sub = e.target.closest("[data-sub-mode]");
         if (sub) return subscribeMode(cur, modesOf(cur).find((x) => modeKey(x) === sub.dataset.subMode));
         const claim = e.target.closest("[data-claim-challenge]");
-        if (claim) return claimChallenge(cur, modesOf(cur).find((x) => String(x.id) === String(claim.dataset.claimChallenge)));
+        if (claim) return claimChallenge(cur, modeOfEntry(cur, claim.dataset.claimChallenge));
         const request = e.target.closest("[data-request-claim]");
-        if (request) return requestPrizeClaim(cur, modesOf(cur).find((x) => String(x.id) === String(request.dataset.requestClaim)));
+        if (request) return requestPrizeClaim(cur, modeOfEntry(cur, request.dataset.requestClaim));
         const cp = e.target.closest("[data-coupon-apply]");
         if (cp) return applyCoupon(cur, modesOf(cur).find((x) => modeKey(x) === cp.dataset.couponApply), cp.parentElement.querySelector("[data-coupon-input]")?.value);
         const wd = e.target.closest("[data-withdraw]");
