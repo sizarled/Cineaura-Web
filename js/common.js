@@ -850,12 +850,170 @@
     unknown: "This code cannot be used right now.",
   };
 
+  /* ---------- One device per code ----------
+     Every browser gets a MAC-style address of its own, created once and kept
+     in it (a web page can never read the real MAC address of a machine). The
+     database links a code to the device that uses it and refuses the code on
+     any other device until its owner unlinks it in Dashboard > Codes
+     (sql/code_devices.sql). The address is "locally administered" (02, 06, 0A,
+     0E… as first byte), the range set aside for addresses that are not burnt
+     into a network card, so it can never be mistaken for a real one. */
+  const DEVICE_KEY = "cineaura_device_mac";
+  const MAC_RE = /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/;
+
+  function deviceMac() {
+    let mac = "";
+    try {
+      mac = String(localStorage.getItem(DEVICE_KEY) || "");
+    } catch {
+      /* storage unavailable */
+    }
+    if (MAC_RE.test(mac)) return mac;
+    if (deviceMac.memo) return deviceMac.memo;
+    const bytes = new Uint8Array(6);
+    if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < 6; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    bytes[0] = (bytes[0] & 0xfc) | 0x02; // locally administered, unicast
+    mac = [...bytes].map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":");
+    deviceMac.memo = mac; // the same address for this page even if storage refuses it
+    try {
+      localStorage.setItem(DEVICE_KEY, mac);
+    } catch {
+      /* storage unavailable */
+    }
+    return mac;
+  }
+
+  // "Chrome · Windows": helps the owner recognise a linked device in the dashboard
+  function deviceName() {
+    const ua = String(navigator.userAgent || "");
+    let os = "";
+    if (/SmartTV|SMART-TV|Tizen|Web0S|webOS|BRAVIA|AFT[A-Z]|Android TV|GoogleTV|CrKey/i.test(ua)) os = "TV";
+    else if (/Windows/i.test(ua)) os = "Windows";
+    else if (/Android/i.test(ua)) os = "Android";
+    else if (/iPhone|iPod/i.test(ua)) os = "iPhone";
+    else if (/iPad/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) os = "iPad";
+    else if (/Mac OS X|Macintosh/i.test(ua)) os = "macOS";
+    else if (/CrOS/i.test(ua)) os = "ChromeOS";
+    else if (/Linux/i.test(ua)) os = "Linux";
+    let browser = "";
+    if (/Edg(e|A|iOS)?\//.test(ua)) browser = "Edge";
+    else if (/OPR\/|Opera/.test(ua)) browser = "Opera";
+    else if (/SamsungBrowser/.test(ua)) browser = "Samsung Internet";
+    else if (/Firefox\/|FxiOS/.test(ua)) browser = "Firefox";
+    else if (/Chrome\/|CriOS/.test(ua)) browser = "Chrome";
+    else if (/Safari\//.test(ua)) browser = "Safari";
+    return [browser, os].filter(Boolean).join(" · ") || "Browser";
+  }
+
+  // The public IP, asked once per page and never stored. The database prefers
+  // the address the API gateway saw; this is only its fallback.
+  let ipPromise = null;
+  function publicIp() {
+    if (ipPromise) return ipPromise;
+    const readers = [
+      ["https://api.ipify.org?format=json", (x) => JSON.parse(x).ip],
+      ["https://api64.ipify.org?format=json", (x) => JSON.parse(x).ip],
+      ["https://ipv4.icanhazip.com/", (x) => x.trim()],
+      ["https://ipwho.is/", (x) => JSON.parse(x).ip],
+    ];
+    ipPromise = (async () => {
+      for (const [url, read] of readers) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 4000);
+        try {
+          const r = await fetch(url, { cache: "no-store", signal: ctl.signal });
+          if (!r.ok) continue;
+          const ip = String(read(await r.text()) || "").trim();
+          if (ip && /^[0-9a-fA-F.:]+$/.test(ip)) return ip;
+        } catch {
+          /* try the next service */
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      ipPromise = null; // try again next time
+      return "";
+    })();
+    return ipPromise;
+  }
+
+  // A MAC (or the end of one) inside a sentence: kept left to right in Arabic
+  const ltr = (text) => `\u2066${text}\u2069`;
+  const maskedMac = (tail) => ltr(`••:••:••:••:${String(tail || "••:••")}`);
+
+  function codeFailure(reason, data, options, code) {
+    const silent = Boolean(options.silent);
+    const vars = { code: ltr(code) };
+    if (reason === "age") {
+      const required = Number(options.requiredAge || 0);
+      const gate = ageGate(data?.age_rating, required);
+      const ageVars = { have: t(gate.tier.label), need: t(gate.need.label), cert: String(options.cert || ""), age: required };
+      return {
+        ok: false,
+        reason: "age",
+        message: ageVars.cert ? t("code.ageBlockedCert", ageVars) : t("code.ageBlocked", ageVars),
+        tier: gate.tier.id,
+        need: gate.need.id,
+        row: data,
+      };
+    }
+    let message;
+    if (reason === "other_device") {
+      message = silent ? t("code.savedOther", vars) : t("code.otherDevice", { mac: maskedMac(data?.device_tail) });
+    } else if (reason === "unlinked") {
+      message = t("code.savedUnlinked", vars);
+    } else if (reason === "not_found") {
+      message = silent ? t("code.savedGone", vars) : t("code.not_found");
+    } else if (reason === "device") {
+      message = t("code.error");
+    } else {
+      message = t(`code.${reason}`) !== `code.${reason}` ? t(`code.${reason}`) : t("code.unknown");
+    }
+    return { ok: false, reason: reason || "unknown", message, row: data };
+  }
+
+  /* Checks a watch code for this device.
+       options.requiredAge / options.cert  the title's age rating
+       options.silent                      the code remembered on this device (not
+                                           typed): it only works while it is still
+                                           linked to this device
+     Typing a code links it to this device (the code this device used before is
+     set free). Without sql/code_devices.sql the code is read directly, as before. */
   async function verifyCode(code, options = {}) {
     const clean = String(code || "").replace(/\D/g, "");
     if (!/^\d{6}$/.test(clean)) {
       return { ok: false, reason: "invalid", message: t("code.invalid") };
     }
+    const args = {
+      p_code: clean,
+      p_mac: deviceMac(),
+      p_name: deviceName(),
+      p_ip: "",
+      p_age: Math.max(0, Math.round(Number(options.requiredAge || 0))),
+      p_silent: Boolean(options.silent),
+    };
+    let res;
+    try {
+      res = await rpc("code_use", args);
+    } catch {
+      return { ok: false, reason: "error", message: t("code.error") };
+    }
+    if (res.status === 404 || res.data?.code === "PGRST202") return verifyCodeDirect(clean, options);
+    const data = res.ok && res.data && typeof res.data === "object" ? res.data : null;
+    if (!data) return { ok: false, reason: "error", message: t("code.error") };
+    if (!data.ok) return codeFailure(data.reason, data, options, clean);
+    // the gateway did not pass the address on: the browser looks it up itself
+    if (!data.ip) {
+      publicIp().then((ip) => {
+        if (ip) rpc("code_use", { ...args, p_ip: ip, p_silent: true }).catch(() => {});
+      });
+    }
+    return { ok: true, reason: "active", message: t("code.active"), row: data, linked: Boolean(data.linked) };
+  }
 
+  // The code read straight from the table (a database without code_devices.sql).
+  async function verifyCodeDirect(clean, options = {}) {
     const url = `${SUPABASE_URL}/rest/v1/codes?code=eq.${encodeURIComponent(clean)}&select=*`;
     let res;
     try {
@@ -880,7 +1038,7 @@
 
     const rows = await res.json();
     if (!Array.isArray(rows) || !rows.length) {
-      return { ok: false, reason: "not_found", message: t("code.not_found") };
+      return codeFailure("not_found", null, options, clean);
     }
 
     const row = rows[0];
@@ -892,34 +1050,13 @@
     if (status === "active") {
       // The code works, but does it reach this title's age rating?
       const required = Number(options.requiredAge || 0);
-      if (required > 0) {
-        const gate = ageGate(row.age_rating, required);
-        if (!gate.allowed) {
-          const vars = {
-            have: t(gate.tier.label),
-            need: t(gate.need.label),
-            cert: String(options.cert || ""),
-            age: required,
-          };
-          return {
-            ok: false,
-            reason: "age",
-            message: vars.cert ? t("code.ageBlockedCert", vars) : t("code.ageBlocked", vars),
-            tier: gate.tier.id,
-            need: gate.need.id,
-            row,
-          };
-        }
+      if (required > 0 && !ageGate(row.age_rating, required).allowed) {
+        return codeFailure("age", row, options, clean);
       }
       return { ok: true, reason: "active", message: t("code.active"), row };
     }
 
-    return {
-      ok: false,
-      reason: status,
-      message: t(`code.${status}`) !== `code.${status}` ? t(`code.${status}`) : t("code.unknown"),
-      row,
-    };
+    return codeFailure(status, row, options, clean);
   }
 
   function getStoredCode() {
@@ -3183,6 +3320,9 @@
     photo,
     tmdb,
     verifyCode,
+    deviceMac,
+    deviceName,
+    publicIp,
     AGE_TIERS,
     AGE_UNKNOWN,
     AGE_GATE_MIN,

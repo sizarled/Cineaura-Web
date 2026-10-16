@@ -227,6 +227,110 @@ body.page-inner {
   display: none;
 }
 
+/* "Remember the code": ticked, the code is kept on this device */
+.gate-remember {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-align: start;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gate-remember:hover {
+  border-color: var(--cyan);
+}
+
+.gate-remember input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--cyan);
+  cursor: pointer;
+}
+
+.gate-remember b {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.gate-remember small {
+  display: block;
+  margin-top: 1px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* One device per code: the address of this device, under the buttons */
+.gate-device {
+  margin: 12px 0 0 !important;
+  font-size: 11.5px !important;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.gate-device:empty {
+  display: none;
+}
+
+/* The link the play button starts, above it */
+.play-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 48px));
+  padding: 6px 12px 6px 6px;
+  border-radius: 999px;
+  background: rgba(4, 12, 20, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #f4fbff;
+  font-size: 13.5px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+}
+
+[dir="rtl"] .play-source {
+  padding: 6px 6px 6px 12px;
+}
+
+.play-source[hidden] {
+  display: none;
+}
+
+.play-source img {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #fff;
+}
+
+.play-source span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.play-source em {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.14);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .chip-age {
   border-color: var(--cyan);
   color: var(--cyan);
