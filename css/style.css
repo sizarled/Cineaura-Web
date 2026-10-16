@@ -2570,9 +2570,114 @@ html.sset-lock {
 }
 .pt-foot b { color: var(--text); font-variant-numeric: tabular-nums; }
 
+/* Level (LV0 … LV Max) at the top of a points box, then the tables of levels and
+   country rates (sql/point_levels.sql). */
+.pt-level {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.pt-lv-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 58px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--cyan), var(--green));
+  color: #04131f;
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(1, 180, 228, 0.25);
+}
+.pt-lv-main { display: grid; gap: 7px; min-width: 0; }
+.pt-lv-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.pt-lv-top b { font-size: 14.5px; font-weight: 700; color: var(--text); }
+.pt-lv-next { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.pt-lv-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(145, 196, 220, 0.14);
+  overflow: hidden;
+}
+.pt-lv-bar > span {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--cyan), var(--green));
+}
+[dir="rtl"] .pt-lv-bar > span { background: linear-gradient(270deg, var(--cyan), var(--green)); }
+.pt-exact { color: var(--cyan-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.pt-rules {
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.pt-rules > summary {
+  cursor: pointer;
+  color: var(--cyan-2);
+  font-weight: 650;
+  padding: 2px 0;
+}
+.pt-rules-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.pt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.pt-table caption {
+  text-align: start;
+  font-weight: 700;
+  color: var(--text);
+  padding-bottom: 6px;
+}
+.pt-table th,
+.pt-table td {
+  text-align: start;
+  padding: 5px 6px;
+  border-bottom: 1px dashed var(--line);
+  vertical-align: top;
+}
+.pt-table th { color: var(--muted); font-weight: 600; font-size: 11.5px; }
+.pt-table td small { color: var(--muted); font-size: 11px; }
+.pt-table tr.is-you td { background: rgba(1, 180, 228, 0.1); color: var(--text); font-weight: 650; }
+.pt-countries { font-size: 11.5px; line-height: 1.5; word-break: break-word; }
+.pt-table td.pt-rate { white-space: nowrap; }
+.pt-you {
+  display: inline-block;
+  margin-inline-start: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--cyan);
+  color: #04131f;
+  font-size: 10.5px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+.pt-rules-note { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
 @media (max-width: 480px) {
   .pt-src small { font-size: 11.5px; }
   .pt-count, .pt-pts { min-width: 34px; }
+  .pt-lv-badge { min-width: 50px; height: 40px; font-size: 14px; }
 }
 
 /* ── Apps section (home page) ─────────────────────────────────────────── */

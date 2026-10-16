@@ -457,6 +457,7 @@
           <div class="stat ov-accent"><b data-pt="available">…</b><span>${t("points.available")}</span></div>
           <div class="stat"><b data-pt="earned">…</b><span>${t("points.earned")}</span></div>
           <div class="stat"><b data-pt="spent">…</b><span>${t("points.spent")}</span></div>
+          <div class="stat ov-level" data-pt-level hidden><b><bdi dir="ltr" data-pt="level"></bdi></b><span data-pt="mult"></span></div>
         </div>
         <p class="muted" id="ov-points-msg">${t("points.loading")}</p>
         <details class="ov-more" id="ov-points-more" hidden>
@@ -489,6 +490,13 @@
       const el = main.querySelector(`[data-pt="${k}"]`);
       if (el) el.textContent = mp ? String(Number(mp[k] || 0)) : "—";
     });
+    // the level (sql/point_levels.sql): LV0 … LV Max and its watch-points multiplier
+    const lvStat = main.querySelector("[data-pt-level]");
+    if (lvStat && mp?.levels && mp.level) {
+      lvStat.querySelector('[data-pt="level"]').textContent = mp.level.name;
+      lvStat.querySelector('[data-pt="mult"]').textContent = t("points.levelMult", { n: mp.level.multiplier });
+      lvStat.hidden = false;
+    }
     if (mp) {
       main.querySelector("#ov-points-box").innerHTML = C.pointsHtml(mp);
       main.querySelector("#ov-points-more").hidden = false;

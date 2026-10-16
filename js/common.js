@@ -1412,6 +1412,8 @@
     prize_claim_accepted: "notif.claimAccepted",
     prize_claim_rejected: "notif.claimRejected",
     prize_claim_unblocked: "notif.claimUnblocked",
+    // a watched minute took the member to a new level (sql/point_levels.sql); the body is "LV2 · ×2"
+    points_level: "notif.levelUp",
   };
 
   function noteTitle(n) {
@@ -2634,9 +2636,9 @@
   /* ════════════════════════════════════════════════════════════════════
      Points
 
-     A member earns points from six sources, each at its own rate:
+     A member earns points from these sources, each at its own rate:
 
-       1 watch minute — yours or through your link —   = 1 point
+       watch minutes — yours or through your link —  see "Watch rates and levels" below
        5 new members registered through your shared links = 1 point
        500 watch links published (banned links excluded) = 1 point
        10 public or exclusive playlists                = 1 point
@@ -2647,6 +2649,17 @@
      member can spend is what they earned minus what they already spent
      (profiles.points_spent), so the bonus points of a source cannot be spent
      twice and the watch minutes themselves are never destroyed.
+
+     Watch rates and levels (sql/point_levels.sql holds the same tables):
+     one watched minute is worth  level multiplier ÷ minutes of the viewer's country tier.
+       Tier 1  US CA GB                       1 point / 1 minute
+       Tier 2  DE FR NL BE AT CH IE LU SE NO DK FI IS IT ES PT GR MT CY   1 point / 5 minutes
+       Tier 3  SA AE QA KW BH OM PL CZ HU RO BG HR SI SK EE LV LT SG ID MY  1 point / 10 minutes
+       Tier 4  every other country            1 point / 50 minutes
+       LV0 0+ ×1 · LV1 10+ ×1 · LV2 100+ ×2 · LV3 1K+ ×3 … LV9 1B+ ×9 · LV Max 10B+ ×10
+     The level counts every point earned (spending never lowers it). The server credits
+     each minute into profiles.watch_points (watch_minute()); before that file existed a
+     minute was worth 1 point, which is what the minutes give when the column is missing.
      ════════════════════════════════════════════════════════════════════ */
   const POINT_RATES = [
     { key: "minutes", per: 1, src: "points.src.minutes", rate: "points.rate.minutes" },
@@ -2657,6 +2670,61 @@
     { key: "recommendations", per: 50, src: "points.src.recs", rate: "points.rate.recs" },
     { key: "comments", per: 100, src: "points.src.comments", rate: "points.rate.comments" },
   ];
+
+  const WATCH_TIERS = [
+    { tier: 1, minutes: 1, countries: ["US", "CA", "GB"] },
+    {
+      tier: 2,
+      minutes: 5,
+      countries: ["DE", "FR", "NL", "BE", "AT", "CH", "IE", "LU", "SE", "NO", "DK", "FI", "IS", "IT", "ES", "PT", "GR", "MT", "CY"],
+    },
+    {
+      tier: 3,
+      minutes: 10,
+      countries: ["SA", "AE", "QA", "KW", "BH", "OM", "PL", "CZ", "HU", "RO", "BG", "HR", "SI", "SK", "EE", "LV", "LT", "SG", "ID", "MY"],
+    },
+    { tier: 4, minutes: 50, countries: [] }, // every other country
+  ];
+  // Points earned to reach each level: index = level, LV0 … LV Max (10).
+  const POINT_LEVELS = [0, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
+  const LEVEL_MAX = POINT_LEVELS.length - 1;
+
+  function watchTier(cc) {
+    const code = String(cc || "").trim().toUpperCase();
+    return WATCH_TIERS.find((x) => x.countries.includes(code)) || WATCH_TIERS[WATCH_TIERS.length - 1];
+  }
+  function pointLevel(earned) {
+    const n = Math.max(0, Number(earned) || 0);
+    let lv = 0;
+    for (let i = 1; i <= LEVEL_MAX; i += 1) if (n >= POINT_LEVELS[i]) lv = i;
+    return lv;
+  }
+  const levelMultiplier = (lv) => Math.max(1, Math.min(LEVEL_MAX, Number(lv) || 0));
+  const levelName = (lv) => (Number(lv) >= LEVEL_MAX ? "LV Max" : `LV${Math.max(0, Math.floor(Number(lv) || 0))}`);
+  // 10 → "10", 1000 → "1K", 10^10 → "10B": the notation of the levels table, the same in every language.
+  function compactPoints(n) {
+    const v = Number(n) || 0;
+    for (const [div, unit] of [[1e9, "B"], [1e6, "M"], [1e3, "K"]]) {
+      if (v >= div && v % div === 0) return `${v / div}${unit}`;
+    }
+    return String(v);
+  }
+  // Where `earned` points put a member: level, multiplier, the next level and the way to it.
+  function levelInfo(earned) {
+    const have = Math.max(0, Math.floor(Number(earned) || 0));
+    const level = pointLevel(have);
+    const from = POINT_LEVELS[level];
+    const to = level < LEVEL_MAX ? POINT_LEVELS[level + 1] : null;
+    return {
+      level,
+      name: levelName(level),
+      multiplier: levelMultiplier(level),
+      earned: have,
+      from,
+      next: to == null ? null : { level: level + 1, name: levelName(level + 1), at: to, multiplier: levelMultiplier(level + 1) },
+      progress: to == null ? 1 : Math.min(1, Math.max(0, (have - from) / (to - from))),
+    };
+  }
 
   // Total number of rows of a query, read from the content-range header so the
   // rows themselves never travel over the wire.
@@ -2679,6 +2747,8 @@
   async function pointParts(memberId, profile = {}) {
     const id = restValue(memberId);
     const minutes = Number(profile.private_minutes || 0) + Number(profile.public_minutes || 0);
+    // profiles.watch_points (sql/point_levels.sql): null on a database without the column
+    const watchPoints = profile.watch_points == null || profile.watch_points === "" ? null : Number(profile.watch_points);
     const [shares, playlists, recommendations, comments, movieLinks, tvLinks, movieDl, tvDl] =
       await Promise.all([
         countRows(`/rest/v1/post_events?kind=eq.share&network=eq.referral&member_id=eq.${id}&select=id`),
@@ -2694,6 +2764,7 @@
       ]);
     return {
       minutes,
+      watchPoints: Number.isFinite(watchPoints) ? watchPoints : null,
       shares,
       playlists,
       recommendations,
@@ -2704,21 +2775,69 @@
   }
 
   // One row per source: what the member has, the rate, and the points it gives.
+  // Watch minutes give the stored watch points (whole points) once sql/point_levels.sql
+  // is in place, 1 point a minute before.
   function pointBreakdown(parts) {
     return POINT_RATES.map((r) => {
       const count = Number(parts?.[r.key] || 0);
-      return { key: r.key, per: r.per, src: r.src, rate: r.rate, count, points: Math.floor(count / r.per) };
+      const stored = r.key === "minutes" && parts?.watchPoints != null;
+      const points = stored ? Math.floor(Number(parts.watchPoints) + 1e-9) : Math.floor(count / r.per);
+      return { key: r.key, per: r.per, src: r.src, rate: r.rate, count, points };
     });
   }
 
   const pointsEarned = (parts) => pointBreakdown(parts).reduce((sum, r) => sum + r.points, 0);
 
+  // The rate line of the watch row: the viewer's country (the IP country, never the one
+  // picked in Site Settings — the server decides from the same IP) and the member's level.
+  function watchRateText(level, cc) {
+    const lv = level || levelInfo(0);
+    const code = String(cc || "").toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code)) return t("points.rate.watchAny", { n: lv.multiplier, level: lv.name });
+    const tier = watchTier(code);
+    return t("points.rate.watch", {
+      country: countryName(code) || code,
+      tier: tier.tier,
+      min: tier.minutes,
+      n: lv.multiplier,
+      level: lv.name,
+    });
+  }
+
   async function memberPoints(memberId, profile = {}) {
-    const parts = await pointParts(memberId, profile);
+    let prof = profile || {};
+    // Callers that loaded only some columns: read the stored watch points (absent on a
+    // database that never ran sql/point_levels.sql — the minutes count then, as before).
+    if (memberId && !("watch_points" in prof)) {
+      const res = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(memberId)}&select=*`).catch(() => null);
+      const row = res?.ok && Array.isArray(res.data) ? res.data[0] : null;
+      if (row && "watch_points" in row) prof = { ...prof, watch_points: row.watch_points };
+    }
+    const parts = await pointParts(memberId, prof);
     const breakdown = pointBreakdown(parts);
     const earned = breakdown.reduce((sum, r) => sum + r.points, 0);
-    const spent = Math.max(0, Number(profile.points_spent || 0));
-    return { parts, breakdown, earned, spent, available: Math.max(0, earned - spent) };
+    const spent = Math.max(0, Number(prof.points_spent || 0));
+    const levels = parts.watchPoints != null;
+    const level = levelInfo(earned);
+    const country = levels ? readGeo()?.cc || "" : "";
+    if (levels) {
+      const watch = breakdown.find((r) => r.key === "minutes");
+      if (watch) {
+        watch.rateText = watchRateText(level, country);
+        watch.exact = Number(parts.watchPoints);
+      }
+    }
+    return {
+      parts,
+      breakdown,
+      earned,
+      spent,
+      available: Math.max(0, earned - spent),
+      levels,
+      level,
+      country,
+      tier: country ? watchTier(country) : null,
+    };
   }
 
   // Where the spent points went: one row per spend (sql/points.sql, point_spends), newest first.
@@ -2742,28 +2861,93 @@
     return supabaseRequest(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) });
   }
 
-  // The "how you earn points" panel shared by the prize dialog and dashboard.
-  function pointsHtml(mp) {
-    if (!mp) return "";
-    const rows = mp.breakdown
-      .map(
-        (r) => `
-        <li class="pt-row">
+  // One source row of a points list (the watch row carries its own rate line and the
+  // exact watch points, hundredths included).
+  function pointRowHtml(r) {
+    const exact =
+      r.exact != null && Number.isFinite(r.exact)
+        ? `<small class="pt-exact">${escapeHtml(t("points.watchExact", { n: r.exact.toFixed(2) }))}</small>`
+        : "";
+    return `
+        <li class="pt-row${r.key === "minutes" ? " pt-row-watch" : ""}">
           <span class="pt-src">
             <b>${escapeHtml(t(r.src))}</b>
-            <small>${escapeHtml(t(r.rate))}</small>
+            <small>${escapeHtml(r.rateText || t(r.rate))}</small>${exact}
           </span>
           <span class="pt-count">${r.count}</span>
           <span class="pt-pts">+${r.points}</span>
-        </li>`
-      )
-      .join("");
+        </li>`;
+  }
+
+  // The level of a member: badge, multiplier, the way to the next level, and the
+  // tables of levels and country rates. Empty until sql/point_levels.sql is in place.
+  function levelHtml(mp) {
+    if (!mp?.levels || !mp.level) return "";
+    const lv = mp.level;
+    const pct = Math.round(lv.progress * 100);
+    const nextText = lv.next
+      ? t("points.levelNext", { have: lv.earned, need: compactPoints(lv.next.at), level: lv.next.name })
+      : t("points.levelTop");
+    const levelRows = POINT_LEVELS.map((at, i) => {
+      const you = i === lv.level;
+      return `<tr${you ? ' class="is-you" aria-current="true"' : ""}>
+            <td><bdi dir="ltr">${escapeHtml(levelName(i))}</bdi>${you ? ` <span class="pt-you">${escapeHtml(t("points.you"))}</span>` : ""}</td>
+            <td><bdi dir="ltr">${compactPoints(at)}+</bdi>${i === 0 ? ` <small>${escapeHtml(t("points.newAccount"))}</small>` : ""}</td>
+            <td><bdi dir="ltr">×${levelMultiplier(i)}</bdi></td>
+          </tr>`;
+    }).join("");
+    const myTier = mp.tier?.tier || 0;
+    const tierRows = WATCH_TIERS.map((x) => {
+      const you = x.tier === myTier;
+      const where = x.countries.length
+        ? `<bdi dir="ltr">${x.countries.join(", ")}</bdi>`
+        : escapeHtml(t("points.tierOther"));
+      return `<tr${you ? ' class="is-you" aria-current="true"' : ""}>
+            <td>${escapeHtml(t("points.tierN", { n: x.tier }))}${you ? ` <span class="pt-you">${escapeHtml(t("points.you"))}</span>` : ""}</td>
+            <td class="pt-countries">${where}</td>
+            <td class="pt-rate">${escapeHtml(t("points.perMin", { n: x.minutes }))}</td>
+          </tr>`;
+    }).join("");
+    return `
+        <div class="pt-level" data-level="${lv.level}">
+          <span class="pt-lv-badge"><bdi dir="ltr">${escapeHtml(lv.name)}</bdi></span>
+          <div class="pt-lv-main">
+            <div class="pt-lv-top">
+              <b>${escapeHtml(t("points.levelMult", { n: lv.multiplier }))}</b>
+              <span class="pt-lv-next">${escapeHtml(nextText)}</span>
+            </div>
+            <div class="pt-lv-bar" role="progressbar" aria-label="${escapeHtml(nextText)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
+          </div>
+        </div>
+        <details class="pt-rules">
+          <summary>${escapeHtml(t("points.levelsTitle"))}</summary>
+          <div class="pt-rules-grid">
+            <table class="pt-table">
+              <caption>${escapeHtml(t("points.levelsCap"))}</caption>
+              <thead><tr><th scope="col">${escapeHtml(t("points.colLevel"))}</th><th scope="col">${escapeHtml(t("points.colPoints"))}</th><th scope="col">${escapeHtml(t("points.colMult"))}</th></tr></thead>
+              <tbody>${levelRows}</tbody>
+            </table>
+            <table class="pt-table">
+              <caption>${escapeHtml(t("points.tiersCap"))}</caption>
+              <thead><tr><th scope="col">${escapeHtml(t("points.colTier"))}</th><th scope="col">${escapeHtml(t("points.colCountries"))}</th><th scope="col">${escapeHtml(t("points.colRate"))}</th></tr></thead>
+              <tbody>${tierRows}</tbody>
+            </table>
+          </div>
+          <p class="pt-rules-note">${escapeHtml(t("points.levelsNote"))}</p>
+        </details>`;
+  }
+
+  // The "how you earn points" panel shared by the prize dialog and dashboard.
+  function pointsHtml(mp) {
+    if (!mp) return "";
+    const rows = mp.breakdown.map(pointRowHtml).join("");
     return `
       <div class="pt-box">
         <div class="pt-head">
           <span>${escapeHtml(t("points.title"))}</span>
           <b class="pt-total">${mp.available}</b>
         </div>
+        ${levelHtml(mp)}
         <ul class="pt-list">${rows}</ul>
         <div class="pt-foot">
           <span>${escapeHtml(t("points.earned"))} <b>${mp.earned}</b></span>
@@ -3417,6 +3601,16 @@
     pointParts,
     pointBreakdown,
     pointsEarned,
+    WATCH_TIERS,
+    POINT_LEVELS,
+    watchTier,
+    pointLevel,
+    levelMultiplier,
+    levelName,
+    levelInfo,
+    compactPoints,
+    levelHtml,
+    pointRowHtml,
     memberPoints,
     memberSpends,
     rpc,

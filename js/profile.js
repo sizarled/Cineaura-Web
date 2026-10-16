@@ -31,6 +31,8 @@
     translateDom,
     getLocale,
     memberPoints,
+    pointRowHtml,
+    levelHtml,
     memberSpends,
   } = window.CineAura;
 
@@ -3388,19 +3390,7 @@
   }
 
   function pointsEarnedHtml(mp) {
-    return `<ul class="pt-list">${mp.breakdown
-      .map(
-        (r) => `
-        <li class="pt-row">
-          <span class="pt-src">
-            <b>${escapeHtml(t(r.src))}</b>
-            <small>${escapeHtml(t(r.rate))}</small>
-          </span>
-          <span class="pt-count">${r.count}</span>
-          <span class="pt-pts">+${r.points}</span>
-        </li>`
-      )
-      .join("")}</ul>`;
+    return `<ul class="pt-list">${mp.breakdown.map(pointRowHtml).join("")}</ul>`;
   }
 
   async function viewPoints(main) {
@@ -3428,6 +3418,7 @@
       <div class="pts-cols">
         <section class="pt-box">
           <div class="pt-head"><span>${escapeHtml(t("points.earned"))}</span><b class="pt-total">${mp.earned}</b></div>
+          ${levelHtml(mp)}
           <p class="muted pts-sub">${escapeHtml(t("points.earnedFrom"))}</p>
           ${pointsEarnedHtml(mp)}
         </section>

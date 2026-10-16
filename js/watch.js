@@ -441,6 +441,27 @@
     return Boolean($("#player")?.classList.contains("is-playing")) && !state.gated;
   }
 
+  // Watch points (sql/point_levels.sql): the server credits every counted minute at the
+  // rate of the viewer's country times the level of whoever earns — the viewer, and the
+  // member whose link is playing. The IP country found here goes along only for a server
+  // without Cloudflare's country header; the country picked in Site Settings never does.
+  async function creditWatchPoints() {
+    const session = getSession && getSession();
+    const viewer = session?.member_id || state.guestId;
+    if (!state.viewId || !viewer) return;
+    let cc = "";
+    try {
+      cc = (await CineAura.detectGeo()) || "";
+    } catch {
+      cc = "";
+    }
+    const res = await CineAura.rpc("watch_minute", { p_view: state.viewId, p_viewer: viewer, p_country: cc }).catch(() => null);
+    const me = res?.ok ? res.data?.viewer : null;
+    if (me && Number(me.level_after) > Number(me.level)) {
+      toast(t("points.levelUp", { level: CineAura.levelName(me.level_after), n: CineAura.levelMultiplier(me.level_after) }));
+    }
+  }
+
   async function countWatchedMinute() {
     if (!(await adsAllowCounting())) return;
     state.watchMinutes += 1;
@@ -451,6 +472,7 @@
         method: "PATCH",
         body: JSON.stringify({ minutes: state.viewMinutes }),
       });
+      creditWatchPoints();
     }
     const session = getSession && getSession();
     if (session?.member_id) {

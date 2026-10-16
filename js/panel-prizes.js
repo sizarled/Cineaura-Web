@@ -1034,7 +1034,7 @@
 
     // the member's balance now (the server never takes more than this)
     (async () => {
-      const pr = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(c.member_id)}&select=member_id,private_minutes,public_minutes,points_spent`);
+      const pr = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(c.member_id)}&select=*`);
       const mp = await C.memberPoints(c.member_id, rows(pr)[0] || {}).catch(() => null);
       const bal = $w("#pzc-bal");
       if (bal) bal.textContent = mp ? t("pzc.balance", { n: Number(mp.available || 0) }) : "";
