@@ -10,11 +10,14 @@
 -- and the previous code is set free.
 --
 -- A device gets into Dashboard > Codes > Linked devices in two ways:
---   - by itself, the first time a code is entered on it (watch page): with its
---     MAC address, the type "web" (for now the site is the only app) and no
---     name (the name is optional);
+--   - by itself, when a code is entered on it with "Remember the code" ticked
+--     (watch page, premium channels): with its MAC address, the type "web"
+--     (for now the site is the only app) and no name (the name is optional);
 --   - by hand: the owner gives its name (optional), its type (web, computer,
 --     phone, smart TV, tablet) and its MAC address, picks a free code, Link.
+-- A code entered WITHOUT "Remember the code" opens what it was typed for and
+-- links no device (code_use p_link = false): it still can't be used on a device
+-- other than the one it is linked to, if it is linked to one.
 --
 -- In a browser the MAC is an address the site creates and keeps there (a web
 -- page can never read the real MAC address of a machine): clearing the browser
@@ -25,7 +28,7 @@
 -- works while it is still linked to that device: once it was unlinked in the
 -- dashboard, or the device used another code, it has to be typed again.
 --
---   code_use(code, mac, ...)                   the watch page checks (and links) a code
+--   code_use(code, mac, ..., link)             the watch page checks a code (and links it when remembered)
 --   code_link_here(member, code, ...)          Codes > "Use on this device"
 --   code_device_add(member, code, mac, ...)    Linked devices > Add device > Link
 --   code_device_edit(member, code, name, type) Linked devices > Edit
@@ -220,13 +223,18 @@ end $$;
 --            works while it is still linked to this device
 --   p_type   the type of a device seen for the first time: 'web' for the site
 --            (the apps can send theirs); a known device keeps its type
--- Returns {ok: true, linked, ip, freed} or {ok: false, reason}:
+--   p_link   false when "Remember the code" is not ticked: the code is checked
+--            (state, age, another device) but no device is linked to it
+-- Returns {ok: true, linked, kept, ip, freed} or {ok: false, reason}  (kept = the code
+-- is linked to this device now):
 --   invalid | device | not_found | expired | disabled | banned
 --   age (+ age_rating) | other_device (+ device_tail) | unlinked
 drop function if exists public.code_use(text, text, text, text, integer, boolean);
+drop function if exists public.code_use(text, text, text, text, integer, boolean, text);
 create or replace function public.code_use(
   p_code text, p_mac text, p_name text default '', p_ip text default '',
-  p_age integer default 0, p_silent boolean default false, p_type text default 'web')
+  p_age integer default 0, p_silent boolean default false, p_type text default 'web',
+  p_link boolean default true)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   c public.codes;
@@ -260,12 +268,18 @@ begin
   if c.device_mac is null and p_silent and c.device_released_at is not null then
     return jsonb_build_object('ok', false, 'reason', 'unlinked');
   end if;
+  -- "Remember the code" not ticked: the code opens this once, no device is linked
+  if c.device_mac is null and not coalesce(p_link, true) then
+    return jsonb_build_object(
+      'ok', true, 'reason', 'active', 'code', c.code, 'age_rating', c.age_rating, 'expires_at', c.expires_at,
+      'linked', false, 'kept', false, 'ip', true, 'freed', '[]'::jsonb, 'device_type', null);
+  end if;
   fresh := c.device_mac is null;
   freed := public._code_link(c, mac, public._code_ip(p_ip), p_name, true, null, null, coalesce(public._code_type(p_type), 'web'));
   select * into c from public.codes where id = c.id;
   return jsonb_build_object(
     'ok', true, 'reason', 'active', 'code', c.code, 'age_rating', c.age_rating, 'expires_at', c.expires_at,
-    'linked', fresh, 'ip', c.device_ip is not null, 'freed', to_jsonb(freed), 'device_type', c.device_type);
+    'linked', fresh, 'kept', true, 'ip', c.device_ip is not null, 'freed', to_jsonb(freed), 'device_type', c.device_type);
 end $$;
 
 -- ------------------------------------------------------------------ dashboard
@@ -483,8 +497,8 @@ revoke all on function public._code_member(text) from public, anon, authenticate
 revoke all on function public._code_link(public.codes, text, text, text, boolean, text, text, text) from public, anon, authenticated;
 revoke all on function public._codes_device_guard() from public, anon, authenticated;
 
-revoke all on function public.code_use(text, text, text, text, integer, boolean, text) from public, anon, authenticated;
-grant execute on function public.code_use(text, text, text, text, integer, boolean, text) to anon, authenticated;
+revoke all on function public.code_use(text, text, text, text, integer, boolean, text, boolean) from public, anon, authenticated;
+grant execute on function public.code_use(text, text, text, text, integer, boolean, text, boolean) to anon, authenticated;
 revoke all on function public.code_link_here(text, text, text, text, text) from public, anon, authenticated;
 grant execute on function public.code_link_here(text, text, text, text, text) to anon, authenticated;
 revoke all on function public.code_device_add(text, text, text, text, text) from public, anon, authenticated;
