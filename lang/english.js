@@ -2087,4 +2087,24 @@
  /* ── Free channels list ── */
  "No free channels yet.": "No free channels yet.",
  "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.": "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.",
+
+ /* ── App downloads (home page, Panel > Apps) ── */
+ "CineAura on all your screens": "CineAura on all your screens",
+ "Movies, series and live TV on your computer, phone and TV. Download the app for your device.": "Movies, series and live TV on your computer, phone and TV. Download the app for your device.",
+ "Out now": "Out now",
+ "Version {v}": "Version {v}",
+ "Download": "Download",
+ "Download {app} for {os}": "Download {app} for {os}",
+ "Apps": "Apps",
+ "App downloads": "App downloads",
+ "Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon.": "Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon.",
+ "Version": "Version",
+ "Remove link": "Remove link",
+ "Saved. {os} is shown as available on the home page.": "Saved. {os} is shown as available on the home page.",
+ "Link removed. {os} shows Coming soon on the home page.": "Link removed. {os} shows Coming soon on the home page.",
+ "Enter a full link that starts with https:// (or http://), or a file on this site that starts with /.": "Enter a full link that starts with https:// (or http://), or a file on this site that starts with /.",
+ "The version can be at most 20 characters long.": "The version can be at most 20 characters long.",
+ "Your account has no access to the Apps section.": "Your account has no access to the Apps section.",
+ "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.": "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.",
+ "Last change: {who} · {date}": "Last change: {who} · {date}",
 };

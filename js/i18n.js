@@ -850,15 +850,9 @@
     "dash.urlNowHidden": "The link is now hidden from visitors.",
     "dash.urlNowShown": "The link is now visible to visitors.",
     "home.app.kicker": "Get the app",
-    "home.app.h2": "CineAura on your phone",
-    "home.app.p": "Take movies, series and live TV with you — on Android and iPhone.",
     "home.app.f1": "Browse the full catalog and open any title in a tap",
     "home.app.f2": "Watch links, downloads and live IPTV in one place",
     "home.app.f3": "Your playlists, points and prizes stay in sync with the site",
-    "home.app.android": "Get it on",
-    "home.app.androidStore": "Google Play",
-    "home.app.ios": "Download on the",
-    "home.app.iosStore": "App Store",
     "home.app.soon": "Coming soon",
     "home.app.phoneTitle": "Tonight's pick",
     "home.app.phoneBtn": "Play now",
@@ -2382,6 +2376,27 @@
     // ── Free channels list ──
     "chan.freeNone": "No free channels yet.",
     "chan.signinBack": "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.",
+
+    // ── App downloads (home page, Panel > Apps) ──
+    "home.apps.h2": "CineAura on all your screens",
+    "home.apps.p": "Movies, series and live TV on your computer, phone and TV. Download the app for your device.",
+    "home.apps.available": "Out now",
+    "home.apps.version": "Version {v}",
+    "home.apps.download": "Download",
+    "home.apps.downloadFor": "Download {app} for {os}",
+    "panel.nav.apps": "Apps",
+    "panel.apps.title": "App downloads",
+    "panel.apps.lead": "Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon.",
+    "panel.apps.link": "Download link",
+    "panel.apps.version": "Version",
+    "panel.apps.remove": "Remove link",
+    "panel.apps.saved": "Saved. {os} is shown as available on the home page.",
+    "panel.apps.cleared": "Link removed. {os} shows Coming soon on the home page.",
+    "panel.apps.badUrl": "Enter a full link that starts with https:// (or http://), or a file on this site that starts with /.",
+    "panel.apps.badVersion": "The version can be at most 20 characters long.",
+    "panel.apps.forbidden": "Your account has no access to the Apps section.",
+    "panel.apps.noTable": "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.",
+    "panel.apps.changed": "Last change: {who} · {date}",
   };
 
   const dict = {};

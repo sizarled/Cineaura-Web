@@ -1430,3 +1430,23 @@ Times are shown in your time zone. = Gli orari sono mostrati nel tuo fuso orario
 # ── Free channels list ──
 No free channels yet. = Ancora nessun canale gratuito.
 Live channels play for registered CineAura members. Sign in and you will come straight back to this list. = I canali in diretta sono riservati ai membri registrati di CineAura. Accedi e tornerai subito a questo elenco.
+
+# ── App downloads (home page, Panel > Apps) ──
+CineAura on all your screens = CineAura su tutti i tuoi schermi
+Movies, series and live TV on your computer, phone and TV. Download the app for your device. = Film, serie e TV in diretta su computer, telefono e TV. Scarica l'app per il tuo dispositivo.
+Out now = Disponibile
+Version {v} = Versione {v}
+Download = Scarica
+Download {app} for {os} = Scarica {app} per {os}
+Apps = App
+App downloads = Download delle app
+Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon. = Aggiungi il link di download di ogni app. Nella home, una piattaforma con un link appare come disponibile, con la versione e un pulsante Scarica; una piattaforma senza link mostra Prossimamente.
+Version = Versione
+Remove link = Rimuovi link
+Saved. {os} is shown as available on the home page. = Salvato. {os} appare come disponibile nella home.
+Link removed. {os} shows Coming soon on the home page. = Link rimosso. {os} mostra Prossimamente nella home.
+Enter a full link that starts with https:// (or http://), or a file on this site that starts with /. = Inserisci un link completo che inizi con https:// (o http://), oppure un file di questo sito che inizi con /.
+The version can be at most 20 characters long. = La versione può avere al massimo 20 caratteri.
+Your account has no access to the Apps section. = Il tuo account non ha accesso alla sezione App.
+Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads. = Esegui sql/apps.sql in Supabase (dopo prize_secure.sql) per gestire i download delle app.
+Last change: {who} · {date} = Ultima modifica: {who} · {date}

@@ -1430,3 +1430,23 @@ Times are shown in your time zone. = Las horas se muestran en tu zona horaria.
 # ── Free channels list ──
 No free channels yet. = Todavía no hay canales gratis.
 Live channels play for registered CineAura members. Sign in and you will come straight back to this list. = Los canales en directo son para miembros registrados de CineAura. Inicia sesión y volverás directamente a esta lista.
+
+# ── App downloads (home page, Panel > Apps) ──
+CineAura on all your screens = CineAura en todas tus pantallas
+Movies, series and live TV on your computer, phone and TV. Download the app for your device. = Películas, series y TV en directo en tu ordenador, tu móvil y tu TV. Descarga la app para tu dispositivo.
+Out now = Disponible
+Version {v} = Versión {v}
+Download = Descargar
+Download {app} for {os} = Descargar {app} para {os}
+Apps = Apps
+App downloads = Descargas de las apps
+Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon. = Añade el enlace de descarga de cada app. En la página de inicio, una plataforma con enlace aparece como disponible, con su versión y un botón Descargar; una plataforma sin enlace muestra Próximamente.
+Version = Versión
+Remove link = Quitar enlace
+Saved. {os} is shown as available on the home page. = Guardado. {os} aparece como disponible en la página de inicio.
+Link removed. {os} shows Coming soon on the home page. = Enlace quitado. {os} muestra Próximamente en la página de inicio.
+Enter a full link that starts with https:// (or http://), or a file on this site that starts with /. = Introduce un enlace completo que empiece por https:// (o http://), o un archivo de este sitio que empiece por /.
+The version can be at most 20 characters long. = La versión puede tener como máximo 20 caracteres.
+Your account has no access to the Apps section. = Tu cuenta no tiene acceso a la sección Apps.
+Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads. = Ejecuta sql/apps.sql en Supabase (después de prize_secure.sql) para gestionar las descargas de las apps.
+Last change: {who} · {date} = Último cambio: {who} · {date}

@@ -2087,4 +2087,24 @@
  /* ── Free channels list ── */
  "No free channels yet.": "Nog geen gratis kanalen.",
  "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.": "Livekanalen zijn er voor geregistreerde CineAura-leden. Log in en je komt meteen terug bij deze lijst.",
+
+ /* ── App downloads (home page, Panel > Apps) ── */
+ "CineAura on all your screens": "CineAura op al je schermen",
+ "Movies, series and live TV on your computer, phone and TV. Download the app for your device.": "Films, series en live-tv op je computer, telefoon en tv. Download de app voor je apparaat.",
+ "Out now": "Beschikbaar",
+ "Version {v}": "Versie {v}",
+ "Download": "Downloaden",
+ "Download {app} for {os}": "{app} downloaden voor {os}",
+ "Apps": "Apps",
+ "App downloads": "App-downloads",
+ "Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon.": "Voeg de downloadlink van elke app toe. Op de startpagina staat een platform met een link als beschikbaar, met de versie en een downloadknop; een platform zonder link toont Binnenkort.",
+ "Version": "Versie",
+ "Remove link": "Link verwijderen",
+ "Saved. {os} is shown as available on the home page.": "Opgeslagen. {os} staat op de startpagina als beschikbaar.",
+ "Link removed. {os} shows Coming soon on the home page.": "Link verwijderd. {os} toont Binnenkort op de startpagina.",
+ "Enter a full link that starts with https:// (or http://), or a file on this site that starts with /.": "Vul een volledige link in die begint met https:// (of http://), of een bestand op deze site dat begint met /.",
+ "The version can be at most 20 characters long.": "De versie mag hoogstens 20 tekens lang zijn.",
+ "Your account has no access to the Apps section.": "Je account heeft geen toegang tot het onderdeel Apps.",
+ "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.": "Voer sql/apps.sql uit in Supabase (na prize_secure.sql) om de app-downloads te beheren.",
+ "Last change: {who} · {date}": "Laatste wijziging: {who} · {date}",
 };

@@ -2087,4 +2087,24 @@
  /* ── Free channels list ── */
  "No free channels yet.": "Noch keine kostenlosen Sender.",
  "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.": "Live-Sender gibt es für registrierte CineAura-Mitglieder. Nach der Anmeldung geht es direkt zu dieser Liste zurück.",
+
+ /* ── App downloads (home page, Panel > Apps) ── */
+ "CineAura on all your screens": "CineAura auf all Ihren Bildschirmen",
+ "Movies, series and live TV on your computer, phone and TV. Download the app for your device.": "Filme, Serien und Live-TV auf Computer, Smartphone und Fernseher. Laden Sie die App für Ihr Gerät herunter.",
+ "Out now": "Verfügbar",
+ "Version {v}": "Version {v}",
+ "Download": "Herunterladen",
+ "Download {app} for {os}": "{app} für {os} herunterladen",
+ "Apps": "Apps",
+ "App downloads": "App-Downloads",
+ "Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon.": "Fügen Sie den Download-Link jeder App hinzu. Auf der Startseite wird eine Plattform mit Link als verfügbar angezeigt, mit ihrer Version und einem Download-Button; eine Plattform ohne Link zeigt „Demnächst“.",
+ "Version": "Version",
+ "Remove link": "Link entfernen",
+ "Saved. {os} is shown as available on the home page.": "Gespeichert. {os} wird auf der Startseite als verfügbar angezeigt.",
+ "Link removed. {os} shows Coming soon on the home page.": "Link entfernt. {os} zeigt auf der Startseite „Demnächst“.",
+ "Enter a full link that starts with https:// (or http://), or a file on this site that starts with /.": "Geben Sie einen vollständigen Link ein, der mit https:// (oder http://) beginnt, oder eine Datei dieser Website, die mit / beginnt.",
+ "The version can be at most 20 characters long.": "Die Version darf höchstens 20 Zeichen lang sein.",
+ "Your account has no access to the Apps section.": "Ihr Konto hat keinen Zugriff auf den Bereich Apps.",
+ "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.": "Führen Sie sql/apps.sql in Supabase aus (nach prize_secure.sql), um die App-Downloads zu verwalten.",
+ "Last change: {who} · {date}": "Letzte Änderung: {who} · {date}",
 };

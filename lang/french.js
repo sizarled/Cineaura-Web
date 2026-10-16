@@ -2087,4 +2087,24 @@
  /* ── Free channels list ── */
  "No free channels yet.": "Aucune chaîne gratuite pour le moment.",
  "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.": "Les chaînes en direct sont réservées aux membres inscrits de CineAura. Connectez-vous et vous reviendrez directement à cette liste.",
+
+ /* ── App downloads (home page, Panel > Apps) ── */
+ "CineAura on all your screens": "CineAura sur tous vos écrans",
+ "Movies, series and live TV on your computer, phone and TV. Download the app for your device.": "Films, séries et TV en direct sur votre ordinateur, votre téléphone et votre TV. Téléchargez l'application pour votre appareil.",
+ "Out now": "Disponible",
+ "Version {v}": "Version {v}",
+ "Download": "Télécharger",
+ "Download {app} for {os}": "Télécharger {app} pour {os}",
+ "Apps": "Applications",
+ "App downloads": "Téléchargement des applications",
+ "Add the download link of each app. On the home page, a platform with a link is shown as available, with its version and a Download button; a platform without a link shows Coming soon.": "Ajoutez le lien de téléchargement de chaque application. Sur la page d'accueil, une plateforme avec un lien apparaît comme disponible, avec sa version et un bouton Télécharger ; une plateforme sans lien affiche Bientôt.",
+ "Version": "Version",
+ "Remove link": "Supprimer le lien",
+ "Saved. {os} is shown as available on the home page.": "Enregistré. {os} apparaît comme disponible sur la page d'accueil.",
+ "Link removed. {os} shows Coming soon on the home page.": "Lien supprimé. {os} affiche Bientôt sur la page d'accueil.",
+ "Enter a full link that starts with https:// (or http://), or a file on this site that starts with /.": "Saisissez un lien complet qui commence par https:// (ou http://), ou un fichier de ce site qui commence par /.",
+ "The version can be at most 20 characters long.": "La version peut comporter au plus 20 caractères.",
+ "Your account has no access to the Apps section.": "Votre compte n'a pas accès à la section Applications.",
+ "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.": "Exécutez sql/apps.sql dans Supabase (après prize_secure.sql) pour gérer les téléchargements des applications.",
+ "Last change: {who} · {date}": "Dernière modification : {who} · {date}",
 };
