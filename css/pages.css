@@ -2052,6 +2052,46 @@ html[data-theme="day"] .vis-chip.vis-private { color: #c62f35; }
   color: var(--cyan-2);
 }
 
+/* login.html: the signed-in member above the welcome, a link to their profile */
+.success-user {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 16px;
+  padding: 8px 16px 8px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--input-bg, rgba(4, 14, 24, 0.55));
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+html[dir="rtl"] .success-user { padding: 8px 8px 8px 16px; }
+.success-user:hover, .success-user:focus-visible { border-color: var(--cyan); background: rgba(1, 180, 228, 0.08); }
+.success-user img { width: 56px; height: 56px; flex: none; border-radius: 50%; object-fit: cover; border: 2px solid rgba(1, 180, 228, 0.5); }
+.success-who { display: grid; gap: 2px; min-width: 0; }
+.success-who strong { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.success-who small { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--muted); font-size: 13px; }
+.success-go { color: var(--cyan); font-weight: 600; }
+
+/* profile: the level next to the name (sql/point_levels.sql) */
+.prof-lv {
+  display: inline-block;
+  margin-inline-start: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--cyan), var(--green));
+  color: #04131f;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  vertical-align: 4px;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
 .success-card .lead {
   margin-bottom: 18px;
 }

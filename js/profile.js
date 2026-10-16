@@ -155,24 +155,56 @@
           <b class="prof-age">${escapeHtml(accountAgeText(age))}</b>
           <span>${escapeHtml(t("prof.accountAge"))}</span>
         </div>
+        <div class="stat ov-level" data-own-level hidden>
+          <b><bdi dir="ltr" data-lv-name></bdi></b>
+          <span data-lv-mult></span>
+        </div>
       </div>`;
   }
 
-  // The points the signed-in member can spend (earned minus spent), counted once
-  // per page load. The figure in the stats card is filled in when the counts arrive.
+  // The points of the member whose profile this is, counted once per page load:
+  // their level (LV0 … LV Max, sql/point_levels.sql) for every visitor, and for
+  // the owner also the points they can spend (earned minus spent).
+  function hostPoints() {
+    const id = state.hostMember?.member_id;
+    if (!id) return Promise.resolve(null);
+    if (state.hostPointsFor !== id) {
+      state.hostPointsFor = id;
+      state.hostPointsReq = memberPoints(id, state.host || {}).catch(() => null);
+    }
+    return state.hostPointsReq;
+  }
+
+  function paintLevel(mp) {
+    if (!mp?.levels || !mp.level) return;
+    const mult = t("points.levelMult", { n: mp.level.multiplier });
+    document.querySelectorAll("[data-prof-level]").forEach((badge) => {
+      badge.textContent = mp.level.name;
+      badge.title = `${t("points.colLevel")} · ${mult}`;
+      badge.setAttribute("aria-label", `${t("points.colLevel")} ${mp.level.name} · ${mult}`);
+      badge.hidden = false;
+    });
+    const stat = document.querySelector("[data-own-level]");
+    if (stat) {
+      stat.querySelector("[data-lv-name]").textContent = mp.level.name;
+      stat.querySelector("[data-lv-mult]").textContent = mult;
+      stat.hidden = false;
+    }
+  }
+
+  function loadHostLevel() {
+    hostPoints().then((mp) => {
+      if (mp) paintLevel(mp);
+    });
+  }
+
   function loadOwnPoints() {
-    if (!state.isOwner || !state.hostMember?.member_id || state.ownPointsReq) return;
-    state.ownPointsReq = memberPoints(state.hostMember.member_id, state.host || {})
-      .then((mp) => {
-        state.ownPoints = String(mp.available);
-      })
-      .catch(() => {
-        state.ownPoints = "—";
-      })
-      .then(() => {
-        const el = document.querySelector("[data-own-points]");
-        if (el) el.textContent = state.ownPoints;
-      });
+    if (!state.isOwner || !state.hostMember?.member_id) return;
+    hostPoints().then((mp) => {
+      state.ownPoints = mp ? String(mp.available) : "—";
+      const el = document.querySelector("[data-own-points]");
+      if (el) el.textContent = state.ownPoints;
+    });
   }
 
   function avatarOf(p, name) {
@@ -490,7 +522,7 @@
   function renderShell() {
     const sections = navSections();
     const navBtn = (s) =>
-      `<button type="button" data-sec="${s}" class="${state.section===s?"active":""}">${secLabel(s)}</button>`;
+      `<button type="button" data-sec="${s}" class="${state.section===s?"active":""}">${window.CineAura.navIcon(s)}<span>${secLabel(s)}</span></button>`;
     // On somebody else's profile only Home is about that member; the rest of
     // the list is the signed-in member's own account, so it gets a caption.
     const cap = sections.length && !state.isOwner
@@ -688,7 +720,7 @@
       <div class="prof-head">
         ${avatarTag(p, m.username)}
         <div>
-          <h1>${escapeHtml(p.display_name || m.full_name || m.username)}</h1>
+          <h1>${escapeHtml(p.display_name || m.full_name || m.username)} <span class="prof-lv" data-prof-level hidden></span></h1>
           <p class="muted">@${escapeHtml(m.username || "")} · ${escapeHtml(m.member_id || "")}</p>
           <div class="status-row">${statusBadges().map((b) => `<button class="status-badge ${b.kind}" data-status="${b.kind}" title="${t("prof.st.click")}" type="button">${b.label}</button>`).join("")}</div>
           <p>${escapeHtml(p.bio || t("prof.noBio"))}</p>
@@ -715,6 +747,7 @@
       <div id="home-body"></div>`;
     drawOwnerActions();
     if (state.isOwner) loadOwnPoints();
+    loadHostLevel();
     main.querySelectorAll("[data-status]").forEach((b) => { b.onclick = () => openStatusModal(b.dataset.status); });
     main.querySelectorAll("[data-htab]").forEach((b) => {
       b.onclick = () => {

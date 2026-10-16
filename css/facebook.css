@@ -203,6 +203,13 @@ html[data-theme="night"] .form-alert.ok, html:not([data-theme="day"]) .form-aler
 .side-nav button, .side-nav a, .side-lists button, .side-lists a, .prof-side nav button { border-radius: 8px; font-weight: 600; color: var(--text); }
 .side-nav button:hover, .side-nav a:hover, .side-lists button:hover, .side-lists a:hover, .prof-side nav button:hover { background: var(--sub-bg); color: var(--text); }
 .side-nav button.active, .prof-side nav button.active { background: rgba(24, 119, 242, 0.12); color: var(--cyan); }
+/* Menu icons (CineAura.navIcon): the icon, then the label; a count badge goes last */
+.side-nav button, .side-nav a, .prof-side nav button { display: flex; align-items: center; gap: 10px; }
+.side-nav .nav-ico, .prof-side nav .nav-ico { flex: none; width: 18px; height: 18px; opacity: 0.8; }
+.side-nav button.active .nav-ico, .prof-side nav button.active .nav-ico,
+.side-nav button:hover .nav-ico, .side-nav a:hover .nav-ico, .prof-side nav button:hover .nav-ico { opacity: 1; }
+.side-nav button > span, .side-nav a > span:not(.crp-badge), .prof-side nav button > span { min-width: 0; }
+.side-nav .crp-badge { margin-inline-start: auto; }
 .side-label { font-size: 13px; font-weight: 600; color: var(--muted); }
 .table th { font-weight: 600; color: var(--muted); }
 .stat { background: var(--sub-bg); }

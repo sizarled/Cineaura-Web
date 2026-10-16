@@ -271,7 +271,7 @@
             <span>${escapeHtml(me.member_id || "—")}</span>
           </div>
           <nav class="side-nav">
-            ${allowed.map((s) => `<button type="button" data-section="${s}" class="${state.section === s ? "active" : ""}">${t("panel.nav." + s)}</button>`).join("")}
+            ${allowed.map((s) => `<button type="button" data-section="${s}" class="${state.section === s ? "active" : ""}">${window.CineAura.navIcon(s)}<span>${t("panel.nav." + s)}</span></button>`).join("")}
           </nav>
           <button class="btn btn-sm btn-ghost" id="panel-out" type="button" style="margin-top:16px;width:100%">${t("panel.leave")}</button>
         </aside>
@@ -2114,6 +2114,36 @@
     );
     renderShell();
   }
+
+  // Coming back to the Panel (another tab, the browser's Back): the session is
+  // read again, so sections given back by the Super Admin appear at once, and a
+  // staff account that was removed meanwhile returns to the sign-in form.
+  let sessionCheckAt = 0;
+  async function recheckSession(force = false) {
+    if (!state.staff?.token || !document.querySelector("#panel-root .dash-layout")) return;
+    if (!force && Date.now() - sessionCheckAt < 10000) return;
+    sessionCheckAt = Date.now();
+    const res = await window.CineAura.rpc("staff_session", { p_token: state.staff.token }).catch(() => null);
+    if (!res || !res.ok) return; // offline or a server error: keep going
+    const row = res.data;
+    if (!row || !row.id) {
+      clearPanel();
+      toast(t("panel.sessionEnded"));
+      boot();
+      return;
+    }
+    const changed = row.role !== state.staff.role || String(row.sections || "") !== String(state.staff.sections || "");
+    if (!changed) return;
+    setPanel({ ...state.staff, ...row }, Boolean(localStorage.getItem(PANEL_KEY)), state.staff.token);
+    renderShell();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") recheckSession();
+  });
+  window.addEventListener("focus", () => recheckSession());
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted) recheckSession(true);
+  });
 
   async function boot() {
     setupChrome();

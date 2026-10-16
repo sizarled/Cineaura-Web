@@ -276,9 +276,9 @@
           </a>
           <nav class="side-nav">
             ${["overview","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"].map((s) =>
-              `<button type="button" data-section="${s}" class="${state.section===s?"active":""}">${t("dash.nav."+s)}</button>`
+              `<button type="button" data-section="${s}" class="${state.section===s?"active":""}">${C.navIcon(s)}<span>${t("dash.nav."+s)}</span></button>`
             ).join("")}
-            ${state.panelVisible ? `<a href="./Panel.html">${t("nav.panel")}</a>` : ""}
+            ${state.panelVisible ? `<a href="./Panel.html" data-panel-link>${C.navIcon("panel")}<span>${t("nav.panel")}</span></a>` : ""}
           </nav>
           <div class="side-label">${t("dash.side.movies")}</div>
           <div class="side-lists">${listBtns(movies)}</div>
@@ -2804,6 +2804,62 @@
     renderShell();
   });
 
+  // Who sees the Panel link: staff by their member account (staff.member_id) as
+  // the Panel's settings allow (admins / moderators / members; the Super Admin
+  // always), and whoever holds a valid Panel session in this browser — a staff
+  // row without a member id (the Super Admin of sql/panel.sql) or with another one.
+  async function panelSessionRole() {
+    let token = "";
+    try {
+      token = JSON.parse(sessionStorage.getItem("cineaura_panel") || localStorage.getItem("cineaura_panel") || "null")?.token || "";
+    } catch {
+      token = "";
+    }
+    if (!token) return "";
+    const res = await C.rpc("staff_session", { p_token: token }).catch(() => null);
+    return res?.ok && res.data?.role ? String(res.data.role) : "";
+  }
+
+  async function computePanelVisible() {
+    const [staffRes, setRes] = await Promise.all([
+      supabaseRequest(`/rest/v1/staff?member_id=eq.${restValue(state.member.member_id)}&select=role`),
+      supabaseRequest("/rest/v1/panel_settings?id=eq.1&select=*"),
+    ]);
+    let role = (Array.isArray(staffRes.data) && staffRes.data[0]?.role) || "";
+    if (!role) role = await panelSessionRole();
+    const ps = (Array.isArray(setRes.data) && setRes.data[0]) || { show_admin: true, show_moderator: true, show_member: false };
+    return (
+      role === "super" ||
+      (role === "admin" && ps.show_admin !== false) ||
+      (role === "moderator" && ps.show_moderator !== false) ||
+      (!role && ps.show_member === true)
+    );
+  }
+
+  // The menu follows changes made meanwhile (a staff account removed and added
+  // again in the Panel, its settings): checked again when the page comes back
+  // into view, and when the browser restores it from its back/forward cache.
+  let menuCheckAt = 0;
+  async function refreshMenus(force = false) {
+    if (!state.member || !$("#dash-root .side-nav")) return;
+    if (!force && Date.now() - menuCheckAt < 10000) return;
+    menuCheckAt = Date.now();
+    const visible = await computePanelVisible().catch(() => state.panelVisible);
+    if (visible === state.panelVisible) return;
+    state.panelVisible = visible;
+    const nav = $("#dash-root .side-nav");
+    if (!nav) return;
+    nav.querySelector("[data-panel-link]")?.remove();
+    if (visible) nav.insertAdjacentHTML("beforeend", `<a href="./Panel.html" data-panel-link>${C.navIcon("panel")}<span>${t("nav.panel")}</span></a>`);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshMenus();
+  });
+  window.addEventListener("focus", () => refreshMenus());
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted) refreshMenus(true);
+  });
+
   async function boot() {
     setupChrome();
     const route = routeOf(location.hash);
@@ -2836,17 +2892,8 @@
       $("#gate-logout").onclick = () => { logout(); location.href = "./"; };
       return;
     }
-    const staffRes = await supabaseRequest(
-      `/rest/v1/staff?member_id=eq.${restValue(state.member.member_id)}&select=role`
-    );
-    const myRole = staffRes.data?.[0]?.role || "";
-    const setRes = await supabaseRequest("/rest/v1/panel_settings?id=eq.1&select=*");
-    const ps = setRes.data?.[0] || { show_admin: true, show_moderator: true, show_member: false };
-    state.panelVisible =
-      myRole === "super" ||
-      (myRole === "admin" && ps.show_admin !== false) ||
-      (myRole === "moderator" && ps.show_moderator !== false) ||
-      (!myRole && ps.show_member === true);
+    state.panelVisible = await computePanelVisible().catch(() => false);
+    menuCheckAt = Date.now();
     const status = normalizeAccountStatus(state.member.status);
     if (status === "banned") {
       $("#dash-root").innerHTML = gate(

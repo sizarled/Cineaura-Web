@@ -13,6 +13,11 @@
     tmdb,
     imgUrl,
     restValue,
+    getSession,
+    initialsAvatar,
+    primeAvatars,
+    avatarUrlFor,
+    profileHref,
   } = window.CineAura;
 
   const TABLES = ["members", "Members"];
@@ -32,6 +37,40 @@
     return ok ? "./" + next : "";
   }
 
+  // The member's avatar and username above the welcome: a link to their profile.
+  async function paintUser(member) {
+    const link = $("#success-user");
+    const username = String(member?.username || "").replace(/^@/, "");
+    if (!link || !username) return;
+    const img = $("#success-avatar");
+    img.src = initialsAvatar(member.full_name || username);
+    img.alt = `@${username}`;
+    $("#success-handle").textContent = `@${username}`;
+    $("#success-name").textContent = member.full_name || username;
+    link.href = profileHref(username);
+    link.setAttribute("aria-label", `${t("auth.viewProfile")}: @${username}`);
+    link.hidden = false;
+    let name = "";
+    try {
+      const res = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(member.member_id || "")}&select=display_name,avatar_url`);
+      const row = res.ok && Array.isArray(res.data) ? res.data[0] : null;
+      name = String(row?.display_name || "").trim();
+      if (row?.avatar_url) img.src = row.avatar_url;
+      else {
+        await primeAvatars([member.member_id], [username]);
+        const url = avatarUrlFor(member.member_id, username);
+        if (url) img.src = url;
+      }
+    } catch {
+      /* the initials stay */
+    }
+    img.onerror = () => {
+      img.onerror = null;
+      img.src = initialsAvatar(member.full_name || username);
+    };
+    if (name) $("#success-name").textContent = name;
+  }
+
   function showSuccess(member) {
     const target = nextTarget();
     if (target) {
@@ -40,7 +79,8 @@
     }
     $("#login-form").hidden = true;
     $("#success-card").hidden = false;
-    $("#success-lead").textContent = t("auth.signedAs", { name: member.full_name || member.username });
+    $("#success-lead").textContent = t("auth.signedAs", { name: member.full_name || member.username || t("auth.yourAccount") });
+    paintUser(member);
     $("#success-card").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -165,7 +205,7 @@
       input.type = input.type === "password" ? "text" : "password";
     });
     $("#login-form").addEventListener("submit", onSubmit);
-    if (isLoggedIn()) showSuccess({ full_name: "your account", username: "" });
+    if (isLoggedIn()) showSuccess(getSession() || {});
     setVisual();
   }
 
