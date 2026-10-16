@@ -777,6 +777,7 @@
         if (res.ok) {
           const data = await res.json();
           verdict = Boolean(data && data.ok);
+          if (verdict) player().hintRoute(url, data); // the player starts on the way that answered
         }
       }
     } catch {
@@ -996,6 +997,23 @@
     });
   }
 
+  // The player's engine loads the moment a card is pointed at (or soon after
+  // the list appears), so a click starts the channel without that wait.
+  function warmPlayer(root) {
+    const warm = () => {
+      ["pointerover", "touchstart", "focusin"].forEach((type) => root.removeEventListener(type, onIntent, true));
+      player().warm();
+    };
+    const onIntent = (e) => {
+      if (e.target.closest && e.target.closest(".ch-card")) warm();
+    };
+    ["pointerover", "touchstart", "focusin"].forEach((type) => root.addEventListener(type, onIntent, { capture: true, passive: true }));
+    if (!navigator.connection?.saveData) {
+      if ("requestIdleCallback" in window) requestIdleCallback(warm, { timeout: 4000 });
+      else setTimeout(warm, 2500);
+    }
+  }
+
   function bind(root) {
     root.addEventListener("click", (e) => {
       const card = e.target.closest(".ch-card");
@@ -1075,6 +1093,7 @@
     }
     state.loaded = true;
     render();
+    if (state.access === "ok" && state.rows.length) warmPlayer(root);
     openFromAddress();
   });
 })();
