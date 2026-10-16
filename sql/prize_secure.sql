@@ -22,6 +22,8 @@
 -- ORDER: always run this file LAST, and run it again after re-running panel.sql,
 -- prize_center.sql, prize_modes.sql or prize_admin.sql (those files re-create the old
 -- open policies that this file removes). Make sure profile.sql is installed for notifications.
+-- The review of prize claims (Panel > Prizes > Prize claims) lives in prize_claims.sql,
+-- which is run after this file; re-running this file keeps it working.
 --
 -- NOT covered here (needs Supabase Auth, a separate migration): member identity.
 -- Members still sign in with the custom login, so the member RPCs trust the member id
@@ -263,10 +265,12 @@ begin
   select * into m from public.members where member_id = p_member;
   if not found then return 0; end if;
   note_title := case when p_kind = 'prize_win' then 'Prize winner' else 'Prize claim request' end;
+  -- a claim opens Panel > Prizes > Prize claims (sql/prize_claims.sql)
   insert into public.notifications (member_id, kind, title, body, href, from_id, from_username)
   select s.member_id, p_kind, note_title,
          coalesce(nullif(m.username, ''), p_member) || ' · ' || p.title,
-         './Panel.html?section=prizes', p_member, coalesce(m.username, '')
+         case when p_kind = 'prize_claim' then './Panel.html?section=prizes&tab=claims' else './Panel.html?section=prizes' end,
+         p_member, coalesce(m.username, '')
   from public.staff s
   where s.role in ('super', 'admin', 'moderator')
     and coalesce(s.member_id, '') <> ''
@@ -579,9 +583,12 @@ end $$;
 
 -- A selected winner can ask the team to arrange prize fulfillment. Locking the
 -- entry makes this idempotent: repeated clicks produce only one staff alert.
+-- With sql/prize_claims.sql installed, the claim also gets its review row
+-- (Panel > Prizes > Prize claims), and a member whose earlier claim was rejected
+-- with a block cannot claim until the block ends.
 create or replace function public.prize_request_claim(p_member text, p_entry bigint)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare e public.prize_mode_entries;
+declare e public.prize_mode_entries; blocked timestamptz; claims boolean := to_regclass('public.prize_claims') is not null;
 begin
   select * into e from public.prize_mode_entries
   where id = p_entry and member_id = p_member for update;
@@ -590,7 +597,18 @@ begin
   if e.claim_requested_at is not null then
     return jsonb_build_object('ok', true, 'already', true, 'requested_at', e.claim_requested_at);
   end if;
+  if claims then
+    select max(restricted_until) into blocked from public.prize_claims
+    where member_id = p_member and status = 'rejected' and lifted_at is null and restricted_until > now();
+    if blocked is not null then return jsonb_build_object('ok', false, 'error', 'claim_restricted', 'until', blocked); end if;
+  end if;
   update public.prize_mode_entries set claim_requested_at = now() where id = e.id;
+  if claims then
+    insert into public.prize_claims (member_id, prize_id, prize_title, mode, entry_id, points_paid)
+    select p_member, e.prize_id, coalesce((select title from public.prizes where id = e.prize_id), ''),
+           coalesce(e.mode, ''), e.id, coalesce(e.points_paid, 0)
+    on conflict do nothing;
+  end if;
   perform public._notify_prize_staff(e.prize_id, p_member, 'prize_claim');
   return jsonb_build_object('ok', true, 'already', false);
 end $$;
@@ -659,6 +677,8 @@ begin
 end $$;
 
 -- Prizes that have no subscription modes (dashboard "claim"). Prizes with modes are joined with prize_join.
+-- With sql/prize_claims.sql installed: a blocked member cannot claim, a prize whose claim
+-- was rejected cannot be claimed again, and every claim gets its review row.
 create or replace function public.prize_claim_simple(p_member text, p_prize bigint)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
@@ -667,10 +687,21 @@ declare
   pr public.profiles;
   today date := current_date;
   yrs int;
+  wid bigint;
+  blocked timestamptz;
+  claims boolean := to_regclass('public.prize_claims') is not null;
 begin
   select * into pr from public.profiles where member_id = p_member for update;
   select * into m from public.members where member_id = p_member;
   if not found or m.status <> 'active' then return jsonb_build_object('ok', false, 'error', 'inactive'); end if;
+  if claims then
+    select max(restricted_until) into blocked from public.prize_claims
+    where member_id = p_member and status = 'rejected' and lifted_at is null and restricted_until > now();
+    if blocked is not null then return jsonb_build_object('ok', false, 'error', 'claim_restricted', 'until', blocked); end if;
+    if exists (select 1 from public.prize_claims where member_id = p_member and prize_id = p_prize and status = 'rejected') then
+      return jsonb_build_object('ok', false, 'error', 'claim_rejected');
+    end if;
+  end if;
   select * into pz from public.prizes where id = p_prize for update;
   if not found or coalesce(pz.status, 'active') = 'ended' then return jsonb_build_object('ok', false, 'error', 'closed'); end if;
   if exists (select 1 from public.prize_modes where prize_id = p_prize) then return jsonb_build_object('ok', false, 'error', 'use_modes'); end if;
@@ -707,8 +738,14 @@ begin
     return jsonb_build_object('ok', false, 'error', 'points', 'need', pz.minutes_required);
   end if;
   insert into public.winners (prize_title, member_id, minutes_paid, group_name, claim_requested_at)
-  values (pz.title, p_member, coalesce(pz.minutes_required, 0), coalesce(pz.group_name, ''), now());
+  values (pz.title, p_member, coalesce(pz.minutes_required, 0), coalesce(pz.group_name, ''), now())
+  returning id into wid;
   update public.prizes set winners_count = coalesce(winners_count, 0) + 1 where id = p_prize;
+  if claims then
+    insert into public.prize_claims (member_id, prize_id, prize_title, mode, winner_id, points_paid)
+    values (p_member, p_prize, pz.title, 'claim', wid, coalesce(pz.minutes_required, 0))
+    on conflict do nothing;
+  end if;
   perform public._notify_prize_staff(pz.id, p_member, 'prize_claim');
   return jsonb_build_object('ok', true, 'cost', coalesce(pz.minutes_required, 0));
 end $$;
