@@ -2273,22 +2273,19 @@
     setupChrome();
     const wanted = decodeURIComponent(location.hash.replace(/^#/, ""));
     if (SECTIONS.includes(wanted)) state.section = wanted;
+    // signing in brings the member back here, to the section in the address
+    // (dashboard.html#iptv: the premium cards of the home page)
+    const signin = `<a class="btn btn-lg btn-primary" href="./login.html?next=${encodeURIComponent(
+      SECTIONS.includes(wanted) ? `dashboard.html#${wanted}` : "dashboard.html"
+    )}">${t("common.signin")}</a>`;
     state.session = getSession();
     if (!state.session?.member_id) {
-      $("#dash-root").innerHTML = gate(
-        t("dash.gate.title"),
-        t("dash.gate.text"),
-        `<a class="btn btn-lg btn-primary" href="./login.html">${t("common.signin")}</a>`
-      );
+      $("#dash-root").innerHTML = gate(t("dash.gate.title"), t("dash.gate.text"), signin);
       return;
     }
     state.member = await loadMember(state.session.member_id);
     if (!state.member) {
-      $("#dash-root").innerHTML = gate(
-        t("dash.gate.title"),
-        t("dash.loadFail"),
-        `<a class="btn btn-lg btn-primary" href="./login.html">${t("common.signin")}</a>`
-      );
+      $("#dash-root").innerHTML = gate(t("dash.gate.title"), t("dash.loadFail"), signin);
       return;
     }
     const sanRes = await supabaseRequest(
