@@ -743,8 +743,9 @@
     { id: "adult", max: 99, label: "code.ageAdult" },
   ];
   const AGE_UNKNOWN = 13;   // an unclassified title is treated as PG-13 level
-  const AGE_GATE_MIN = 16;  // from this age a title always needs a code
+  const AGE_GATE_MIN = 13;  // a title rated 13+ (13+, 16+, 18+) always needs a code, whatever its score
   const AGE_NO_PREVIEW = 16; // from this age a title plays no preview at all
+  const CODE_SCORE_OVER = 50; // a title scored above 50% on TMDB needs a code
 
   // Certificate -> youngest viewer it allows, across the boards TMDB reports.
   const CERT_AGES = {
@@ -836,6 +837,18 @@
     const tier = ageTier(tierId);
     const need = tierForAge(age);
     return { allowed: tier.max >= Number(age || 0), tier, need };
+  }
+
+  /* When the watch page asks for a code:
+     - the title's TMDB score, the % shown on the page, is above 50 (51% and up), or
+     - the title is rated 13+ (13+, 16+ or 18+), whatever its score.
+     A title with no age rating at all follows its score only; when it asks, it is
+     still treated as 13+ for the code tiers (AGE_UNKNOWN). "Remember the code"
+     opens every one of them without asking again, as long as the code's own age
+     limit reaches the title. */
+  function titleNeedsCode(detail, ageInfo) {
+    if (ratingPercent(detail?.vote_average) > CODE_SCORE_OVER) return true;
+    return Boolean(ageInfo?.known && Number(ageInfo.age || 0) >= AGE_GATE_MIN);
   }
 
   const CODE_MESSAGES = {
@@ -3327,6 +3340,7 @@
     AGE_UNKNOWN,
     AGE_GATE_MIN,
     AGE_NO_PREVIEW,
+    CODE_SCORE_OVER,
     certAge,
     titleCerts,
     titleAge,
@@ -3334,6 +3348,7 @@
     codeAgeTier,
     tierForAge,
     ageGate,
+    titleNeedsCode,
     getStoredCode,
     setStoredCode,
     clearStoredCode,

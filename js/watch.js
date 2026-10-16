@@ -61,7 +61,7 @@
     fetchProviderOffers,
     titleAge,
     tierForAge,
-    AGE_GATE_MIN,
+    titleNeedsCode,
     AGE_NO_PREVIEW,
   } = window.CineAura;
 
@@ -3120,8 +3120,9 @@
     clearCodeLock();
     stopLockTicker();
     setCodeFormEnabled(true);
-    // "Remember the code": kept on this device and not asked again. Without it
-    // the code opens this title only: the next one rated 70+ asks again.
+    // "Remember the code": kept on this device and not asked again, for every
+    // title that needs a code (above 50%, or rated 13+). Without it the code
+    // opens this title only: the next one that needs a code asks again.
     const remember = Boolean($("#code-remember")?.checked);
     if (remember) setStoredCode(code);
     state.storedIssue = "";
@@ -3421,10 +3422,10 @@
           : `/tv/${mediaId}?append_to_response=credits,similar,recommendations,content_ratings`;
       state.detail = await tmdb(path);
       state.ageInfo = titleAge(state.detail, { mediaType });
-      const score = ratingPercent(state.detail.vote_average);
-      // A title rated for older viewers always asks for a code, whatever its
-      // score, so a child's restricted code cannot open it.
-      state.needsCode = score >= 70 || state.ageInfo.age >= AGE_GATE_MIN;
+      // A code is asked for a title scored above 50% on TMDB, and always for a
+      // title rated 13+ (13+, 16+, 18+) whatever its score, so a child's
+      // restricted code cannot open it (titleNeedsCode in common.js).
+      state.needsCode = titleNeedsCode(state.detail, state.ageInfo);
       // the remembered code is only checked (and its device link) where a code is needed
       if (state.needsCode) await restoreCode();
       await loadMySanctions();
