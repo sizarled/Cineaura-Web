@@ -1034,8 +1034,10 @@
        options.silent                      the code remembered on this device (not
                                            typed): it only works while it is still
                                            linked to this device
-     Typing a code links it to this device (the code this device used before is
-     set free). Without sql/code_devices.sql the code is read directly, as before. */
+       options.link                        "Remember the code": only then is the code
+                                           linked to this device (Linked devices; the
+                                           code this device used before is set free)
+     Without sql/code_devices.sql the code is read directly, as before. */
   async function verifyCode(code, options = {}) {
     const clean = String(code || "").replace(/\D/g, "");
     if (!/^\d{6}$/.test(clean)) {
@@ -1049,9 +1051,15 @@
       p_age: Math.max(0, Math.round(Number(options.requiredAge || 0))),
       p_silent: Boolean(options.silent),
     };
+    if (options.link !== undefined) args.p_link = Boolean(options.link);
     let res;
     try {
       res = await rpc("code_use", args);
+      // a database still on the earlier code_devices.sql has no p_link: ask that version
+      if ((res.status === 404 || res.data?.code === "PGRST202") && "p_link" in args) {
+        delete args.p_link;
+        res = await rpc("code_use", args);
+      }
     } catch {
       return { ok: false, reason: "error", message: t("code.error") };
     }
@@ -1065,7 +1073,165 @@
         if (ip) rpc("code_use", { ...args, p_ip: ip, p_silent: true }).catch(() => {});
       });
     }
-    return { ok: true, reason: "active", message: t("code.active"), row: data, linked: Boolean(data.linked) };
+    return { ok: true, reason: "active", message: t("code.active"), row: data, linked: Boolean(data.linked), kept: data.kept !== false };
+  }
+
+  /* Wrong codes typed on this device: 3 in a row lock code entry for 24 hours
+     (watch page, premium channels). localStorage: { fails, until }. */
+  const CODE_LOCK_KEY = "cineaura_code_lockout";
+  const CODE_FAIL_MAX = 3;
+  const CODE_LOCK_MS = 24 * 60 * 60 * 1000;
+
+  function readCodeLock() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CODE_LOCK_KEY) || "null");
+      if (!raw || typeof raw !== "object") return { fails: 0, until: 0 };
+      const until = Number(raw.until) || 0;
+      if (until && until <= Date.now()) return { fails: 0, until: 0 };
+      return { fails: Math.max(0, Number(raw.fails) || 0), until };
+    } catch {
+      return { fails: 0, until: 0 };
+    }
+  }
+
+  function recordFailedCode() {
+    const lock = readCodeLock();
+    if (lock.until > Date.now()) return lock;
+    lock.fails += 1;
+    if (lock.fails >= CODE_FAIL_MAX) {
+      lock.fails = CODE_FAIL_MAX;
+      lock.until = Date.now() + CODE_LOCK_MS;
+    }
+    try {
+      localStorage.setItem(CODE_LOCK_KEY, JSON.stringify(lock));
+    } catch {
+      /* storage blocked */
+    }
+    return lock;
+  }
+
+  function clearCodeLock() {
+    try {
+      localStorage.setItem(CODE_LOCK_KEY, JSON.stringify({ fails: 0, until: 0 }));
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  const codeLockLeft = () => Math.max(0, readCodeLock().until - Date.now());
+
+  /* ---------- Channel lists of the home page: two playlists in Supabase Storage ----------
+     Free channels (Listchannels.html?free=1): IPTV-Free.m3u, played as they are.
+     Premium channels (Listchannels.html?premium=1): IPTV-Premuim.m3u. Its links
+     carry the words Username and Password (http://line.ottcst.net:80/Username/Password/1784957),
+     replaced with the username and password of a premium IPTV account: typed on
+     the page, or found with a watch code (sql/iptv_premium.sql). */
+  const IPTV_LISTS = {
+    free: { key: "free", name: "IPTV-Free", url: "https://mxdsgnlmfpaekgmswjou.supabase.co/storage/v1/object/public/IPTV/IPTV-Free.m3u" },
+    premium: { key: "premium", name: "IPTV-Premium", url: "https://mxdsgnlmfpaekgmswjou.supabase.co/storage/v1/object/public/IPTV/IPTV-Premuim.m3u" },
+  };
+
+  const SLOT_USER = /^username$/i;
+  const SLOT_PASS = /^password$/i;
+
+  // Does this link wait for an account (Username / Password in its path or query)?
+  function hasCredentialSlots(url) {
+    try {
+      const u = new URL(String(url || ""));
+      return u.pathname.split("/").some((seg) => SLOT_USER.test(seg) || SLOT_PASS.test(seg)) ||
+        [...u.searchParams.values()].some((v) => SLOT_USER.test(v) || SLOT_PASS.test(v));
+    } catch {
+      return /\/(username|password)(\/|$)/i.test(String(url || ""));
+    }
+  }
+
+  // http://host:80/Username/Password/1784957 -> the account's own username and password
+  // (path segments, and ?username=Username&password=Password on get.php links)
+  function fillCredentials(url, user, pass) {
+    const raw = String(url || "");
+    if (!raw || !user) return raw;
+    try {
+      const u = new URL(raw);
+      u.pathname = u.pathname
+        .split("/")
+        .map((seg) => (SLOT_USER.test(seg) ? encodeURIComponent(user) : SLOT_PASS.test(seg) ? encodeURIComponent(pass) : seg))
+        .join("/");
+      [...u.searchParams.entries()].forEach(([k, v]) => {
+        if (SLOT_USER.test(v)) u.searchParams.set(k, user);
+        else if (SLOT_PASS.test(v)) u.searchParams.set(k, pass);
+      });
+      return u.href;
+    } catch {
+      return raw.replace(/\/username\//gi, `/${encodeURIComponent(user)}/`).replace(/\/password\//gi, `/${encodeURIComponent(pass)}/`);
+    }
+  }
+
+  // The account typed on the premium list: kept for this visit, and on this device with "Remember".
+  const IPTV_LOGIN_KEY = "cineaura_iptv_login";
+
+  function storedIptvLogin() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(IPTV_LOGIN_KEY) || sessionStorage.getItem(IPTV_LOGIN_KEY) || "null");
+      return raw && raw.user && raw.pass ? { user: String(raw.user), pass: String(raw.pass), remembered: Boolean(localStorage.getItem(IPTV_LOGIN_KEY)) } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function storeIptvLogin(user, pass, remember) {
+    try {
+      const raw = JSON.stringify({ user, pass });
+      sessionStorage.setItem(IPTV_LOGIN_KEY, raw);
+      if (remember) localStorage.setItem(IPTV_LOGIN_KEY, raw);
+      else localStorage.removeItem(IPTV_LOGIN_KEY);
+    } catch {
+      /* storage blocked: it works for this page */
+    }
+  }
+
+  function forgetIptvLogin() {
+    try {
+      localStorage.removeItem(IPTV_LOGIN_KEY);
+      sessionStorage.removeItem(IPTV_LOGIN_KEY);
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  async function premiumCall(name, args) {
+    let res;
+    try {
+      res = await rpc(name, args);
+    } catch {
+      return { ok: false, reason: "error" };
+    }
+    if (res.status === 404 || res.data?.code === "PGRST202") return { ok: false, reason: "setup" };
+    return res.ok && res.data && typeof res.data === "object" ? res.data : { ok: false, reason: "error" };
+  }
+
+  // username + password of a premium IPTV account -> { ok, user, pass } | { ok: false, reason }
+  const premiumLogin = (user, pass) =>
+    premiumCall("iptv_premium_login", { p_user: String(user || "").trim(), p_pass: String(pass || "") });
+
+  // a watch code (or, with none, the code linked to this device) -> the owner's premium account
+  const premiumUnlock = ({ code = "", remember = false, silent = false } = {}) =>
+    premiumCall("iptv_premium_unlock", {
+      p_code: String(code || "").replace(/\D/g, ""),
+      p_mac: deviceMac(),
+      p_name: deviceName(),
+      p_ip: "",
+      p_silent: Boolean(silent),
+      p_type: "web",
+      p_remember: Boolean(remember),
+    });
+
+  // The message of a refused code on the premium list (the watch page's texts, plus its own).
+  function premiumCodeMessage(data, code, silent = false) {
+    const reason = data?.reason || "error";
+    if (reason === "no_premium") return t("iptvp.noPremium");
+    if (reason === "owner_banned") return t("iptvp.ownerBanned");
+    if (reason === "setup") return t("iptvp.setup");
+    return codeFailure(reason, data, { silent }, code).message;
   }
 
   // The code read straight from the table (a database without code_devices.sql).
@@ -2603,6 +2769,42 @@
 
   // Adds a "Hide menu / Show menu" button above the sidebar layout and applies the
   // remembered state. Call it again after every re-render of the layout.
+  /* Icons of the side menus (dashboard, profile, panel): 24x24 line drawings in the
+     colour of the text. navIcon(name) -> <svg>, "" for a name without one. */
+  const NAV_ICONS = {
+    overview: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/>',
+    playlists: '<path d="M4 6h11M4 11h11M4 16h7"/><path d="M15.5 14.5v6l5-3z"/>',
+    links: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
+    reports: '<path d="M5.5 21V4"/><path d="M5.5 4.5h11l-2 4 2 4h-11"/>',
+    codes: '<circle cx="8" cy="15.5" r="4"/><path d="M10.9 12.6L20 3.5M16.5 7l2.5 2.5M14 9.5l2 2"/>',
+    iptv: '<rect x="3" y="6.5" width="18" height="12.5" rx="2"/><path d="M8.5 3l3.5 3.5L15.5 3M9 22h6"/>',
+    views: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+    analytics: '<path d="M3.5 20.5h17"/><path d="M7 17v-5M12 17V6M17 17v-8"/>',
+    prizes: '<rect x="3.5" y="8" width="17" height="4.5" rx="1"/><path d="M5 12.5V20.5h14v-8M12 8v12.5"/><path d="M12 8C10.5 4.5 6.5 4 6.5 6.3S9.5 8 12 8zM12 8c1.5-3.5 5.5-4 5.5-1.7S14.5 8 12 8z"/>',
+    history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5"/><path d="M12 7.5V12l3 2"/>',
+    settings: '<path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h11M19 17.5h1"/><circle cx="15" cy="6.5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17.5" r="2"/>',
+    panel: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/>',
+    home: '<path d="M3.5 11L12 4l8.5 7"/><path d="M5.5 9.5v11h4.5v-6h4v6h4.5v-11"/>',
+    create: '<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="M12 8v8M8 12h8"/>',
+    posts: '<path d="M6.5 3.5h8l4 4v13h-12z"/><path d="M14 3.5V8h4.5M9.5 12.5h6M9.5 16.5h4"/>',
+    points: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+    messages: '<path d="M20.5 12a8 8 0 0 1-11.7 7.1L3.5 20.5l1.4-4.9A8 8 0 1 1 20.5 12z"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/>',
+    following: '<circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5a3.5 3.5 0 0 1 0 7M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>',
+    blocked: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
+    accounts: '<circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+    apps: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
+    staff: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><circle cx="12" cy="10.5" r="2.3"/><path d="M8.3 16.2a4.2 4.2 0 0 1 7.4 0"/>',
+  };
+  NAV_ICONS.notifications = '<path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>';
+
+  function navIcon(name) {
+    const body = NAV_ICONS[name];
+    return body
+      ? `<svg class="nav-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${body}</svg>`
+      : "";
+  }
+
   function mountSideToggle(layout) {
     if (!layout || !layout.querySelector("aside")) return;
     layout.querySelector(":scope > .side-toggle-bar")?.remove();
@@ -3560,6 +3762,21 @@
     photo,
     tmdb,
     verifyCode,
+    readCodeLock,
+    recordFailedCode,
+    clearCodeLock,
+    codeLockLeft,
+    CODE_FAIL_MAX,
+    IPTV_LISTS,
+    hasCredentialSlots,
+    fillCredentials,
+    storedIptvLogin,
+    storeIptvLogin,
+    forgetIptvLogin,
+    premiumLogin,
+    premiumUnlock,
+    premiumCodeMessage,
+    navIcon,
     deviceMac,
     deviceName,
     publicIp,

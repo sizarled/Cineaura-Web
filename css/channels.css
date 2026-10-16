@@ -91,6 +91,54 @@ html[data-theme] .chl-search input,
 .chl-note p { margin: 2px 0 0; font-size: 14px; color: var(--muted); }
 .chl-note.warn { background: rgba(247, 185, 40, 0.12); border-color: rgba(247, 185, 40, 0.45); }
 .chl-note.flash { box-shadow: 0 0 0 3px rgba(24, 119, 242, 0.35); }
+.chl-note.ok { background: rgba(144, 206, 161, 0.12); border-color: rgba(144, 206, 161, 0.45); }
+
+/* Premium list (?premium=1): unlock with an IPTV account or a watch code */
+.chl-unlock { display: block; padding: 16px; }
+.chl-unlock-head { display: flex; align-items: flex-start; gap: 12px; }
+.chl-unlock-ico {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(24, 119, 242, 0.16);
+  color: var(--cyan);
+}
+.chl-unlock-ico svg { width: 18px; height: 18px; }
+.chl-unlock-head a { color: var(--cyan); font-weight: 600; white-space: nowrap; }
+.chl-unlock-ways {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+.chl-way {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--input-bg, rgba(4, 14, 24, 0.55));
+}
+.chl-way h3 { margin: 0; font-size: 14.5px; }
+.chl-way label:not(.check-row) { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
+.chl-way input:not([type="checkbox"]) { width: 100%; min-height: 40px; }
+.chl-way #ul-code { letter-spacing: 0.3em; font-variant-numeric: tabular-nums; text-align: center; font-size: 17px; }
+.chl-way .check-row { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.chl-way .btn { justify-self: start; }
+.chl-way-hint { margin: -4px 0 0; font-size: 12px; }
+.chl-or { display: grid; place-items: center; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; }
+.chl-or span { padding: 6px 2px; }
+.chl-unlock .gate-msg { margin: 12px 0 0; min-height: 1.2em; }
+.chl-unlock-device { margin: 6px 0 0; font-size: 12px; }
+.chl-unlocked p { direction: inherit; }
+@media (max-width: 760px) {
+  .chl-unlock-ways { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .chl-or span { padding: 0; }
+}
 
 .chl-group {
   margin-top: 22px;

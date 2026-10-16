@@ -1,6 +1,15 @@
 /* Listchannels.html — the channels, movies and series of one IPTV package
- * (?package=<name>), or of every free package together (?free=1: the
- * "Explore" button of the free channels on the home page).
+ * (?package=<name>), or one of the two lists of the home page:
+ *   ?free=1     the free channels: the playlist IPTV-Free.m3u (Supabase Storage),
+ *               or, when it can't be read, every free package of Panel > IPTV
+ *   ?premium=1  the premium channels: the playlist IPTV-Premuim.m3u, whose links
+ *               carry the words Username and Password. They play once replaced
+ *               with a premium IPTV account: its username and password typed on
+ *               the page, or a watch code (the premium account of the code's
+ *               owner). A device linked to a code (Dashboard > Codes > Linked
+ *               devices) is not asked again, nor is an account kept with
+ *               "Remember on this device". A code is linked to the device only
+ *               with "Remember the code" (sql/code_devices.sql, sql/iptv_premium.sql).
  *
  * Filters, kept in the address so a reload or a shared link keeps them:
  *   type    all | live | movie | series     tabs with counts
@@ -54,16 +63,23 @@
 
   const params = new URLSearchParams(location.search);
   const pack = (params.get("package") || "").trim();
-  // ?free=1: the channels of every package marked free in Panel > IPTV
+  // ?free=1: the free channels (IPTV-Free.m3u, else every free package of Panel > IPTV)
   const freeMode = !pack && params.has("free") && params.get("free") !== "0";
+  // ?premium=1: the premium channels (IPTV-Premuim.m3u, unlocked with an account or a code)
+  const premiumMode = !pack && !freeMode && params.has("premium") && params.get("premium") !== "0";
+  const listPage = freeMode || premiumMode;
   const pick = (value, list, fallback) => (list.includes(value) ? value : fallback);
 
   const state = {
     rows: [],
     packs: [], // free mode: the free packages, in the order of Panel > IPTV
     byKey: new Map(), // check key -> row indexes (one stream can sit in several groups)
-    access: "ok", // ok | signin | locked
+    access: "ok", // ok | signin | locked | unlock (premium list waiting for an account)
     wanted: "", // a guest: id of the channel to play after signing in
+    m3u: null, // the playlist of a home page list: { key, name, url, epg }
+    unlock: null, // premium list: { user, pass, via: login | code | device, code, remembered }
+    unlockBusy: false,
+    unlockMsg: "",
     query: "",
     groupQuery: "",
     type: pick(params.get("type"), TYPES, "all"),
@@ -164,7 +180,38 @@
     return rows;
   }
 
+  // The playlist of a home page list (CineAura.IPTV_LISTS): rows shaped like
+  // public.listchannels, with a stable id per stream (for &channel= links).
+  async function loadPlaylist(list) {
+    const text = await C.fetchPlaylistText(list.url);
+    if (!/#EXTINF/i.test(text)) throw new Error("not a playlist");
+    const rows = C.parseM3U(text).map((r) => ({
+      ...r,
+      package_name: list.name,
+      id: `m${hash(`${r.stream_url || norm(r.channel_name)}\n${r.group_name}`)}`,
+    }));
+    return { rows, epg: C.m3uHeaderEpg(text) };
+  }
+
+  // The IPTV "account" of a list, for the player's programme guide: the guide of
+  // the playlist header, or (premium, once unlocked) the provider's xmltv.php.
+  function listAccount() {
+    if (!state.m3u) return null;
+    const base = { name: state.m3u.name, type: state.m3u.key, epg_url: state.m3u.epg || "" };
+    if (state.m3u.key !== "premium") return { ...base, kind: "m3u", m3u_url: state.m3u.url };
+    if (!state.unlock) return { ...base, kind: "m3u", m3u_url: "" };
+    let server = "";
+    try {
+      const first = state.rows.find((r) => r._tpl);
+      if (first) server = new URL(first._tpl).origin;
+    } catch {
+      server = "";
+    }
+    return { ...base, kind: "xtream", xstream_server: server, xstream_user: state.unlock.user, xstream_password: state.unlock.pass };
+  }
+
   async function loadAccess() {
+    if (premiumMode) return "unlock"; // an account or a code, for guests, members and staff alike
     const session = getSession();
     if (staffSession()) return "ok";
     if (!session?.member_id) return "signin";
@@ -193,7 +240,7 @@
     return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
   }
 
-  const rowPack = (row) => (freeMode ? String(row?.package_name || "") : pack);
+  const rowPack = (row) => (listPage ? String(row?.package_name || "") : pack);
   // the same key on the free list and on the package's own page
   const checkKey = (row) => hash(`${rowPack(row)}\n${String(row.stream_url || "").trim() || `name:${norm(row.channel_name)}`}`);
 
@@ -328,7 +375,56 @@
   }
 
   // ---------- markup ----------
+  function unlockHtml() {
+    const busy = state.unlockBusy ? " disabled" : "";
+    const signedIn = Boolean(getSession()?.member_id);
+    return `
+        <div class="chl-note chl-unlock" id="chl-note">
+          <div class="chl-unlock-head">
+            <span class="chl-unlock-ico" aria-hidden="true">${ICON.lock}</span>
+            <div>
+              <strong>${escapeHtml(t("iptvp.title"))}</strong>
+              <p>${escapeHtml(t("iptvp.lead"))}${signedIn ? ` <a href="./dashboard.html#iptv">${escapeHtml(t("iptvp.whereAccount"))}</a>` : ""}</p>
+            </div>
+          </div>
+          <div class="chl-unlock-ways">
+            <form class="chl-way" id="ul-login" novalidate>
+              <h3>${escapeHtml(t("iptvp.byAccount"))}</h3>
+              <label><span>${escapeHtml(t("iptvp.user"))}</span><input id="ul-user" name="username" autocomplete="username" dir="ltr" spellcheck="false" autocapitalize="off" required${busy} /></label>
+              <label><span>${escapeHtml(t("iptvp.pass"))}</span><input id="ul-pass" name="password" type="password" autocomplete="current-password" dir="ltr" required${busy} /></label>
+              <label class="check-row"><input type="checkbox" id="ul-keep"${busy} /><span>${escapeHtml(t("iptvp.keep"))}</span></label>
+              <button class="btn btn-sm btn-primary" type="submit"${busy}>${escapeHtml(t("iptvp.unlock"))}</button>
+            </form>
+            <div class="chl-or" aria-hidden="true"><span>${escapeHtml(t("iptvp.or"))}</span></div>
+            <form class="chl-way" id="ul-code-form" novalidate>
+              <h3>${escapeHtml(t("iptvp.byCode"))}</h3>
+              <label><span>${escapeHtml(t("iptvp.code"))}</span><input id="ul-code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" dir="ltr" placeholder="000000" required${busy} /></label>
+              <label class="check-row"><input type="checkbox" id="ul-remember"${busy} /><span>${escapeHtml(t("watch.remember"))}</span></label>
+              <p class="muted chl-way-hint">${escapeHtml(t("iptvp.rememberHint"))}</p>
+              <button class="btn btn-sm btn-primary" type="submit"${busy}>${escapeHtml(t("iptvp.unlock"))}</button>
+            </form>
+          </div>
+          <p class="gate-msg${state.unlockMsg ? " error" : ""}" id="ul-msg" role="status" aria-live="polite">${escapeHtml(state.unlockMsg)}</p>
+          <p class="muted chl-unlock-device">${escapeHtml(t("watch.deviceLine", { mac: `\u2066${C.deviceMac()}\u2069` }))}</p>
+        </div>`;
+  }
+
+  function unlockedHtml() {
+    const u = state.unlock;
+    if (!u) return "";
+    let how = t("iptvp.viaAccount", { user: `\u2066${u.user}\u2069` });
+    if (u.via === "code") how = t("iptvp.viaCode", { code: `\u2066••${String(u.code || "").slice(-2)}\u2069` });
+    if (u.via === "device") how = t("iptvp.viaDevice");
+    return `
+        <div class="chl-note ok chl-unlocked" id="chl-note">
+          <div><strong>${escapeHtml(t("iptvp.unlocked"))}</strong><p>${escapeHtml(how)}</p></div>
+          <button class="btn btn-sm btn-ghost" type="button" data-relock>${escapeHtml(t("iptvp.change"))}</button>
+        </div>`;
+  }
+
   function noticeHtml() {
+    if (state.access === "unlock") return unlockHtml();
+    if (premiumMode && state.unlock) return unlockedHtml();
     if (state.access === "signin") {
       return `
         <div class="chl-note" id="chl-note">
@@ -381,12 +477,12 @@
       </div>`;
   }
 
-  const pageTitle = () => (freeMode ? t("home.iptv.free") : pack);
+  const pageTitle = () => (freeMode ? t("home.iptv.free") : premiumMode ? t("home.iptv.premium") : pack);
 
   function render() {
     const root = document.getElementById("root");
     if (!root) return;
-    if (!pack && !freeMode) {
+    if (!pack && !listPage) {
       root.innerHTML = `
         <section class="glass dash-main chl-page chl-gate">
           <p class="eyebrow">${escapeHtml(t("dash.liveTv"))}</p>
@@ -407,8 +503,8 @@
     }
     const total = state.rows.length;
     const groups = new Set(state.rows.map((r) => r._group)).size;
-    let body = `<p class="empty">${escapeHtml(t(freeMode ? "chan.freeNone" : "chan.empty"))}</p>`;
-    if (state.failed) body = `<p class="empty">${escapeHtml(t("chan.loadFail"))}</p>`;
+    let body = `<p class="empty">${escapeHtml(t(freeMode ? "chan.freeNone" : premiumMode ? "iptvp.none" : "chan.empty"))}</p>`;
+    if (state.failed) body = `<p class="empty">${escapeHtml(t(premiumMode ? "iptvp.loadFail" : "chan.loadFail"))}</p>`;
     else if (total) body = bodyHtml();
     root.innerHTML = `
       <section class="glass dash-main chl-page">
@@ -424,10 +520,11 @@
               : ""
           }
         </div>
-        ${noticeHtml()}
+        ${total || !premiumMode ? noticeHtml() : ""}
         ${body}
       </section>`;
     if (!state.failed && total) refresh();
+    if (state.access === "unlock") bindUnlock();
   }
 
   // Re-painting a box of buttons must not throw the keyboard focus out of it.
@@ -614,8 +711,11 @@
   // package -> guide address ("" = no guide), looked up once per page
   async function guideUrls() {
     if (!onNow.urls) {
-      const names = freeMode ? state.packs : [pack];
-      const urls = await Promise.all(names.map((name) => player().epgSource(name).catch(() => "")));
+      const names = listPage ? state.packs : [pack];
+      const account = listAccount();
+      const urls = await Promise.all(
+        names.map((name) => player().epgSource(name, account && account.name === name ? [account] : undefined).catch(() => ""))
+      );
       onNow.urls = new Map(names.map((name, k) => [name, urls[k] || ""]));
     }
     return onNow.urls;
@@ -864,6 +964,12 @@
 
   function canPlay() {
     if (state.access === "ok") return true;
+    if (state.access === "unlock") {
+      toast(t("iptvp.lockedToast"));
+      flashNotice();
+      setTimeout(() => document.getElementById("ul-user")?.focus({ preventScroll: true }), 350);
+      return false;
+    }
     toast(t(state.access === "signin" ? "chan.signinPlay" : "chan.lockedTitle"));
     flashNotice();
     return false;
@@ -1043,7 +1149,9 @@
 
   // ?package=<name>, or ?free=1 for the free list
   function baseQuery() {
-    return freeMode ? "free=1" : `package=${encodeURIComponent(pack)}`;
+    if (freeMode) return "free=1";
+    if (premiumMode) return "premium=1";
+    return `package=${encodeURIComponent(pack)}`;
   }
 
   function pageQuery(row) {
@@ -1118,9 +1226,11 @@
   function openPlayer(list, index, push) {
     let first = true;
     pauseCheck(true);
+    const account = listAccount();
     player().open(list, index, {
       report: true,
       countViews: true, // home page > Most watched channels
+      ...(account ? { accounts: [account] } : {}),
       onResult(row, ok) {
         if (!row || !row._ck) return;
         setStatus(row, ok);
@@ -1153,9 +1263,41 @@
     openPlayer(list.map((j) => state.rows[j]), Math.max(0, at), true);
   }
 
+  // The free list from the playlist, opened by a card of Most watched channels
+  // (&channel=<id of public.listchannels>): the playlist's channel of that name,
+  // else the channel of the database itself.
+  async function openDatabaseChannel(id) {
+    if (!/^\d+$/.test(id)) return;
+    const res = await supabaseRequest(`/rest/v1/listchannels?id=eq.${restValue(id)}&select=*`).catch(() => null);
+    const row = res?.ok && Array.isArray(res.data) ? res.data[0] : null;
+    if (!row) return;
+    const same = state.rows.find((r) => r._name === norm(row.channel_name));
+    if (state.access !== "ok") {
+      want(same || row);
+      canPlay();
+      return;
+    }
+    if (same) {
+      const list = state.view.includes(same._i) ? state.view : state.rows.map((r) => r._i);
+      openPlayer(list.map((i) => state.rows[i]), list.indexOf(same._i), false);
+      return;
+    }
+    openPlayer([row], 0, false);
+  }
+
   function openFromAddress() {
     const wanted = (params.get("channel") || "").trim();
     if (!wanted) return;
+    if (state.m3u && !state.rows.some((r) => String(r.id) === wanted)) {
+      if (freeMode) openDatabaseChannel(wanted);
+      return;
+    }
+    if (state.access === "unlock") {
+      // premium: the channel plays once the list is unlocked
+      state.wanted = wanted;
+      canPlay();
+      return;
+    }
     if (state.access !== "ok") {
       // a guest (or a member without this package): say why it does not play
       const row = state.rows.find((r) => String(r.id) === wanted);
@@ -1173,6 +1315,168 @@
       at = list.findIndex((i) => String(state.rows[i].id) === wanted);
     }
     if (at >= 0) openPlayer(list.map((i) => state.rows[i]), at, false);
+  }
+
+  // ---------- premium list: unlock with an account or a watch code ----------
+  function unlocked(acc) {
+    state.unlock = acc;
+    state.unlockMsg = "";
+    state.rows.forEach((r) => {
+      if (r._tpl) r.stream_url = C.fillCredentials(r._tpl, acc.user, acc.pass);
+    });
+    state.access = "ok";
+    onNow.urls = null;
+    onNow.none = false;
+    render();
+    warmPlayer(document.getElementById("root"));
+    if (state.wanted) {
+      const wanted = state.wanted;
+      state.wanted = "";
+      const row = state.rows.find((r) => String(r.id) === wanted);
+      if (row) {
+        const list = state.view.includes(row._i) ? state.view : state.rows.map((r) => r._i);
+        openPlayer(list.map((i) => state.rows[i]), list.indexOf(row._i), false);
+      }
+    }
+  }
+
+  // The message under the unlock forms, and the forms on hold while a check runs
+  // (no repaint: what was typed stays).
+  function setUnlockMsg(text, ok = false) {
+    state.unlockMsg = text || "";
+    const el = document.getElementById("ul-msg");
+    if (!el) return;
+    el.textContent = state.unlockMsg;
+    el.className = `gate-msg${state.unlockMsg ? (ok ? " ok" : " error") : ""}`;
+  }
+
+  function setUnlockBusy(on) {
+    state.unlockBusy = on;
+    document.querySelectorAll("#chl-note .chl-way input, #chl-note .chl-way button").forEach((el) => {
+      el.disabled = on;
+    });
+  }
+
+  // Without typing: an account kept on this device, the code remembered here, or
+  // the code this device is linked to (Linked devices).
+  async function autoUnlock() {
+    const saved = C.storedIptvLogin();
+    if (saved) {
+      const r = await C.premiumLogin(saved.user, saved.pass);
+      if (r.ok) return unlocked({ user: r.user, pass: r.pass, via: "login", remembered: saved.remembered });
+      if (r.reason === "bad_login" || r.reason === "expired") {
+        C.forgetIptvLogin();
+        setUnlockMsg(t(r.reason === "expired" ? "iptvp.expired" : "iptvp.savedGone"));
+      }
+    }
+    const stored = C.getStoredCode();
+    const r = await C.premiumUnlock({ code: stored || "", silent: true, remember: Boolean(stored) });
+    if (r.ok) return unlocked({ user: r.user, pass: r.pass, via: r.by_device ? "device" : "code", code: r.code, remembered: true });
+    if (stored) {
+      // the same rule as the watch page: a remembered code that no longer works here is forgotten
+      if (["not_found", "expired", "disabled", "banned", "other_device", "unlinked", "invalid"].includes(r.reason)) C.clearStoredCode();
+      setUnlockMsg(C.premiumCodeMessage(r, stored, true));
+    } else if (r.by_device && r.reason !== "no_device") {
+      setUnlockMsg(C.premiumCodeMessage(r, "", true));
+    }
+    return null;
+  }
+
+  function lockMessage() {
+    const left = C.codeLockLeft();
+    if (!left) return "";
+    const h = Math.floor(left / 3600000);
+    const m = Math.ceil((left % 3600000) / 60000);
+    return t("iptvp.lockedOut", { time: h ? `${h}h ${m}m` : `${m}m` });
+  }
+
+  function failed(message) {
+    const lock = C.recordFailedCode();
+    const left = Math.max(0, C.CODE_FAIL_MAX - lock.fails);
+    setUnlockMsg(lock.until > Date.now() ? lockMessage() : `${message} ${t("watch.triesLeft", { n: left })}`);
+  }
+
+  async function submitUnlock(kind) {
+    if (state.unlockBusy) return;
+    const out = lockMessage();
+    if (out) {
+      setUnlockMsg(out);
+      return;
+    }
+    const user = (document.getElementById("ul-user")?.value || "").trim();
+    const pass = document.getElementById("ul-pass")?.value || "";
+    const code = (document.getElementById("ul-code")?.value || "").replace(/\D/g, "");
+    const keep = Boolean(document.getElementById("ul-keep")?.checked);
+    const remember = Boolean(document.getElementById("ul-remember")?.checked);
+    if (kind === "login" && (!user || !pass)) {
+      setUnlockMsg(t("iptvp.needAccount"));
+      document.getElementById(user ? "ul-pass" : "ul-user")?.focus();
+      return;
+    }
+    if (kind === "code" && !/^\d{6}$/.test(code)) {
+      setUnlockMsg(t("code.invalid"));
+      document.getElementById("ul-code")?.focus();
+      return;
+    }
+    setUnlockMsg(t("iptvp.checking"), true);
+    setUnlockBusy(true);
+    let r;
+    try {
+      r = kind === "login" ? await C.premiumLogin(user, pass) : await C.premiumUnlock({ code, remember });
+    } finally {
+      setUnlockBusy(false);
+    }
+    if (r.ok) {
+      C.clearCodeLock();
+      if (kind === "login") {
+        C.storeIptvLogin(r.user, r.pass, keep);
+        unlocked({ user: r.user, pass: r.pass, via: "login", remembered: keep });
+        toast(t(keep ? "iptvp.okKept" : "iptvp.ok"));
+      } else {
+        if (remember) C.setStoredCode(code);
+        unlocked({ user: r.user, pass: r.pass, via: "code", code, remembered: remember });
+        // a device that had no code yet has just joined its owner's Linked devices
+        const added = r.linked && !(r.freed || []).length;
+        toast(remember ? `${t("iptvp.okCode")}${added ? ` ${t("watch.devAdded")}` : ""}` : t("iptvp.ok"));
+      }
+      return;
+    }
+    if (kind === "login") {
+      if (r.reason === "bad_login") failed(t("iptvp.badLogin"));
+      else setUnlockMsg(t(r.reason === "expired" ? "iptvp.expired" : r.reason === "setup" ? "iptvp.setup" : "iptvp.error"));
+    } else {
+      // like the watch page: a code that exists but cannot serve here is not a wrong guess
+      const counts = !["setup", "error", "invalid", "other_device", "device", "no_premium", "owner_banned"].includes(r.reason);
+      if (counts) failed(C.premiumCodeMessage(r, code));
+      else setUnlockMsg(C.premiumCodeMessage(r, code));
+    }
+    if (!C.codeLockLeft()) document.getElementById(kind === "login" ? "ul-pass" : "ul-code")?.focus();
+  }
+
+  function bindUnlock() {
+    const login = document.getElementById("ul-login");
+    const code = document.getElementById("ul-code-form");
+    login?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      submitUnlock("login");
+    });
+    code?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      submitUnlock("code");
+    });
+  }
+
+  // "Use another account": the list locks again; an account kept here is forgotten.
+  function relock() {
+    if (state.unlock?.via === "login") C.forgetIptvLogin();
+    state.unlock = null;
+    state.access = "unlock";
+    state.rows.forEach((r) => {
+      if (r._tpl) r.stream_url = r._tpl;
+    });
+    if (player().isOpen()) player().close();
+    render();
+    document.getElementById("ul-user")?.focus();
   }
 
   // ---------- boot ----------
@@ -1212,6 +1516,10 @@
       const signin = e.target.closest("[data-signin]");
       if (signin) {
         signin.href = signinUrl();
+        return;
+      }
+      if (e.target.closest("[data-relock]")) {
+        relock();
         return;
       }
       const card = e.target.closest(".ch-card");
@@ -1265,7 +1573,7 @@
     setupChrome();
     const root = document.getElementById("root");
     render();
-    if (!pack && !freeMode) return;
+    if (!pack && !listPage) return;
     bind(root);
     window.addEventListener("popstate", () => {
       if (state.leaving) {
@@ -1282,8 +1590,30 @@
       if (state.loaded) render();
     });
     try {
-      if (freeMode) state.packs = await loadFreePacks();
-      const [rows, access] = await Promise.all([loadChannels(), loadAccess().catch(() => "ok")]);
+      let rows = null;
+      if (listPage) {
+        const list = premiumMode ? C.IPTV_LISTS.premium : C.IPTV_LISTS.free;
+        try {
+          const got = await loadPlaylist(list);
+          if (got.rows.length || premiumMode) {
+            state.m3u = { ...list, epg: got.epg };
+            state.packs = [list.name];
+            rows = got.rows;
+            // premium links wait for an account: Username / Password are filled in on unlock
+            if (premiumMode) rows.forEach((r) => {
+              if (C.hasCredentialSlots(r.stream_url)) r._tpl = r.stream_url;
+            });
+          }
+        } catch (err) {
+          if (premiumMode) throw err;
+        }
+      }
+      if (!rows) {
+        // a package page, or the free list when its playlist can't be read: Panel > IPTV
+        if (freeMode) state.packs = await loadFreePacks();
+        rows = await loadChannels();
+      }
+      const access = await loadAccess().catch(() => "ok");
       prepare(rows);
       state.rows = rows;
       state.access = access;
@@ -1294,5 +1624,6 @@
     render();
     if (state.access === "ok" && state.rows.length) warmPlayer(root);
     openFromAddress();
+    if (state.access === "unlock" && state.rows.length) autoUnlock();
   });
 })();

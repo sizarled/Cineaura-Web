@@ -488,16 +488,9 @@
     }
   }
 
-  // IPTV "Explore" of the premium channels: signed-in members go to the IPTV tab
-  // of the dashboard, everyone else is sent to the sign-in page and brought back
-  // there afterwards. (The free channels card links straight to
-  // Listchannels.html?free=1, which guests may browse before signing in.)
-  document.addEventListener("click", (e) => {
-    const link = e.target.closest("[data-iptv-explore]");
-    if (!link) return;
-    e.preventDefault();
-    location.href = isLoggedIn() ? "./dashboard.html#iptv" : "./login.html?next=" + encodeURIComponent("dashboard.html#iptv");
-  });
+  // IPTV "Explore": the free channels card opens Listchannels.html?free=1 (the
+  // playlist IPTV-Free.m3u), the premium one Listchannels.html?premium=1 (the
+  // playlist IPTV-Premuim.m3u, unlocked there with an IPTV account or a watch code).
 
   /* "Get the app": one card per platform (CineAura.APP_PLATFORMS in common.js).
      The download links and versions are managed in Panel > Apps (table

@@ -3117,7 +3117,10 @@
       return;
     }
     const code = $("#code-input").value.replace(/\D/g, "");
-    const result = await verifyCode(code, ageVerifyOptions());
+    // "Remember the code": kept on this device and linked to it (Dashboard > Codes >
+    // Linked devices). Without it the code opens this title only and links nothing.
+    const remember = Boolean($("#code-remember")?.checked);
+    const result = await verifyCode(code, { ...ageVerifyOptions(), link: remember });
     const msg = $("#gate-msg");
     if (!result.ok) {
       // A valid code that is too young for this title, or that is linked to
@@ -3142,10 +3145,8 @@
     clearCodeLock();
     stopLockTicker();
     setCodeFormEnabled(true);
-    // "Remember the code": kept on this device and not asked again, for every
-    // title that needs a code (above 50%, or rated 13+). Without it the code
-    // opens this title only: the next one that needs a code asks again.
-    const remember = Boolean($("#code-remember")?.checked);
+    // Remembered: not asked again on this device, for every title that needs a
+    // code (above 50%, or rated 13+). Without it the next one asks again.
     if (remember) setStoredCode(code);
     state.storedIssue = "";
     state.unlocked = true;
@@ -3170,7 +3171,7 @@
   async function restoreCode() {
     const stored = getStoredCode();
     if (!stored) return;
-    const result = await verifyCode(stored, { ...ageVerifyOptions(), silent: true });
+    const result = await verifyCode(stored, { ...ageVerifyOptions(), silent: true, link: true });
     if (result.ok) {
       state.unlocked = true;
       state.needsCode = false;
