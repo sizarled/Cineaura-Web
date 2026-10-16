@@ -2397,6 +2397,16 @@
     "panel.apps.forbidden": "Your account has no access to the Apps section.",
     "panel.apps.noTable": "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.",
     "panel.apps.changed": "Last change: {who} · {date}",
+
+    // ── Most watched channels (home page) ──
+    "home.iptv.top.h3": "Most watched channels",
+    "home.iptv.top.p": "Free channels play at once; premium channels need a premium membership.",
+    "home.iptv.top.locked": "Premium membership required",
+    "home.iptv.top.view1": "1 view",
+    "home.iptv.top.freeGate": "Free with every CineAura account: sign in and it starts playing at once.",
+    "home.iptv.top.premGate": "This channel is part of the premium lineup: watching it requires a premium membership.",
+    "home.iptv.top.gone": "This channel is no longer available.",
+    "home.iptv.top.fail": "The channel could not be opened. Please try again.",
   };
 
   const dict = {};

@@ -2140,4 +2140,14 @@
  "Your account has no access to the Apps section.": "حسابك لا يملك صلاحية قسم التطبيقات.",
  "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.": "نفّذ ملف sql/apps.sql في Supabase (بعد prize_secure.sql) لإدارة روابط التطبيقات.",
  "Last change: {who} · {date}": "آخر تعديل: {who} · {date}",
+
+ /* ── Most watched channels (home page) ── */
+ "Most watched channels": "القنوات الأكثر مشاهدة",
+ "Free channels play at once; premium channels need a premium membership.": "القنوات المجانية تُشاهَد فوراً، والقنوات المميزة تتطلب عضوية مميزة.",
+ "Premium membership required": "تتطلب عضوية مميزة",
+ "1 view": "مشاهدة واحدة",
+ "Free with every CineAura account: sign in and it starts playing at once.": "مجانية مع كل حساب CineAura: سجّل الدخول وستبدأ المشاهدة فوراً.",
+ "This channel is part of the premium lineup: watching it requires a premium membership.": "هذه القناة ضمن القنوات المميزة: مشاهدتها تتطلب عضوية مميزة.",
+ "This channel is no longer available.": "هذه القناة لم تعد متاحة.",
+ "The channel could not be opened. Please try again.": "تعذّر فتح القناة. حاول مرة أخرى.",
 };

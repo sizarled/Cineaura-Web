@@ -2107,4 +2107,14 @@
  "Your account has no access to the Apps section.": "Ihr Konto hat keinen Zugriff auf den Bereich Apps.",
  "Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads.": "Führen Sie sql/apps.sql in Supabase aus (nach prize_secure.sql), um die App-Downloads zu verwalten.",
  "Last change: {who} · {date}": "Letzte Änderung: {who} · {date}",
+
+ /* ── Most watched channels (home page) ── */
+ "Most watched channels": "Meistgesehene Sender",
+ "Free channels play at once; premium channels need a premium membership.": "Kostenlose Sender laufen sofort; Premium-Sender erfordern eine Premium-Mitgliedschaft.",
+ "Premium membership required": "Premium-Mitgliedschaft erforderlich",
+ "1 view": "1 Aufruf",
+ "Free with every CineAura account: sign in and it starts playing at once.": "Kostenlos mit jedem CineAura-Konto: Melden Sie sich an, und der Sender startet sofort.",
+ "This channel is part of the premium lineup: watching it requires a premium membership.": "Dieser Sender gehört zum Premium-Angebot: Zum Ansehen ist eine Premium-Mitgliedschaft erforderlich.",
+ "This channel is no longer available.": "Dieser Sender ist nicht mehr verfügbar.",
+ "The channel could not be opened. Please try again.": "Der Sender konnte nicht geöffnet werden. Bitte versuchen Sie es erneut.",
 };

@@ -1450,3 +1450,13 @@ The version can be at most 20 characters long. = La versione può avere al massi
 Your account has no access to the Apps section. = Il tuo account non ha accesso alla sezione App.
 Run sql/apps.sql in Supabase (after prize_secure.sql) to manage the app downloads. = Esegui sql/apps.sql in Supabase (dopo prize_secure.sql) per gestire i download delle app.
 Last change: {who} · {date} = Ultima modifica: {who} · {date}
+
+# ── Most watched channels (home page) ──
+Most watched channels = Canali più visti
+Free channels play at once; premium channels need a premium membership. = I canali gratuiti partono subito; i canali premium richiedono un abbonamento premium.
+Premium membership required = Richiede l'abbonamento premium
+1 view = 1 visualizzazione
+Free with every CineAura account: sign in and it starts playing at once. = Gratis con ogni account CineAura: accedi e parte subito.
+This channel is part of the premium lineup: watching it requires a premium membership. = Questo canale fa parte dell'offerta premium: per guardarlo serve un abbonamento premium.
+This channel is no longer available. = Questo canale non è più disponibile.
+The channel could not be opened. Please try again. = Impossibile aprire il canale. Riprova.
