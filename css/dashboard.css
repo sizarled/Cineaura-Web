@@ -1003,6 +1003,150 @@ html:not([data-theme="day"]) .ov-st.disabled { color: #f7b928; }
   .ov-code { font-size: 20px; }
 }
 
+/* ---------- Watch codes: one device per code (sql/code_devices.sql) ----------
+   Dashboard > Codes shows, next to each code, the MAC address and the IP of the
+   device it is linked to, and "This device" on the code this browser uses. The
+   overview cards carry the same device line. */
+.code-devices-note {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--sub-bg);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.code-devices-note p { margin: 0; }
+.code-devices-note p + p { margin-top: 6px; }
+.code-this-mac b { color: var(--text); font: 700 13.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.04em; }
+.code-this-mac small { font-size: 12.5px; }
+
+.codes-wrap {
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+.table.codes-table th,
+.table.codes-table td { padding: 12px 8px; vertical-align: top; }
+.table.codes-table tr.is-here td { background: rgba(45, 136, 255, 0.07); }
+html[data-theme="day"] .table.codes-table tr.is-here td { background: rgba(24, 119, 242, 0.06); }
+.table.codes-table .code-exp { white-space: nowrap; }
+.table.codes-table .code-ip { white-space: nowrap; }
+.table.codes-table .code-ip.is-v6 { white-space: normal; overflow-wrap: anywhere; }
+.table.codes-table .chip { white-space: nowrap; cursor: help; }
+.table.codes-table .code-acts .actions { justify-content: flex-end; }
+.table.codes-table .code-acts .btn { min-width: 64px; }
+
+.code-digits,
+.dev-mac {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.code-digits { display: block; font-size: 15px; letter-spacing: 0.12em; }
+.dev-mac { display: block; font-size: 13px; color: var(--text); }
+
+/* "This device" */
+.code-here {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 1px 9px;
+  border-radius: 999px;
+  background: var(--cyan);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 19px;
+  white-space: nowrap;
+}
+
+.code-here::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.code-memo,
+.dev-sub {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.code-memo { max-width: 150px; }
+.code-memo.is-on { color: var(--green); }
+
+.dev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ov-dev {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.ov-dev .ov-label { flex-basis: 100%; margin-bottom: 0; }
+.ov-dev .code-here { margin-top: 0; }
+
+/* Phones: one card per code, each value under its name */
+@media (max-width: 720px) {
+  .table.codes-table thead { display: none; }
+  .table.codes-table,
+  .table.codes-table tbody,
+  .table.codes-table tr,
+  .table.codes-table td { display: block; width: 100%; }
+  .table.codes-table tr {
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .table.codes-table tr.is-here { border-color: var(--cyan); }
+  .table.codes-table tr.is-here td { background: none; }
+  .table.codes-table td {
+    display: grid;
+    grid-template-columns: minmax(96px, 34%) 1fr;
+    gap: 10px;
+    padding: 6px 0;
+    border: 0;
+  }
+  .table.codes-table td > .ov-st,
+  .table.codes-table td > .chip { justify-self: start; }
+  .table.codes-table td[data-label]::before {
+    content: attr(data-label);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .table.codes-table td.code-cell { display: block; padding-top: 0; }
+  .table.codes-table td.code-cell::before { display: none; }
+  .table.codes-table td.code-cell .code-digits { display: inline-block; font-size: 20px; margin-inline-end: 8px; }
+  .table.codes-table td.code-cell .code-memo { max-width: none; }
+  .table.codes-table td.empty { display: block; }
+  .table.codes-table td.code-acts {
+    display: block;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    margin-top: 6px;
+  }
+  .table.codes-table .code-acts .actions { justify-content: flex-start; }
+  .table.codes-table tbody tr:hover { background: none; }
+}
+
 /* ---------- Premium IPTV accounts (Panel > IPTV gives them to a member) ----------
    Dashboard > Overview shows them in a block of their own (hidden when the
    member has none) and Dashboard > IPTV lists them above the free packages,

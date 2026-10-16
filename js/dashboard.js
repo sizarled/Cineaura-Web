@@ -598,12 +598,33 @@
     return unitText(m, "minute");
   }
 
+  function dayText(ms) {
+    try {
+      return new Date(ms).toLocaleDateString(C.getLocale(), { dateStyle: "medium", numberingSystem: "latn" });
+    } catch {
+      return new Date(ms).toISOString().slice(0, 10);
+    }
+  }
+
   function whenText(ms) {
     try {
       return new Date(ms).toLocaleString(C.getLocale(), { dateStyle: "medium", timeStyle: "short", numberingSystem: "latn" });
     } catch {
       return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
     }
+  }
+
+  // Overview card: the device the code is linked to ("This device" for this browser)
+  function ovDeviceHtml(c) {
+    if (!Object.prototype.hasOwnProperty.call(c, "device_mac")) return ""; // sql/code_devices.sql not run
+    const mac = String(c.device_mac || "");
+    const mine = Boolean(mac) && mac === C.deviceMac();
+    return `
+          <div class="ov-dev">
+            <span class="ov-label">${t("dash.code.device")}</span>
+            ${mac ? `<span class="dev-mac" dir="ltr">${escapeHtml(mac)}</span>` : `<span class="muted">${t("dash.code.notLinked")}</span>`}
+            ${mine ? `<span class="code-here">${t("dash.code.thisDevice")}</span>` : ""}
+          </div>`;
   }
 
   function overviewCodesHtml(codes) {
@@ -645,6 +666,7 @@
             <span class="ov-label">${t("dash.ov.category")}</span>
             <span class="chip">${escapeHtml(codeAgeText(c.age_rating))}</span>
           </div>
+          ${ovDeviceHtml(c)}
           <div class="ov-left">
             <span class="ov-label">${t("dash.ov.validity")}</span>
             <b>${escapeHtml(left)}</b>
@@ -1340,6 +1362,11 @@
       `/rest/v1/codes?owner=eq.${restValue(state.member.member_id)}&select=*&order=created_at.desc`
     );
     const codes = res.ok && Array.isArray(res.data) ? res.data : [];
+    // this browser's device address, and the code it remembers ("Remember the code")
+    const here = C.deviceMac();
+    const saved = C.getStoredCode();
+    // a database without sql/code_devices.sql has no device columns yet
+    const devicesReady = !codes.length || codes.some((c) => Object.prototype.hasOwnProperty.call(c, "device_mac"));
     main.innerHTML = `
       <p class="eyebrow">${t("dash.accessCodes")}</p>
       <h1>${t("dash.nav.codes")}</h1>
@@ -1365,22 +1392,88 @@
         <button class="btn btn-sm btn-ghost" id="detect-ip" type="button">${t("dash.detectIp")}</button>
       </div>
       <button class="btn btn-sm btn-primary" id="save-code" type="button">${t("dash.saveCode")}</button>
-      <div style="margin-top:18px;overflow:auto">
-        <table class="table"><thead><tr><th>${t("dash.nav.codes")}</th><th>${t("common.status")}</th><th>${t("dash.ageLimit")}</th><th>IP</th><th>${t("common.expires")}</th><th></th></tr></thead>
+      ${devicesReady ? `
+      <div class="code-devices-note">
+        <p>${t("dash.code.deviceLead")}</p>
+        <p class="code-this-mac">${t("dash.code.thisMac")} <b dir="ltr">${escapeHtml(here)}</b> <small>· ${escapeHtml(C.deviceName())}</small></p>
+      </div>` : ""}
+      <div class="codes-wrap">
+        <table class="table codes-table"><thead><tr>
+          <th>${t("dash.nav.codes")}</th>
+          ${devicesReady ? `<th>${t("dash.code.device")}</th>` : ""}
+          <th>IP</th>
+          <th>${t("common.status")}</th>
+          <th>${t("dash.ageLimit")}</th>
+          <th>${t("common.expires")}</th>
+          <th></th>
+        </tr></thead>
         <tbody id="code-rows"></tbody></table>
       </div>`;
-    $("#code-rows").innerHTML = codes.map((c) => `
-      <tr>
-        <td>${escapeHtml(c.code)}</td>
-        <td>${escapeHtml(tr(c.status))}</td>
-        <td><span class="chip chip-soft">${escapeHtml(codeAgeLabel(c.age_rating))}</span></td>
-        <td>${escapeHtml(c.ip || "—")}</td>
-        <td>${String(c.expires_at||"").slice(0,10) || "—"}</td>
-        <td class="actions">
-          <button class="btn btn-sm btn-ghost" data-copy="${escapeHtml(c.code)}" type="button">${t("common.copy")}</button>
-          <button class="btn btn-sm btn-danger" data-del="${escapeHtml(c.code)}" type="button">${t("common.delete")}</button>
+    $("#code-rows").innerHTML =
+      codes.map(codeRowHtml).join("") ||
+      `<tr><td colspan="${devicesReady ? 7 : 6}" class="empty">${t("dash.noCodes")}</td></tr>`;
+
+    /* One row per code. Next to the code: the MAC address and the IP of the
+       device it is linked to (one device per code, sql/code_devices.sql), with
+       "This device" on the code this browser uses. The IP of a code no device
+       uses yet is the one it was created from. */
+    function codeRowHtml(c) {
+      const timing = codeTiming(c);
+      const st = codeState(c, timing);
+      const code = escapeHtml(c.code);
+      const mac = devicesReady ? String(c.device_mac || "") : "";
+      const mine = Boolean(mac) && mac === here;
+      const remembered = mine && saved === String(c.code);
+      const label = (key) => `data-label="${escapeHtml(t(key))}"`;
+      const memo = mine && st === "active"
+        ? `<small class="code-memo${remembered ? " is-on" : ""}">${t(remembered ? "dash.code.remembered" : "dash.code.notRemembered")}</small>`
+        : "";
+      // what can be done with the device link sits with the device
+      const devActions = [];
+      if (devicesReady && st === "active" && !mac) {
+        devActions.push(`<button class="btn btn-sm btn-primary" data-use="${code}" type="button">${t("dash.code.useHere")}</button>`);
+      }
+      if (devicesReady && st === "active" && mine && !remembered) {
+        devActions.push(`<button class="btn btn-sm btn-primary" data-use="${code}" type="button">${t("dash.code.rememberHere")}</button>`);
+      }
+      if (devicesReady && mac) {
+        devActions.push(`<button class="btn btn-sm btn-ghost" data-unlink="${code}" data-mac="${escapeHtml(mac)}" type="button">${t("dash.code.unlink")}</button>`);
+      }
+      const devButtons = devActions.length ? `<div class="dev-actions">${devActions.join("")}</div>` : "";
+      const device = !devicesReady
+        ? ""
+        : mac
+          ? `<td class="dev-cell" ${label("dash.code.device")}><div>
+              <span class="dev-mac" dir="ltr">${escapeHtml(mac)}</span>
+              ${c.device_name ? `<small class="dev-sub">${escapeHtml(c.device_name)}</small>` : ""}
+              ${c.device_linked_at ? `<small class="dev-sub">${t("dash.code.linkedOn", { date: dayText(Date.parse(c.device_linked_at)) })}</small>` : ""}
+              ${devButtons}
+            </div></td>`
+          : `<td class="dev-cell" ${label("dash.code.device")}><div><span class="muted">${t("dash.code.notLinked")}</span>${devButtons}</div></td>`;
+      let ip = "—";
+      const ipClass = (value) => `code-ip${String(value).includes(":") ? " is-v6" : ""}`; // a long IPv6 may wrap
+      if (mac && c.device_ip) ip = `<span class="${ipClass(c.device_ip)}" dir="ltr">${escapeHtml(c.device_ip)}</span>`;
+      else if (!mac && c.ip) ip = `<span class="${ipClass(c.ip)} muted" dir="ltr" title="${escapeHtml(t("dash.code.ipCreated"))}">${escapeHtml(c.ip)}</span>`;
+      // "18 and over — no limit" -> "18 and over" in the table, the whole label on hover
+      const age = codeAgeLabel(c.age_rating);
+      return `
+      <tr class="${mine ? "is-here" : ""}">
+        <td class="code-cell" ${label("dash.nav.codes")}>
+          <span class="code-digits" dir="ltr">${code}</span>
+          ${mine ? `<span class="code-here">${t("dash.code.thisDevice")}</span>` : ""}
+          ${memo}
         </td>
-      </tr>`).join("") || `<tr><td colspan="6" class="empty">${t("dash.noCodes")}</td></tr>`;
+        ${device}
+        <td ${label("dash.ipPh")}>${ip}</td>
+        <td ${label("common.status")}><span class="ov-st ${st}">${t(`dash.ov.st.${st}`)}</span></td>
+        <td ${label("dash.ageLimit")}><span class="chip chip-soft" title="${escapeHtml(age)}">${escapeHtml(age.split(" — ")[0])}</span></td>
+        <td class="code-exp" ${label("common.expires")}>${String(c.expires_at || "").slice(0, 10) || "—"}</td>
+        <td class="code-acts"><div class="actions">
+          <button class="btn btn-sm btn-ghost" data-copy="${code}" type="button">${t("common.copy")}</button>
+          <button class="btn btn-sm btn-danger" data-del="${code}" type="button">${t("common.delete")}</button>
+        </div></td>
+      </tr>`;
+    }
     // Codes saved before the age tiers existed carry no limit.
     function codeAgeLabel(value) {
       return value ? t(ageTier(value).label) : t("code.ageNone");
@@ -1495,15 +1588,72 @@
       else toast(t("dash.codeSavedIp", { ip }));
       viewCodes(main);
     };
+    const codeRpc = (name, args) =>
+      supabaseRequest(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) });
+    // the IP is only a fallback for the database (it reads the caller's own): never wait long
+    const ipSoon = () => Promise.race([C.publicIp(), new Promise((r) => setTimeout(() => r(""), 1500))]);
+    const rpcMissing = (r) => r.status === 404 || r.data?.code === "PGRST202";
+
+    // "Use on this device" / "Remember on this device": the code becomes the one
+    // this browser uses, and is remembered here (not asked again).
+    async function useHere(btn) {
+      const code = btn.dataset.use;
+      btn.disabled = true;
+      const r = await codeRpc("code_link_here", {
+        p_member: state.member.member_id,
+        p_code: code,
+        p_mac: here,
+        p_name: C.deviceName(),
+        p_ip: await ipSoon(),
+      });
+      const d = r.ok && r.data && typeof r.data === "object" ? r.data : null;
+      if (!d?.ok) {
+        btn.disabled = false;
+        if (r.blocked) return;
+        if (rpcMissing(r)) return toast(t("dash.code.devSql"));
+        if (d?.reason === "other_device") return toast(t("dash.code.otherFirst"));
+        if (["expired", "disabled", "banned"].includes(d?.reason)) {
+          return toast(t("dash.code.notUsable", { status: t(`dash.ov.st.${d.reason}`) }));
+        }
+        return toast(t("dash.code.devFail"));
+      }
+      C.setStoredCode(code);
+      toast(t("dash.code.usedHere", { code }));
+      viewCodes(main);
+    }
+
+    // "Unlink": the code is set free; the device it was on must type a code again
+    async function unlinkCode(btn) {
+      const code = btn.dataset.unlink;
+      if (!window.confirm(t("dash.code.unlinkAsk", { code, mac: `\u2066${btn.dataset.mac || ""}\u2069` }))) return;
+      btn.disabled = true;
+      const r = await codeRpc("code_unlink", { p_member: state.member.member_id, p_code: code });
+      const d = r.ok && r.data && typeof r.data === "object" ? r.data : null;
+      if (!d?.ok) {
+        btn.disabled = false;
+        if (r.blocked) return;
+        return toast(rpcMissing(r) ? t("dash.code.devSql") : t("dash.code.devFail"));
+      }
+      if (C.getStoredCode() === code) C.clearStoredCode();
+      toast(t("dash.code.unlinked", { code }));
+      viewCodes(main);
+    }
+
     $("#code-rows").onclick = async (e) => {
       const copy = e.target.closest("[data-copy]");
       const del = e.target.closest("[data-del]");
+      const use = e.target.closest("[data-use]");
+      const unlink = e.target.closest("[data-unlink]");
+      if (use) return useHere(use);
+      if (unlink) return unlinkCode(unlink);
       if (copy) {
         await navigator.clipboard.writeText(copy.dataset.copy);
         toast(t("dash.codeCopied"));
       }
       if (del) {
         await supabaseRequest(`/rest/v1/codes?code=eq.${restValue(del.dataset.del)}`, { method: "DELETE" });
+        // a deleted code is no longer remembered here either
+        if (C.getStoredCode() === del.dataset.del) C.clearStoredCode();
         toast(t("dash.codeDeleted"));
         viewCodes(main);
       }
