@@ -499,29 +499,98 @@
     location.href = isLoggedIn() ? "./dashboard.html#iptv" : "./login.html?next=" + encodeURIComponent("dashboard.html#iptv");
   });
 
-  /* Store buttons of the "Get the app" section. Put the real store addresses
-     here (the Google Play and App Store pages of the app); a store without an
-     address shows "Coming soon" instead of a dead link. */
-  const APP_LINKS = {
-    android: "", // e.g. "https://play.google.com/store/apps/details?id=com.cineaura.app"
-    ios: "", // e.g. "https://apps.apple.com/app/cineaura/id0000000000"
-  };
+  /* "Get the app": one card per platform (CineAura.APP_PLATFORMS in common.js).
+     The download links and versions are managed in Panel > Apps (table
+     app_downloads, sql/apps.sql). A platform with a link shows "Available", its
+     version and a Download button; one without a link shows "Coming soon". The
+     last answer is kept in this browser, so a repeat visit shows the cards at once. */
+  const APPS_KEY = "cineaura_apps";
+  const DL_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 10.5l5 5 5-5"/><path d="M5 20h14"/></svg>';
+  let appRows = null; // Map(platform -> row) once known
 
-  function setupStoreButtons() {
-    document.querySelectorAll("[data-store]").forEach((a) => {
-      const url = APP_LINKS[a.dataset.store];
-      if (url) {
-        a.href = url;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        return;
-      }
-      a.classList.add("is-soon");
-      a.removeAttribute("href");
-      a.setAttribute("aria-disabled", "true");
-    });
+  function readAppsCache() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(APPS_KEY) || "null");
+      return saved && Array.isArray(saved.rows) ? saved.rows : null;
+    } catch {
+      return null;
+    }
   }
 
-  document.addEventListener("DOMContentLoaded", setupStoreButtons);
+  function appCardHtml(p) {
+    const C = window.CineAura;
+    const esc = C.escapeHtml;
+    const row = appRows ? appRows.get(p.key) : null;
+    const url = row ? C.appDownloadUrl(row.url) : "";
+    const state = !appRows ? "loading" : url ? "available" : "soon";
+    let get = "";
+    if (state === "available") {
+      const version = C.appVersion(row.version);
+      // a file on this site downloads in place; another site opens in a new tab
+      const external = !url.startsWith("/") && new URL(url).origin !== location.origin;
+      const target = external ? ' target="_blank" rel="noopener noreferrer"' : " download";
+      get = `
+        <span class="app-os-ok"><i aria-hidden="true"></i>${esc(C.t("home.apps.available"))}</span>
+        ${version ? `<span class="app-os-ver" dir="auto">${esc(C.t("home.apps.version", { v: version }))}</span>` : ""}
+        <a class="btn btn-sm btn-primary app-os-dl" href="${esc(url)}"${target} aria-label="${esc(C.t("home.apps.downloadFor", { app: p.app, os: p.os }))}">${DL_ICON}<span>${esc(C.t("home.apps.download"))}</span></a>`;
+    } else if (state === "loading") {
+      get = '<span class="app-os-wait" aria-hidden="true"></span>';
+    }
+    return `
+      <article class="app-os" data-app="${p.key}" data-state="${state}">
+        <div class="app-os-top">
+          <span class="app-os-logo">${p.logo}</span>
+          ${state === "soon" ? `<span class="app-os-soon">${esc(C.t("home.app.soon"))}</span>` : ""}
+        </div>
+        <h3 class="app-os-name" dir="ltr">${esc(p.os)}</h3>
+        <p class="app-os-app" dir="ltr">${esc(p.app)}</p>
+        ${get}
+      </article>`;
+  }
+
+  function renderApps() {
+    const box = document.getElementById("app-platforms");
+    const C = window.CineAura;
+    if (!box || !C?.APP_PLATFORMS) return;
+    box.innerHTML = C.APP_PLATFORMS.map(appCardHtml).join("");
+    if (appRows) box.removeAttribute("aria-busy");
+  }
+
+  // source: "saved" (this browser's last answer), "live" (the database) or "none"
+  function setApps(rows, source) {
+    appRows = new Map((rows || []).map((r) => [String(r.platform || ""), r]));
+    renderApps();
+    const box = document.getElementById("app-platforms");
+    if (box) box.dataset.source = source;
+  }
+
+  async function setupApps() {
+    const C = window.CineAura;
+    if (!document.getElementById("app-platforms") || !C?.APP_PLATFORMS) return;
+    const cached = readAppsCache();
+    if (cached) setApps(cached, "saved");
+    else renderApps();
+    document.addEventListener("cineaura:prefs", renderApps);
+    let rows = null;
+    try {
+      const res = await C.supabaseRequest("/rest/v1/app_downloads?select=platform,url,version");
+      if (res.ok && Array.isArray(res.data)) rows = res.data;
+      else if (res.status === 404) rows = []; // no such table (sql/apps.sql not run): nothing to download
+    } catch {
+      /* offline: keep what is shown */
+    }
+    if (rows) {
+      try {
+        localStorage.setItem(APPS_KEY, JSON.stringify({ at: Date.now(), rows }));
+      } catch {
+        /* storage full or blocked */
+      }
+      setApps(rows, "live");
+    } else if (!appRows) {
+      setApps([], "none"); // no answer and nothing saved: "Coming soon"
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", setupApps);
   document.addEventListener("DOMContentLoaded", init);
 })();

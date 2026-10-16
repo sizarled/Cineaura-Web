@@ -20,7 +20,7 @@
   } = window.CineAura;
 
   const PANEL_KEY = "cineaura_panel";
-  const ALL_SECTIONS = ["accounts", "links", "iptv", "reports", "prizes", "messages", "staff", "settings"];
+  const ALL_SECTIONS = ["accounts", "links", "iptv", "apps", "reports", "prizes", "messages", "staff", "settings"];
   const FEATURES = ["links", "messages", "comments", "posts", "reports"];
   const requestedSection = new URLSearchParams(location.search).get("section");
 
@@ -302,6 +302,7 @@
       accounts: viewAccounts,
       links: viewLinks,
       iptv: viewIptv,
+      apps: viewApps,
       reports: viewReports,
       prizes: viewPrizes,
       messages: viewMessages,
@@ -1906,6 +1907,137 @@
         viewStaff(main);
       }
     };
+  }
+
+  // ---------- Apps: the download cards of the home page ("Get the app") ----------
+  // One row per platform in app_downloads (sql/apps.sql). Saving goes through the
+  // staff RPC staff_app_save, which checks the panel session and the Apps section:
+  // the table cannot be written with the public key.
+  const APP_GROUPS = ["CineAura PC", "CineAura Mobile", "CineAura TV"];
+  const APP_PLACEHOLDER = {
+    windows: "https://…/CineAura-PC-1.0.exe",
+    linux: "https://…/CineAura-PC-1.0.AppImage",
+    macos: "https://…/CineAura-PC-1.0.dmg",
+    android: "https://…/CineAura-Mobile-1.0.apk",
+    ios: "https://apps.apple.com/…",
+    androidtv: "https://…/CineAura-TV-1.0.apk",
+  };
+
+  function appRowHtml(p, row, locked) {
+    const C = window.CineAura;
+    const url = String(row?.url || "");
+    const live = C.appDownloadUrl(url);
+    const version = row ? String(row.version ?? "") : "1.0";
+    const changed = row?.updated_by && row?.updated_at ? t("panel.apps.changed", { who: row.updated_by, date: formatDate(row.updated_at) }) : "";
+    const off = locked ? " disabled" : "";
+    return `
+      <form class="mini-card apx-row" data-app="${p.key}" novalidate>
+        <div class="apx-head">
+          <span class="app-os-logo apx-logo" aria-hidden="true">${p.logo}</span>
+          <div class="apx-name"><strong dir="ltr">${escapeHtml(p.os)}</strong><small dir="ltr">${escapeHtml(p.app)}</small></div>
+          <span class="apx-state${live ? " on" : ""}">${escapeHtml(live ? t("home.apps.available") : t("home.app.soon"))}</span>
+        </div>
+        <div class="apx-fields">
+          <label class="apx-field">
+            <span>${t("panel.apps.link")}</span>
+            <input name="url" type="url" dir="ltr" inputmode="url" autocomplete="off" spellcheck="false" maxlength="1000" value="${escapeHtml(url)}" placeholder="${escapeHtml(APP_PLACEHOLDER[p.key] || "https://…")}"${off} />
+          </label>
+          <label class="apx-field apx-ver">
+            <span>${t("panel.apps.version")}</span>
+            <input name="version" dir="ltr" autocomplete="off" spellcheck="false" maxlength="20" value="${escapeHtml(version)}" placeholder="1.0"${off} />
+          </label>
+        </div>
+        <div class="apx-actions">
+          <button class="btn btn-sm btn-primary" type="submit"${off}>${t("common.save")}</button>
+          ${live ? `<a class="btn btn-sm btn-ghost" href="${escapeHtml(live)}" target="_blank" rel="noopener noreferrer">${t("common.open")}</a>` : ""}
+          ${url && !locked ? `<button class="btn btn-sm btn-ghost" type="button" data-app-clear>${t("panel.apps.remove")}</button>` : ""}
+          ${changed ? `<small class="muted apx-changed">${escapeHtml(changed)}</small>` : ""}
+        </div>
+      </form>`;
+  }
+
+  function bindAppRow(form) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      saveApp(form, false);
+    });
+    form.querySelector("[data-app-clear]")?.addEventListener("click", () => saveApp(form, true));
+  }
+
+  async function saveApp(form, clear) {
+    const C = window.CineAura;
+    const p = C.APP_PLATFORMS.find((x) => x.key === form.dataset.app);
+    if (!p) return;
+    const url = clear ? "" : form.elements.url.value.trim();
+    const version = form.elements.version.value.trim();
+    if (url && !C.appDownloadUrl(url)) {
+      toast(t("panel.apps.badUrl"));
+      form.elements.url.focus();
+      return;
+    }
+    const buttons = [...form.querySelectorAll("button")];
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+    let error = "";
+    let row = null;
+    try {
+      const res = await C.rpc("staff_app_save", { p_token: state.staff?.token || "", p_platform: p.key, p_url: url, p_version: version });
+      const msg = String(res.data?.message || "");
+      if (res.ok && res.data?.ok) row = res.data.row;
+      else if (res.ok) error = res.data?.error || "fail";
+      else if (msg.includes("staff_auth")) error = "auth";
+      else if (msg.includes("staff_forbidden")) error = "forbidden";
+      else if (res.status === 404) error = "sql"; // sql/apps.sql not run yet
+      else error = "fail";
+    } catch {
+      error = "fail";
+    }
+    if (!row) {
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
+      const key = {
+        bad_url: "panel.apps.badUrl",
+        bad_version: "panel.apps.badVersion",
+        auth: "pza.errAuth",
+        forbidden: "panel.apps.forbidden",
+        sql: "panel.apps.noTable",
+      }[error];
+      toast(t(key || "panel.actFail"));
+      return;
+    }
+    toast(t(row.url ? "panel.apps.saved" : "panel.apps.cleared", { os: p.os }));
+    const fresh = document.createElement("div");
+    fresh.innerHTML = appRowHtml(p, row, false);
+    const next = fresh.firstElementChild;
+    form.replaceWith(next);
+    bindAppRow(next);
+    next.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
+  }
+
+  async function viewApps(main) {
+    const C = window.CineAura;
+    const res = await supabaseRequest("/rest/v1/app_downloads?select=*");
+    const missing = !res.ok || !Array.isArray(res.data); // sql/apps.sql not run yet
+    const rows = new Map((missing ? [] : res.data).map((r) => [r.platform, r]));
+    main.innerHTML = `
+      <p class="eyebrow">${t("panel.nav.apps")}</p>
+      <h1>${t("panel.apps.title")}</h1>
+      <p class="muted">${t("panel.apps.lead")}</p>
+      ${missing ? `<div class="form-alert show warn apx-alert">${t("panel.apps.noTable")}</div>` : ""}
+      <div class="apx-groups">
+        ${APP_GROUPS.map(
+          (app) => `
+          <section class="apx-group">
+            <h2 dir="ltr">${escapeHtml(app)}</h2>
+            ${C.APP_PLATFORMS.filter((p) => p.app === app)
+              .map((p) => appRowHtml(p, rows.get(p.key), missing))
+              .join("")}
+          </section>`
+        ).join("")}
+      </div>`;
+    main.querySelectorAll("form.apx-row").forEach(bindAppRow);
   }
 
   async function viewSettings(main) {

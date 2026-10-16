@@ -2276,7 +2276,7 @@ html.sset-lock {
   .pt-count, .pt-pts { min-width: 34px; }
 }
 
-/* ── Mobile app section (home page) ───────────────────────────────────── */
+/* ── Apps section (home page) ─────────────────────────────────────────── */
 .app-card {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
@@ -2305,74 +2305,203 @@ html.sset-lock {
   margin-bottom: 26px;
 }
 
-.store-row {
+/* Download cards, one per platform (filled by js/main.js from Panel > Apps).
+   data-state: loading | available (Available, version, Download) | soon.
+   Three per row leaves room for "Coming soon" beside the logo in every language. */
+.app-platforms {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.app-os {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 18px 12px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  text-align: center;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.app-os[data-state="available"] {
+  border-color: rgba(144, 206, 161, 0.32);
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgba(144, 206, 161, 0.12), transparent 70%),
+    var(--card-bg);
+}
+
+.app-os[data-state="available"]:hover {
+  transform: translateY(-3px);
+  border-color: rgba(144, 206, 161, 0.6);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+}
+
+.app-os-top {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 58px;
 }
 
-.store-btn {
-  position: relative;
+.app-os-logo {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.app-os-logo svg {
+  width: 30px;
+  height: 30px;
+}
+
+.app-os-name {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.app-os-app {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.app-os-ok {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  min-width: 190px;
-  padding: 10px 18px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(4, 14, 24, 0.55);
-  color: var(--text);
-  text-decoration: none;
-  transition: transform 0.15s ease, border-color 0.15s ease;
-}
-
-.store-btn:hover {
-  transform: translateY(-2px);
-  border-color: var(--cyan);
-}
-
-.store-txt {
-  display: grid;
-  line-height: 1.15;
-  text-align: start;
-}
-
-.store-txt small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.store-txt b {
-  font-size: 17px;
-  font-weight: 650;
-}
-
-/* No store address yet (see APP_LINKS in js/main.js): the button says so. */
-.store-soon {
-  display: none;
-  position: absolute;
-  inset-block-start: -9px;
-  inset-inline-end: 12px;
-  padding: 1px 9px;
+  gap: 7px;
+  margin: 10px 0 2px;
+  padding: 3px 11px;
   border-radius: 999px;
-  background: var(--green);
-  color: #06210f;
-  font-size: 10.5px;
-  font-weight: 800;
+  background: rgba(144, 206, 161, 0.14);
+  color: var(--green);
+  font-size: 12.5px;
+  font-weight: 700;
 }
 
-.store-btn.is-soon {
-  cursor: default;
-  opacity: 0.85;
+.app-os-ok i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px rgba(144, 206, 161, 0.2);
 }
 
-.store-btn.is-soon:hover {
-  transform: none;
-  border-color: var(--line);
+.app-os-ver {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
-.store-btn.is-soon .store-soon {
-  display: inline-block;
+.app-os-dl {
+  width: 100%;
+  max-width: 230px;
+  margin-top: auto;
+  justify-content: center;
+  gap: 7px;
+}
+
+/* Coming soon: the logo, with the word next to it */
+.app-os[data-state="soon"] {
+  justify-content: center;
+}
+
+.app-os[data-state="soon"] .app-os-logo {
+  opacity: 0.6;
+  filter: grayscale(1);
+}
+
+.app-os[data-state="soon"] .app-os-name {
+  color: var(--muted);
+}
+
+.app-os-soon {
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px dashed rgba(155, 176, 194, 0.45);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* while the links load: a quiet placeholder where the button goes */
+.app-os-wait {
+  width: 100%;
+  height: 34px;
+  margin-top: auto;
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+  background-size: 200% 100%;
+  animation: app-os-wait 1.4s ease-in-out infinite;
+}
+
+@keyframes app-os-wait {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-os-wait { animation: none; }
+  .app-os { transition: none; }
+}
+
+html[data-theme="day"] .app-os-logo {
+  background: rgba(13, 37, 63, 0.04);
+}
+
+html[data-theme="day"] .app-os-ok {
+  color: #2f7a4a;
+}
+
+html[data-theme="day"] .app-os-wait {
+  background-image: linear-gradient(90deg, rgba(13, 37, 63, 0.04), rgba(13, 37, 63, 0.09), rgba(13, 37, 63, 0.04));
+}
+
+@media (max-width: 700px) {
+  .app-platforms {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .app-os {
+    padding: 14px 10px 12px;
+  }
+
+  .app-os-top {
+    gap: 6px;
+  }
+
+  .app-os-logo {
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+  }
+
+  .app-os-logo svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .app-os-soon {
+    padding: 3px 8px;
+    font-size: 12px;
+  }
 }
 
 /* Two phones drawn in CSS: no image to load. */
@@ -2526,11 +2655,13 @@ html.sset-lock {
     grid-template-columns: 1fr;
   }
 
-  .app-phones {
-    min-height: 340px;
+  /* one column: the download cards come right after the text, the drawing last */
+  .app-platforms {
+    order: 1;
   }
 
-  .store-btn {
-    flex: 1 1 100%;
+  .app-phones {
+    order: 2;
+    min-height: 340px;
   }
 }
