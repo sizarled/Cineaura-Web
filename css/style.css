@@ -1790,7 +1790,8 @@ html[dir="rtl"] .prof-side nav button .sec-badge {
 
 /* ── Most watched channels (home page, IPTV section) ───────────────────────
    Filled by js/home-channels.js. Scrolls sideways like Featured Movies; each
-   card says Free ("Watch Now") or Premium ("Premium membership required"). */
+   card says Free ("Watch Now": the channel list, playing) or Premium
+   ("Premium membership required": Dashboard > IPTV). */
 .tch {
   margin-bottom: 34px;
 }
@@ -1851,10 +1852,6 @@ html[dir="rtl"] .prof-side nav button .sec-badge {
 .tch-card:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
-}
-
-.tch-card.is-playing {
-  box-shadow: 0 0 0 2px var(--cyan);
 }
 
 .tch-media {
@@ -1954,32 +1951,13 @@ html[dir="rtl"] .prof-side nav button .sec-badge {
 }
 
 .tch-card:hover .tch-play,
-.tch-card:focus-visible .tch-play,
-.tch-card.is-busy .tch-play {
+.tch-card:focus-visible .tch-play {
   opacity: 1;
 }
 
-.tch-card.is-locked .play-orb {
+.tch-card.is-prem .play-orb {
   background: linear-gradient(90deg, #ffd66b, #f5a524);
   color: #3a2600;
-}
-
-.tch-card.is-busy .play-orb svg {
-  display: none;
-}
-
-.tch-card.is-busy .play-orb::after {
-  content: "";
-  width: 20px;
-  height: 20px;
-  border: 2.5px solid currentColor;
-  border-inline-end-color: transparent;
-  border-radius: 50%;
-  animation: tch-spin 0.8s linear infinite;
-}
-
-@keyframes tch-spin {
-  to { transform: rotate(360deg); }
 }
 
 .tch-info {
@@ -2046,7 +2024,7 @@ html[dir="rtl"] .prof-side nav button .sec-badge {
   vertical-align: -2px;
 }
 
-.tch-card.is-locked .tch-cta {
+.tch-card.is-prem .tch-cta {
   background: rgba(245, 165, 36, 0.14);
   color: #f7c35c;
 }
@@ -2055,7 +2033,7 @@ html[data-theme="day"] .tch-cta {
   color: #1d7a33;
 }
 
-html[data-theme="day"] .tch-card.is-locked .tch-cta {
+html[data-theme="day"] .tch-card.is-prem .tch-cta {
   color: #9a5b00;
 }
 
@@ -2084,102 +2062,6 @@ html[data-theme="day"] .tch-card.is-locked .tch-cta {
   margin-top: 6px;
 }
 
-/* "Sign in to watch" / "Premium membership required" */
-.tch-gate-back {
-  position: fixed;
-  inset: 0;
-  z-index: 300;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: rgba(0, 0, 0, 0.6);
-}
-
-.tch-gate {
-  position: relative;
-  width: min(420px, 100%);
-  padding: 22px;
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-  color: var(--text);
-}
-
-.tch-gate-back .tch-gate:focus,
-.tch-gate-back .tch-gate:focus-visible {
-  outline: none; /* the dialog itself takes the focus when it opens */
-}
-
-.tch-gate-head {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 12px;
-  padding-inline-end: 30px;
-}
-
-.tch-gate-head .tch-logo {
-  flex: none;
-  width: 64px;
-  height: 64px;
-  overflow: hidden;
-  border-radius: 10px;
-  background: #0b1520;
-}
-
-.tch-gate-head .tch-logo img {
-  padding: 6px;
-}
-
-.tch-gate-head .tch-letters {
-  font-size: 20px;
-}
-
-.tch-gate-head h3 {
-  margin: 0 0 6px;
-  font-size: 18px;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.tch-gate .tch-badge {
-  position: static;
-}
-
-.tch-gate p {
-  margin: 0 0 18px;
-  color: var(--muted);
-  font-size: 14.5px;
-  line-height: 1.5;
-}
-
-.tch-gate-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.tch-gate-actions .btn {
-  height: 40px;
-  padding: 0 18px;
-  font-size: 14px;
-}
-
-.tch-gate-x {
-  position: absolute;
-  top: 12px;
-  inset-inline-end: 12px;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 50%;
-  background: var(--sub-bg);
-  color: var(--text);
-  cursor: pointer;
-}
-
 @media (max-width: 640px) {
   .tch-card {
     width: 144px;
@@ -2200,8 +2082,7 @@ html[data-theme="day"] .tch-card.is-locked .tch-cta {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tch-live i,
-  .tch-card.is-busy .play-orb::after {
+  .tch-live i {
     animation: none;
   }
 }

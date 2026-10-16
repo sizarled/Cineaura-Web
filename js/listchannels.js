@@ -21,8 +21,10 @@
  * package for the member it is assigned to (the same rule as Dashboard > IPTV:
  * owner_id holds the member id, or the username on a row typed by hand), and
  * the staff always. Guests see the list with a sign-in notice that brings them
- * back here. &channel=<id> opens a channel at once, and the browser's Back
- * button closes the player.
+ * back here. &channel=<id> opens a channel at once (the "Watch Now" of a free
+ * channel under Most watched channels on the home page), and the browser's Back
+ * button closes the player. A guest who opens such a link, or tries a card,
+ * comes back from the sign-in page with that channel playing.
  *
  * When the package has a programme guide (EPG), every live channel card that
  * comes near the screen shows what is on now, with how far it has got.
@@ -61,6 +63,7 @@
     packs: [], // free mode: the free packages, in the order of Panel > IPTV
     byKey: new Map(), // check key -> row indexes (one stream can sit in several groups)
     access: "ok", // ok | signin | locked
+    wanted: "", // a guest: id of the channel to play after signing in
     query: "",
     groupQuery: "",
     type: pick(params.get("type"), TYPES, "all"),
@@ -1055,8 +1058,17 @@
 
   const pageUrl = (row) => `${location.pathname}?${pageQuery(row)}`;
 
-  // the sign-in page brings the member back to this list, filters included
-  const signinUrl = () => `./login.html?next=${encodeURIComponent(`Listchannels.html?${pageQuery(null)}`)}`;
+  // the sign-in page brings the member back to this list, filters included, and
+  // to the channel they wanted playing
+  const signinUrl = () => `./login.html?next=${encodeURIComponent(`Listchannels.html?${pageQuery(state.wanted ? { id: state.wanted } : null)}`)}`;
+
+  // a guest asked for this channel: it is the one that plays after signing in
+  function want(row) {
+    if (state.access !== "signin" || !row) return;
+    state.wanted = String(row.id);
+    const link = document.querySelector("#chl-note [data-signin]");
+    if (link) link.href = signinUrl();
+  }
 
   function syncFilterUrl() {
     if (!state.loaded || player().isOpen()) return;
@@ -1131,8 +1143,11 @@
   }
 
   function openCard(card) {
-    if (!canPlay()) return;
     const i = Number(card.dataset.ch);
+    if (!canPlay()) {
+      want(state.rows[i]);
+      return;
+    }
     const at = state.view.indexOf(i);
     const list = at >= 0 ? state.view : [i];
     openPlayer(list.map((j) => state.rows[j]), Math.max(0, at), true);
@@ -1140,7 +1155,16 @@
 
   function openFromAddress() {
     const wanted = (params.get("channel") || "").trim();
-    if (!wanted || state.access !== "ok") return;
+    if (!wanted) return;
+    if (state.access !== "ok") {
+      // a guest (or a member without this package): say why it does not play
+      const row = state.rows.find((r) => String(r.id) === wanted);
+      if (row) {
+        want(row);
+        canPlay();
+      }
+      return;
+    }
     let list = state.view;
     let at = list.findIndex((i) => String(state.rows[i].id) === wanted);
     if (at < 0) {

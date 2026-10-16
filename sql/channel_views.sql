@@ -105,12 +105,11 @@ end $$;
 -- The home page row: the p_limit (1-50) channels watched most over the last
 -- p_days (1-365) days, then - while fewer have been watched - channels with a
 -- logo from the free and premium packages, in turn. One entry per channel:
---   key, id, name, group, logo, package   the row to show and open (a free one
---                                         when there is one)
---   free     true when a free package carries it
---   packs    premium packages that carry it: [[listchannels id, package], ...]
---            (empty for a free channel), so a member who owns one of them can
---            watch it from that package
+--   key, id, name, group, logo, package   the row to show (a free one when
+--                                         there is one: the card opens it on
+--                                         Listchannels.html?free=1&channel=id)
+--   free     true when a free package carries it (a premium card leads to
+--            Dashboard > IPTV instead)
 --   views    member-days in the period (0 for the filling)
 create or replace function public.channel_top(p_limit integer default 20, p_days integer default 30)
 returns jsonb language sql stable security definer set search_path = public as $$
@@ -209,15 +208,6 @@ returns jsonb language sql stable security definer set search_path = public as $
       'package', (array_agg(r.package_name order by r.free desc, (r.logo_url <> '') desc, r.id))[1],
       'logo', (array_agg(r.logo_url order by (r.logo_url <> '') desc, r.free desc, r.id))[1],
       'free', bool_or(r.free),
-      'packs', case when bool_or(r.free) then '[]'::jsonb else (
-        select coalesce(jsonb_agg(jsonb_build_array(x.id, x.package_name) order by x.package_name), '[]'::jsonb)
-        from (
-          select distinct on (r2.package_name) r2.id, r2.package_name
-          from rows r2 where r2.k = r.k
-          order by r2.package_name, r2.id
-          limit 30
-        ) x
-      ) end,
       'views', r.views
     ) as item
     from rows r

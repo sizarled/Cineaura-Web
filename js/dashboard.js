@@ -289,8 +289,20 @@
       </div>`;
     $("#dash-root").onclick = onShellClick;
     C.mountSideToggle($("#dash-root .dash-layout"));
+    showActiveTab();
     hydrateAvatars($("#dash-root"));
     renderSection();
+  }
+
+  // Phones: the menu is a strip that scrolls sideways. Keep the open section in
+  // sight (dashboard.html#iptv from the home page, or a tap further along).
+  function showActiveTab() {
+    const strip = $("#dash-root .side-nav");
+    const on = strip?.querySelector("button.active");
+    if (!on || strip.scrollWidth <= strip.clientWidth + 1) return;
+    const s = strip.getBoundingClientRect();
+    const b = on.getBoundingClientRect();
+    strip.scrollLeft += b.left + b.width / 2 - (s.left + s.width / 2);
   }
 
   function onShellClick(e) {
