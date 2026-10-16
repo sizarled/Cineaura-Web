@@ -3131,7 +3131,11 @@
     msg.textContent = result.message;
     msg.className = "gate-msg ok";
     $("#code-input").value = "";
-    toast(remember ? t("watch.codeSaved") : t("watch.codeOk"));
+    // a device that had no code yet has just joined its owner's Linked devices
+    // (one that left another code for this one was already there)
+    const accepted = remember ? t("watch.codeSaved") : t("watch.codeOk");
+    const added = result.linked && !(result.row?.freed || []).length;
+    toast(added ? `${accepted} ${t("watch.devAdded")}` : accepted);
     hideGate(); // before playing: a member link refuses to start behind the gate
     playArmed();
   }
