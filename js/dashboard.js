@@ -310,6 +310,9 @@
     if (sec) {
       state.section = sec.dataset.section;
       state.openPlaylist = null;
+      // the address follows the open section, so a link to another one (a
+      // notification: dashboard.html#claims) always counts as a change
+      if (location.hash !== `#${state.section}`) history.replaceState(history.state, "", `#${state.section}`);
       renderShell();
       return;
     }
@@ -357,6 +360,14 @@
         b.setAttribute("aria-selected", String(on));
       });
       panes.forEach((x) => { x.hidden = x.dataset.dpane !== cur; });
+      // phones: a strip that scrolls sideways keeps the open tab in sight
+      // (dashboard.html#claims opens Prizes > Prize claims, near the end of the strip)
+      const on = bar.querySelector("[data-dtab].active");
+      if (on && bar.scrollWidth > bar.clientWidth + 1) {
+        const s = bar.getBoundingClientRect();
+        const b = on.getBoundingClientRect();
+        bar.scrollLeft += b.left + b.width / 2 - (s.left + s.width / 2);
+      }
     };
     bar.onclick = (e) => {
       const b = e.target.closest("[data-dtab]");
@@ -1763,6 +1774,7 @@
       dateRes,
       historyRes,
       limitRes,
+      claimRes,
     ] = await Promise.all([
       supabaseRequest("/rest/v1/prizes?select=*&order=minutes_required.asc,id.asc"),
       supabaseRequest("/rest/v1/prize_modes?select=*&order=sort_order.asc,id.asc"),
@@ -1774,6 +1786,7 @@
       supabaseRequest("/rest/v1/prize_country_dates?select=*&order=id.asc"),
       supabaseRequest(`/rest/v1/hestory?visitor_id=eq.${memberFilter}&select=tmdb_id,media_type,visited_at`),
       R?.loadLimits ? R.loadLimits() : Promise.resolve({ limits: null, ok: false }),
+      R?.loadClaims ? R.loadClaims(memberId) : Promise.resolve({ ok: false, rows: [] }),
     ]);
 
     const prizes = prizeRes.ok && Array.isArray(prizeRes.data) ? prizeRes.data : [];
@@ -1786,6 +1799,15 @@
     const countryDates = dateRes.ok && Array.isArray(dateRes.data) ? dateRes.data : [];
     const history = historyRes.ok && Array.isArray(historyRes.data) ? historyRes.data : [];
     const seen = new Set(history.map((row) => `${row.media_type}:${row.tmdb_id}`));
+    // Prize claims (sql/prize_claims.sql): the review of every claim, and a block
+    // on new claims after a rejected one.
+    const claims = claimRes?.rows || [];
+    const claimBlock = R?.claimBlock ? R.claimBlock(claims) : null;
+    const entryClaim = (entryId) => (R?.claimForEntry ? R.claimForEntry(claims, entryId) : null);
+    const plainClaim = (p) => (R?.claimForPrize ? R.claimForPrize(claims, p) : null);
+    // The button of a prize the member won: "Claim prize", then the claim's state.
+    const claimCta = (claim, requestedAt) =>
+      claim ? t(`pzc.st.${R.claimState(claim)}`) : requestedAt ? t("prize.claimRequested") : t("prize.claim");
     const mp = await C.memberPoints(memberId, state.profile || {});
     const totalPoints = Number(mp.available || 0);
     const totalMinutes = Number(state.profile?.private_minutes || 0) + Number(state.profile?.public_minutes || 0);
@@ -1959,7 +1981,7 @@
       if (gift) {
         const result = modeState(p, gift);
         if (result.canJoin) available.push({ prize: p, mode: gift, claimReady: false });
-      } else if (!prizeModes.length && canClaimPlain(p)) {
+      } else if (!prizeModes.length && canClaimPlain(p) && R?.claimState?.(plainClaim(p)) !== "rejected") {
         available.push({ prize: p, mode: null, claimReady: false, legacy: true });
       }
     });
@@ -1980,30 +2002,34 @@
       return mode ? [{ prize: p, mode, status: modeState(p, mode) }] : [];
     });
 
+    const imageOf = (p) => {
+      const group = groupFor(p);
+      const gallery = [p.prize_image, ...(Array.isArray(p.images) ? p.images : String(p.images || "").split(/[\r\n]+/)), p.group_thumb, group?.thumb];
+      return gallery.map((url) => String(url || "").trim()).find((url) => /^https?:\/\//i.test(url)) || initialsAvatar(p.title || "CineAura");
+    };
     const cards = (rows, kind) => rows.length
       ? `<div class="dash-prize-grid">${rows.map((row) => {
           const p = row.prize;
           const mode = row.mode;
           const modeName = mode ? modeKey(mode) : "gift";
-          const group = groupFor(p);
-          const gallery = [p.prize_image, ...(Array.isArray(p.images) ? p.images : String(p.images || "").split(/[\r\n]+/)), p.group_thumb, group?.thumb];
-          const image = gallery.map((url) => String(url || "").trim()).find((url) => /^https?:\/\//i.test(url)) || initialsAvatar(p.title || "CineAura");
+          const image = imageOf(p);
           const fallback = initialsAvatar(p.title || "CineAura");
           const modeStatus = row.status || (mode ? modeState(p, mode) : null);
           const entryStatus = kind === "mine" ? String(p.__entryStatus || "").toLowerCase() : "";
           let action = t("dash.viewPrize");
           const details = [];
           if (kind === "mine" && entryStatus) details.push(t(`prize.status.${entryStatus}`));
+          const myClaim = kind === "mine" ? p.__claim : modeStatus?.mine ? entryClaim(modeStatus.mine.id) : null;
           if (row.claimReady && modeName === "challenge") action = t("pzm.confirmWin");
           else if (kind === "available") action = t("prize.claim");
-          else if (kind === "mine" && entryStatus === "winner") action = p.__claimRequestedAt ? t("prize.claimRequested") : t("prize.claim");
+          else if (kind === "mine" && (entryStatus === "winner" || myClaim)) action = claimCta(myClaim, p.__claimRequestedAt);
           else if (modeName === "challenge") {
-            action = String(modeStatus?.mine?.status || "").toLowerCase() === "winner"
-              ? modeStatus.mine.claim_requested_at ? t("prize.claimRequested") : t("prize.claim")
+            action = String(modeStatus?.mine?.status || "").toLowerCase() === "winner" || myClaim
+              ? claimCta(myClaim, modeStatus.mine.claim_requested_at)
               : modeStatus?.mine ? t("dash.continueChallenge") : modeStatus?.canJoin ? t("dash.joinChallenge") : t("dash.viewPrize");
           } else if (modeName === "lottery") {
-            action = String(modeStatus?.mine?.status || "").toLowerCase() === "winner"
-              ? modeStatus.mine.claim_requested_at ? t("prize.claimRequested") : t("prize.claim")
+            action = String(modeStatus?.mine?.status || "").toLowerCase() === "winner" || myClaim
+              ? claimCta(myClaim, modeStatus.mine.claim_requested_at)
               : modeStatus?.mine ? t("dash.viewDraw") : modeStatus?.canJoin ? t("prize.enterLottery") : t("dash.viewPrize");
           }
           if (row.progress) details.push(t("dash.challengeProgress", { done: row.progress.completed, total: row.progress.total }));
@@ -2039,14 +2065,14 @@
       const mode = modes.find((row) => String(row.id) === String(entry.mode_id)) || null;
       const modeName = String(entry.mode || mode?.mode || "gift").toLowerCase();
       const status = String(entry.status || "competitor").toLowerCase();
-      const p = { ...prize, __entryStatus: status, __entryMode: modeName, __claimRequestedAt: entry.claim_requested_at || null };
+      const p = { ...prize, __entryStatus: status, __entryMode: modeName, __claimRequestedAt: entry.claim_requested_at || null, __claim: entryClaim(entry.id) };
       const progressInfo = modeName === "challenge" && mode ? challengeProgress(prize, mode, entry) : null;
       mineRows.push({ prize: p, mode: mode || { mode: modeName, points_cost: entry.points_paid || 0 }, claimReady: status === "competitor" && Boolean(progressInfo?.ready), progress: progressInfo });
     });
     winners.forEach((winner) => {
       if (mineRows.some((row) => String(row.prize.title) === String(winner.prize_title))) return;
       const prize = prizes.find((p) => String(p.title) === String(winner.prize_title));
-      if (prize) mineRows.push({ prize: { ...prize, __entryStatus: "winner", __entryMode: "gift", __claimRequestedAt: winner.claim_requested_at || null }, mode: null });
+      if (prize) mineRows.push({ prize: { ...prize, __entryStatus: "winner", __entryMode: "gift", __claimRequestedAt: winner.claim_requested_at || null, __claim: plainClaim(prize) }, mode: null });
     });
     mineRows.sort((a, b) => Number(b.claimReady) - Number(a.claimReady) || String(a.prize.title).localeCompare(String(b.prize.title)));
 
@@ -2065,11 +2091,49 @@
         }).join("")}</div>`
       : `<p class="empty">${escapeHtml(t("dash.noGroups"))}</p>`;
 
+    // Prize claims: every claim with its steps (Claim submitted -> Claim under
+    // review -> Claim accepted / rejected); a rejected one shows the reason and
+    // the action the team took.
+    const CLAIM_HINT = { submitted: "pzc.hint.submitted", review: "pzc.hint.review", accepted: "pzc.hint.accepted", rejected: "pzc.hint.rejected" };
+    const claimCards = claims.length && R?.claimStepsHtml
+      ? `<div class="pzc-mine">${claims.map((c) => {
+          const st = R.claimState(c);
+          const p = prizes.find((x) => String(x.id) === String(c.prize_id)) || null;
+          const title = c.prize_title || p?.title || "";
+          const fallback = initialsAvatar(title || "CineAura");
+          const modeName = R.lc(c.mode);
+          const query = p ? new URLSearchParams({ GroupPrize: String(p.group_id ?? 0), Prize: String(p.id), ...(R.MODES.includes(modeName) ? { mode: modeName } : {}) }) : null;
+          const href = query ? `./Prize.html?${query.toString()}` : "";
+          const meta = [R.MODES.includes(modeName) ? t(`prize.mode.${modeName}`) : "", t("pza.paid", { n: Number(c.points_paid || 0) })].filter(Boolean).join(" · ");
+          const thumb = `<img src="${escapeHtml(p ? imageOf(p) : fallback)}" alt="" loading="lazy" onerror="this.onerror=null;this.src='${escapeHtml(fallback)}'" />`;
+          return `<article class="pzc-item is-${st}" data-claim="${escapeHtml(c.id)}">
+            ${href ? `<a class="pzc-thumb" href="${escapeHtml(href)}" tabindex="-1" aria-hidden="true">${thumb}</a>` : `<span class="pzc-thumb">${thumb}</span>`}
+            <div class="pzc-item-body">
+              <div class="pzc-item-top">
+                <strong>${href ? `<a href="${escapeHtml(href)}">${escapeHtml(title)}</a>` : escapeHtml(title)}</strong>
+                <span class="pzc-badge cs-${st}">${escapeHtml(t(`pzc.st.${st}`))}</span>
+              </div>
+              <p class="pzc-meta">${escapeHtml(meta)}</p>
+              ${R.claimStepsHtml(c)}
+              <p class="pzc-hint">${escapeHtml(t(CLAIM_HINT[st]))}</p>
+              ${R.claimVerdictHtml(c)}
+            </div>
+          </article>`;
+        }).join("")}</div>`
+      : `<p class="empty">${escapeHtml(t("pzc.none"))}</p>`;
+    const blockHtml = claimBlock
+      ? `<div class="pzc-blocked" role="status"><span>${R.CLAIM_ICON?.ban || ""}</span><div>
+          <b>${escapeHtml(t("pzc.blocked", { d: R.claimWhen(claimBlock.claim.restricted_until) }))}</b>
+          ${claimBlock.claim.reason ? `<p>${escapeHtml(t("pzc.reason"))}: <bdi>${escapeHtml(claimBlock.claim.reason)}</bdi></p>` : ""}
+        </div></div>`
+      : "";
+
     const tabs = [
       { id: "available", label: t("dash.availablePrizes"), pane: cards(available, "available") },
       { id: "challenge", label: t("prize.mode.challenge"), pane: cards(challengePrizes, "challenge") },
       { id: "lottery", label: t("prize.mode.lottery"), pane: cards(lotteryPrizes, "lottery") },
       { id: "mine", label: t("dash.yourPrizes"), pane: cards(mineRows, "mine") },
+      { id: "claims", label: t("pzc.tab"), pane: claimCards },
       { id: "groups", label: t("dash.tabGroups"), pane: groupCards },
     ];
     main.innerHTML = `
@@ -2078,6 +2142,7 @@
       <div class="stat"><b>${totalPoints}</b><span>${t("points.available")}</span></div>
       <div style="margin-top:14px">${C.pointsHtml(mp)}</div>
       <p class="muted" style="margin-top:10px">${t("dash.totalPrivPub")}: <b>${totalMinutes}</b></p>
+      ${blockHtml}
       <div class="tabs follow-tabs dash-prize-tabs" data-tabbar role="tablist" aria-label="${escapeHtml(t("dash.prizes"))}">
         ${tabs.map((tab) => `<button type="button" role="tab" class="follow-tab" data-dtab="prize-${tab.id}">${escapeHtml(tab.label)}</button>`).join("")}
       </div>
@@ -2268,15 +2333,40 @@
   }
 
   const SECTIONS = ["overview","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"];
+  // dashboard.html#claims: Prizes > Prize claims (where the claim notifications lead)
+  const HASH_ALIASES = { claims: { section: "prizes", tabs: { prizeModes: "prize-claims" } } };
+
+  function routeOf(hash) {
+    let key = "";
+    try { key = decodeURIComponent(String(hash || "").replace(/^#/, "")); } catch { return null; }
+    if (SECTIONS.includes(key)) return { key, section: key };
+    if (HASH_ALIASES[key]) return { key, ...HASH_ALIASES[key] };
+    return null;
+  }
+
+  function applyRoute(route) {
+    state.section = route.section;
+    state.openPlaylist = null;
+    if (route.tabs) state.tabs = { ...(state.tabs || {}), ...route.tabs };
+  }
+
+  // A link to another section of this page (a notification in the bell while
+  // the dashboard is open) switches the section without a reload.
+  window.addEventListener("hashchange", () => {
+    const route = routeOf(location.hash);
+    if (!route || !state.member || !$("#dash-main")) return;
+    applyRoute(route);
+    renderShell();
+  });
 
   async function boot() {
     setupChrome();
-    const wanted = decodeURIComponent(location.hash.replace(/^#/, ""));
-    if (SECTIONS.includes(wanted)) state.section = wanted;
+    const route = routeOf(location.hash);
+    if (route) applyRoute(route);
     // signing in brings the member back here, to the section in the address
     // (dashboard.html#iptv: the premium cards of the home page)
     const signin = `<a class="btn btn-lg btn-primary" href="./login.html?next=${encodeURIComponent(
-      SECTIONS.includes(wanted) ? `dashboard.html#${wanted}` : "dashboard.html"
+      route ? `dashboard.html#${route.key}` : "dashboard.html"
     )}">${t("common.signin")}</a>`;
     state.session = getSession();
     if (!state.session?.member_id) {

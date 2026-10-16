@@ -1,5 +1,7 @@
-/* Staff panel — Prizes section with three tabs: add a prize, manage prizes
-   (edit / end / delete / participants) and statistics.
+/* Staff panel — Prizes section with four tabs: add a prize, manage prizes
+   (edit / end / delete / participants), prize claims (review, accept, reject:
+   sql/prize_claims.sql) and statistics. Panel.html?section=prizes&tab=claims
+   opens the claims (the staff alert of a new claim links there).
    Loaded before panel.js; panel.js calls window.PanelPrizes.render(main, api). */
 (() => {
   const C = window.CineAura;
@@ -14,7 +16,9 @@
     sqlOk: true,
     prizes: [], groups: [], links: [], modes: [], conds: [], dates: [], codes: [], counts: {}, limits: null,
     entries: [], // entries of the prize being managed (loaded on demand)
+    claims: [], claimsOk: false, claimsMissing: false, people: {}, // Prize claims tab
   };
+  const TABS = ["add", "manage", "claims", "stats"];
 
   const MODE_NAME = { gift: "Gift", challenge: "Challenge", lottery: "Lottery" };
   const modeLabel = (k) => tr(MODE_NAME[k] || k);
@@ -41,7 +45,7 @@
   }
 
   async function load() {
-    const [pr, gr, lk, md, cd, dt, lim, codes, over] = await Promise.all([
+    const [pr, gr, lk, md, cd, dt, lim, codes, over, cl] = await Promise.all([
       supabaseRequest("/rest/v1/prizes?select=*&order=id.desc"),
       supabaseRequest("/rest/v1/prize_groups?select=*&order=sort_order.asc,id.asc"),
       supabaseRequest("/rest/v1/prize_group_links?select=*"),
@@ -51,7 +55,11 @@
       R.loadLimits(),
       admin("prize_admin_codes"),
       admin("prize_admin_overview"),
+      R.loadClaims(),
     ]);
+    S.claims = cl.rows;
+    S.claimsOk = cl.ok;
+    S.claimsMissing = cl.missing;
     S.prizes = rows(pr);
     S.groups = rows(gr);
     S.links = rows(lk);
@@ -483,14 +491,17 @@
 
   // ------------------------------------------------------------------ shell
   function shell(body) {
-    const tabs = [["add", "pza.tabAdd"], ["manage", "pza.tabManage"], ["stats", "pza.tabStats"]];
+    const tabs = [["add", "pza.tabAdd"], ["manage", "pza.tabManage"], ["claims", "pzc.tab"], ["stats", "pza.tabStats"]];
+    const pending = claimPending();
     S.main.onclick = null;
     S.main.innerHTML = `
       <p class="eyebrow">${t("panel.nav.prizes")}</p>
       <h1>${t("panel.prizesTitle")}</h1>
       ${S.sqlOk ? "" : `<p class="empty">${t(S.authError ? "pza.errAuth" : "pza.needSql")}</p>`}
       <div class="pza-tabs" role="tablist">
-        ${tabs.map(([k, label]) => `<button type="button" role="tab" data-tab="${k}" class="${S.tab === k ? "active" : ""}">${t(label)}</button>`).join("")}
+        ${tabs.map(([k, label]) => `<button type="button" role="tab" data-tab="${k}" class="${S.tab === k ? "active" : ""}" aria-selected="${S.tab === k}">${t(label)}${
+          k === "claims" ? `<span class="crp-badge" id="pzc-count" title="${esc(t("pzc.pendingN", { n: pending }))}" ${pending ? "" : "hidden"}>${pending > 99 ? "99+" : pending}</span>` : ""
+        }</button>`).join("")}
       </div>
       <div id="pza-body">${body}</div>`;
     $$(".pza-tabs [data-tab]", S.main).forEach((b) => {
@@ -502,6 +513,7 @@
   function draw() {
     if (S.tab === "add") return drawAdd();
     if (S.tab === "manage") return S.view ? drawParticipants() : drawManage();
+    if (S.tab === "claims") return drawClaims();
     return drawStats();
   }
 
@@ -760,7 +772,11 @@
       q.setSelectionRange(q.value.length, q.value.length);
       S._refocus = false;
     }
-    $("#pza-back").onclick = () => { S.view = null; draw(); };
+    $("#pza-back").onclick = () => {
+      if (S.view?.back) S.tab = S.view.back; // opened from Prize claims ("Check the conditions")
+      S.view = null;
+      draw();
+    };
     $("#pza-q").oninput = (ev) => { S.view.q = ev.target.value; S._refocus = true; clearTimeout(S._qt); S._qt = setTimeout(drawParticipants, 250); };
     S.main.onclick = async (ev) => {
       const pm = ev.target.closest("[data-pm]");
@@ -813,7 +829,248 @@
       <h3>${t("pza.withdrawnList")}</h3><ul class="pza-list">${li(group("withdrawn"))}</ul>`);
   }
 
-  // ------------------------------------------------------------------ tab 3: stats
+  // ------------------------------------------------------------------ tab 3: prize claims
+  // A winner's claim (sql/prize_claims.sql): Claim submitted -> Start review ->
+  // Claim under review -> Accept / Reject. Rejecting needs the reason and at least
+  // one action: deduct points, reset the points, block prize claims for N days.
+  const CF = { status: "all", q: "" };
+  const PENDING = ["submitted", "review"];
+  const claimPending = () => S.claims.filter((c) => PENDING.includes(R.claimState(c))).length;
+  const claimById = (id) => S.claims.find((c) => String(c.id) === String(id));
+  const blockRunning = (c) =>
+    R.claimState(c) === "rejected" && !c.lifted_at && Boolean(c.restricted_until) && Date.parse(c.restricted_until) > Date.now();
+  const CLAIM_ERR = {
+    state: "pzc.errState", not_found: "pzc.errState", reason: "pzc.errReason", reason_long: "pzc.errReasonLong",
+    action: "pzc.errAction", points: "pzc.errAction", amount: "pzc.errAmount", days: "pzc.errDays",
+    staff_auth: "pza.errAuth", staff_forbidden: "pza.errForbidden",
+  };
+  const claimError = (err) => t(CLAIM_ERR[err] || "pzc.errFail");
+
+  // pending claims first (newest first), then the decided ones (latest decision first)
+  const claimOrder = (a, b) => {
+    const pa = PENDING.includes(R.claimState(a)) ? 0 : 1;
+    const pb = PENDING.includes(R.claimState(b)) ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    const ta = Date.parse((pa ? a.decided_at : null) || a.submitted_at) || 0;
+    const tb = Date.parse((pb ? b.decided_at : null) || b.submitted_at) || 0;
+    return tb - ta || Number(b.id) - Number(a.id);
+  };
+
+  // usernames / names of the members of the claims (kept between redraws)
+  async function claimPeople(ids) {
+    const missing = ids.filter((id) => !S.people[id]);
+    for (let i = 0; i < missing.length; i += 80) {
+      const part = missing.slice(i, i + 80);
+      const [mem, prof] = await Promise.all([
+        supabaseRequest(`/rest/v1/members?member_id=${inIds(part)}&select=member_id,username,full_name`),
+        supabaseRequest(`/rest/v1/profiles?member_id=${inIds(part)}&select=member_id,username`),
+      ]);
+      part.forEach((id) => (S.people[id] = { member_id: id }));
+      rows(prof).forEach((r) => Object.assign(S.people[r.member_id] || {}, r));
+      rows(mem).forEach((r) => Object.assign(S.people[r.member_id] || {}, r));
+    }
+    return S.people;
+  }
+
+  // Side menu badge + tab count after a change (panel.js passes refreshClaims).
+  function claimCountChanged() {
+    const n = claimPending();
+    const tab = $("#pzc-count");
+    if (tab) {
+      tab.textContent = n > 99 ? "99+" : String(n);
+      tab.hidden = !n;
+    }
+    S.api?.refreshClaims?.(n);
+  }
+
+  async function reloadClaims() {
+    const cl = await R.loadClaims();
+    if (cl.ok) S.claims = cl.rows;
+    claimCountChanged();
+  }
+
+  function claimCardHtml(c, pe) {
+    const st = R.claimState(c);
+    const p = prizeById(c.prize_id);
+    const mode = R.lc(c.mode);
+    const name = pe.username || c.member_id;
+    const title = c.prize_title || p?.title || `#${c.prize_id ?? "?"}`;
+    const btn = (act, cls, label) => `<button class="btn btn-sm ${cls}" data-claim-act="${act}" data-id="${c.id}" type="button">${t(label)}</button>`;
+    return `
+      <article class="pzc-card is-${st}" data-claim="${c.id}">
+        <div class="pzc-head">
+          <div class="pza-member-main">
+            ${avatarImg(c.member_id, pe.username, name)}
+            <div><strong>${pe.username ? `<a href="./Profile.html?@${encodeURIComponent(pe.username)}" target="_blank" rel="noopener">${esc(name)}</a>` : esc(name)}</strong>
+              <div class="muted">${esc(c.member_id)}${pe.full_name ? ` · ${esc(pe.full_name)}` : ""}</div></div>
+          </div>
+          ${badge(`cs-${st}`, t(`pzc.st.${st}`))}
+        </div>
+        <p class="pzc-prize">
+          ${p ? `<a href="./Prize.html?GroupPrize=${p.group_id ?? 0}&Prize=${p.id}" target="_blank" rel="noopener">${esc(title)}</a>` : `<b>${esc(title)}</b>`}
+          <span class="muted">· ${esc(mode === "claim" ? t("pzc.modeDirect") : modeLabel(mode))} · ${esc(t("pza.paid", { n: c.points_paid || 0 }))}</span>
+        </p>
+        ${R.claimStepsHtml(c, { staff: true })}
+        ${R.claimVerdictHtml(c)}
+        <div class="pza-actions">
+          ${st === "submitted" ? btn("review", "btn-primary", "pzc.startReview") : ""}
+          ${st === "review" ? btn("accept", "btn-primary", "pzc.accept") + btn("reject", "btn-danger", "pzc.reject") : ""}
+          ${blockRunning(c) ? btn("lift", "btn-ghost", "pzc.lift") : ""}
+          ${c.entry_id != null && p ? `<button class="btn btn-sm btn-ghost" data-claim-entry="${c.id}" type="button">${t("pzc.checkEntry")}</button>` : ""}
+        </div>
+      </article>`;
+  }
+
+  async function drawClaims() {
+    if (!S.claimsOk) {
+      shell(`<p class="empty">${esc(t(S.claimsMissing ? "pzc.needSql" : "pzc.loadFail"))}</p>`);
+      return;
+    }
+    if (!S.claims.every((c) => S.people[c.member_id])) shell(`<p class="muted">${t("common.loading")}</p>`);
+    const people = await claimPeople([...new Set(S.claims.map((c) => c.member_id))]);
+    if (S.tab !== "claims") return; // another tab was opened meanwhile
+    const count = (st) => S.claims.filter((c) => st === "all" || R.claimState(c) === st).length;
+    shell(`
+      <p class="muted">${t("pzc.lead")}</p>
+      <div class="pza-filters pzc-filters">
+        <div class="chip-row" role="group" aria-label="${esc(t("pzc.tab"))}">
+          ${["all", ...R.CLAIM_STATES].map((k) => `<button type="button" class="lang-chip ${CF.status === k ? "on" : ""}" data-cf="${k}" aria-pressed="${CF.status === k}">${
+            k === "all" ? t("common.all") : t(`pzc.st.${k}`)} <small>${count(k)}</small></button>`).join("")}
+        </div>
+        <input id="pzc-q" type="search" placeholder="${esc(t("pzc.search"))}" value="${esc(CF.q)}" />
+      </div>
+      <div class="pzc-list" id="pzc-list"></div>`);
+    // typing only redraws the list: the search box keeps its focus and caret
+    const drawList = () => {
+      const box = $("#pzc-list", S.main);
+      if (!box) return;
+      const q = R.lc(CF.q);
+      const list = S.claims
+        .filter((c) => CF.status === "all" || R.claimState(c) === CF.status)
+        .filter((c) => {
+          if (!q) return true;
+          const pe = people[c.member_id] || {};
+          return [c.member_id, pe.username, pe.full_name, c.prize_title].some((v) => R.lc(v).includes(q));
+        })
+        .sort(claimOrder);
+      box.innerHTML = list.map((c) => claimCardHtml(c, people[c.member_id] || {})).join("")
+        || `<p class="empty">${t(S.claims.length ? "pzc.noMatch" : "pzc.noneStaff")}</p>`;
+      hydrateAvatars(box);
+    };
+    drawList();
+    $("#pzc-q").oninput = (ev) => { CF.q = ev.target.value; clearTimeout(S._cqt); S._cqt = setTimeout(drawList, 200); };
+    S.main.onclick = async (ev) => {
+      const chip = ev.target.closest("[data-cf]");
+      if (chip) { CF.status = chip.dataset.cf; return drawClaims(); }
+      const check = ev.target.closest("[data-claim-entry]");
+      if (check) {
+        const c = claimById(check.dataset.claimEntry);
+        S.tab = "manage";
+        S.view = { prizeId: c.prize_id, mode: R.lc(c.mode), q: c.member_id, back: "claims" };
+        return draw();
+      }
+      const act = ev.target.closest("[data-claim-act]");
+      if (!act) return;
+      const c = claimById(act.dataset.id);
+      if (!c) return;
+      if (act.dataset.claimAct === "reject") return rejectDialog(c, people[c.member_id] || {});
+      if (act.dataset.claimAct === "accept" && !confirm(t("pzc.confirmAccept"))) return;
+      if (act.dataset.claimAct === "lift" && !confirm(t("pzc.confirmLift"))) return;
+      act.disabled = true;
+      const r = await admin("prize_admin_claim", { p_claim: c.id, p_action: act.dataset.claimAct, d: {} });
+      if (r.ok) toast(t(`pzc.done.${act.dataset.claimAct}`));
+      else toast(claimError(r.error));
+      await reloadClaims();
+      drawClaims();
+    };
+  }
+
+  // Reject: the reason (shown to the member) and at least one action.
+  async function rejectDialog(c, pe) {
+    const wrap = modal(`
+      <div class="pzc-dlg-head"><h2>${t("pzc.rejectTitle")}</h2>
+        <button class="btn btn-sm btn-ghost" data-close type="button">${t("common.close")}</button></div>
+      <p class="muted">${esc(c.prize_title)} · ${esc(pe.username || c.member_id)} (${esc(c.member_id)})</p>
+      <p class="pzc-balance" id="pzc-bal">${t("pzc.balanceLoading")}</p>
+      <div class="stack pzc-reject">
+        <label class="pza-lbl" for="pzc-reason">${t("pzc.reasonLabel")} *</label>
+        <textarea id="pzc-reason" rows="3" maxlength="1000" placeholder="${esc(t("pzc.reasonPh"))}"></textarea>
+        <div class="pza-lbl">${t("pzc.actionsLabel")} *</div>
+        <div class="pzc-opts" role="group">
+          <label class="pzc-opt"><input type="radio" name="pzc-pts" value="" checked /> <span>${t("pzc.ptsNone")}</span></label>
+          <label class="pzc-opt"><input type="radio" name="pzc-pts" value="deduct" /> <span>${t("pzc.ptsDeduct")}</span>
+            <input id="pzc-amount" type="number" min="1" step="1" inputmode="numeric" placeholder="${esc(t("pzc.ptsAmount"))}" disabled /></label>
+          <label class="pzc-opt"><input type="radio" name="pzc-pts" value="reset" /> <span>${t("pzc.ptsReset")}</span></label>
+          <label class="pzc-opt"><input type="checkbox" id="pzc-block" /> <span>${t("pzc.block")}</span>
+            <input id="pzc-days" type="number" min="1" max="3650" step="1" inputmode="numeric" placeholder="${esc(t("pzc.daysPh"))}" disabled /></label>
+        </div>
+        <p class="muted pzc-note">${t("pzc.rejectNote")}</p>
+        <p class="pzc-err" id="pzc-err" role="alert" hidden></p>
+      </div>
+      <div class="pza-actions pzc-dlg-foot">
+        <button class="btn btn-lg btn-danger" id="pzc-confirm" type="button">${t("pzc.reject")}</button>
+        <button class="btn btn-lg btn-ghost" data-close type="button">${t("common.cancel")}</button>
+      </div>`);
+    const $w = (sel) => wrap.querySelector(sel);
+    const err = (key) => {
+      const box = $w("#pzc-err");
+      box.textContent = key ? t(key) : "";
+      box.hidden = !key;
+    };
+    const sync = () => {
+      const pts = $w('input[name="pzc-pts"]:checked').value;
+      $w("#pzc-amount").disabled = pts !== "deduct";
+      $w("#pzc-days").disabled = !$w("#pzc-block").checked;
+      err("");
+    };
+    wrap.querySelectorAll('input[name="pzc-pts"], #pzc-block').forEach((el) => {
+      el.onchange = () => {
+        sync();
+        if (el.value === "deduct" && el.checked) $w("#pzc-amount").focus();
+        if (el.id === "pzc-block" && el.checked) $w("#pzc-days").focus();
+      };
+    });
+    $w("#pzc-reason").focus();
+
+    // the member's balance now (the server never takes more than this)
+    (async () => {
+      const pr = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(c.member_id)}&select=member_id,private_minutes,public_minutes,points_spent`);
+      const mp = await C.memberPoints(c.member_id, rows(pr)[0] || {}).catch(() => null);
+      const bal = $w("#pzc-bal");
+      if (bal) bal.textContent = mp ? t("pzc.balance", { n: Number(mp.available || 0) }) : "";
+    })();
+
+    $w("#pzc-confirm").onclick = async (ev) => {
+      const reason = $w("#pzc-reason").value.trim();
+      const points = $w('input[name="pzc-pts"]:checked').value;
+      const block = $w("#pzc-block").checked;
+      const amount = Number($w("#pzc-amount").value);
+      const days = Number($w("#pzc-days").value);
+      if (!reason) { err("pzc.errReason"); return $w("#pzc-reason").focus(); }
+      if (!points && !block) return err("pzc.errAction");
+      if (points === "deduct" && !(Number.isInteger(amount) && amount >= 1)) { err("pzc.errAmount"); return $w("#pzc-amount").focus(); }
+      if (block && !(Number.isInteger(days) && days >= 1 && days <= 3650)) { err("pzc.errDays"); return $w("#pzc-days").focus(); }
+      ev.target.disabled = true;
+      const d = { reason, points, amount: points === "deduct" ? amount : null, days: block ? days : null };
+      const r = await admin("prize_admin_claim", { p_claim: c.id, p_action: "reject", d });
+      ev.target.disabled = false;
+      if (!r.ok) {
+        if (r.error === "state" || r.error === "not_found") {
+          wrap.remove();
+          toast(claimError(r.error));
+          await reloadClaims();
+          return drawClaims();
+        }
+        return err(CLAIM_ERR[r.error] || "pzc.errFail");
+      }
+      wrap.remove();
+      toast(points ? t("pzc.done.rejectPts", { n: Number(r.points || 0) }) : t("pzc.done.reject"));
+      await reloadClaims();
+      drawClaims();
+    };
+  }
+
+  // ------------------------------------------------------------------ tab 4: stats
   const STAT = { mode: "all", prize: "all", from: "", to: "", preset: "all" };
 
   function applyPreset(p) {
@@ -885,6 +1142,11 @@
   async function render(main, api) {
     S.main = main;
     S.api = api || {};
+    if (!S.urlTab) {
+      S.urlTab = true;
+      const want = new URLSearchParams(location.search).get("tab");
+      if (TABS.includes(want)) S.tab = want;
+    }
     main.innerHTML = `<p class="muted">${t("common.loading")}</p>`;
     await load();
     draw();

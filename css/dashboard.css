@@ -625,6 +625,163 @@ html[data-theme="day"] .lang-chip {
   .dash-prize-grid { grid-template-columns: 1fr; }
 }
 
+/* ---------- Prize claims (sql/prize_claims.sql) ----------------------------
+   The status of a claim, its three steps (Claim submitted -> Claim under review
+   -> Claim accepted / rejected) and the reason / actions of a rejected claim.
+   Shared by Dashboard > Prizes > Prize claims, Panel > Prizes > Prize claims and
+   the prize page. */
+.pzc-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.pzc-badge.cs-submitted, .pza-badge.cs-submitted { background: rgba(1, 180, 228, .14); color: var(--cyan); }
+.pzc-badge.cs-review, .pza-badge.cs-review { background: rgba(255, 196, 0, .16); color: #ffc400; }
+.pzc-badge.cs-accepted, .pza-badge.cs-accepted { background: rgba(63, 191, 127, .18); color: #6fdc9f; }
+.pzc-badge.cs-rejected, .pza-badge.cs-rejected { background: rgba(255, 99, 99, .15); color: #ff7a7a; }
+html[data-theme="day"] .pzc-badge.cs-submitted, html[data-theme="day"] .pza-badge.cs-submitted { color: #0a7898; }
+html[data-theme="day"] .pzc-badge.cs-review, html[data-theme="day"] .pza-badge.cs-review { color: #8a6100; }
+html[data-theme="day"] .pzc-badge.cs-accepted, html[data-theme="day"] .pza-badge.cs-accepted { color: #1c7a47; }
+html[data-theme="day"] .pzc-badge.cs-rejected, html[data-theme="day"] .pza-badge.cs-rejected { color: #c0392b; }
+
+.pzc-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 12px 0 4px;
+  padding: 0;
+  list-style: none;
+}
+.pzc-step {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 6px;
+  padding: 0 4px;
+  text-align: center;
+}
+/* the line from the previous step, between the two dots (works both ways, RTL too) */
+.pzc-step + .pzc-step::before {
+  content: "";
+  position: absolute;
+  top: 13px;
+  inset-inline-end: calc(50% + 18px);
+  width: calc(100% - 36px);
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.pzc-step.is-done::before,
+.pzc-step.is-now::before,
+.pzc-step.is-ok::before,
+.pzc-step.is-bad::before { background: var(--cyan); }
+.pzc-dot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+.pzc-step.is-done .pzc-dot { border-color: var(--cyan); background: var(--cyan); color: #04202d; }
+.pzc-step.is-now .pzc-dot { border-color: #ffc400; color: #ffc400; animation: pzc-pulse 1.8s ease-in-out infinite; }
+.pzc-step.is-ok .pzc-dot { border-color: #3fbf7f; background: #3fbf7f; color: #03200f; }
+.pzc-step.is-bad .pzc-dot { border-color: #ff5c5c; background: #ff5c5c; color: #2b0606; }
+html[data-theme="day"] .pzc-step.is-now .pzc-dot { border-color: #c98f00; color: #8a6100; }
+.pzc-step-text { display: grid; gap: 2px; font-size: 12.5px; line-height: 1.35; }
+.pzc-step-text b { font-weight: 700; }
+.pzc-step-text small { color: var(--muted); font-size: 11px; }
+.pzc-step.is-todo .pzc-step-text b { color: var(--muted); font-weight: 600; }
+@keyframes pzc-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 196, 0, .45); }
+  50% { box-shadow: 0 0 0 6px rgba(255, 196, 0, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pzc-step.is-now .pzc-dot { animation: none; }
+}
+
+.pzc-verdict {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 99, 99, .35);
+  border-radius: 12px;
+  background: rgba(255, 99, 99, .07);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.pzc-verdict p { margin: 0; }
+.pzc-verdict b { color: #ff8a8a; }
+html[data-theme="day"] .pzc-verdict b { color: #b03a2e; }
+.pzc-reason { white-space: pre-line; overflow-wrap: anywhere; }
+.pzc-dot svg { display: block; }
+a.pzc-follow { color: var(--cyan); font-weight: 600; text-decoration: none; }
+a.pzc-follow:hover { text-decoration: underline; }
+
+/* The member's own block on prize claims (dashboard + prize page) */
+.pzc-blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 99, 99, .4);
+  border-radius: 14px;
+  background: rgba(255, 99, 99, .09);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.pzc-blocked > span { flex: none; display: grid; color: #ff7a7a; }
+html[data-theme="day"] .pzc-blocked > span { color: #c0392b; }
+.pzc-blocked p { margin: 2px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+
+/* Dashboard > Prizes > Prize claims: one card per claim */
+.pzc-mine { display: grid; gap: 12px; }
+.pzc-item {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+.pzc-item.is-accepted { border-color: rgba(63, 191, 127, .45); }
+.pzc-item.is-rejected { border-color: rgba(255, 99, 99, .4); }
+.pzc-thumb {
+  display: block;
+  width: 96px;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--sub-bg, rgba(255, 255, 255, .06));
+}
+.pzc-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pzc-item-body { display: grid; gap: 4px; min-width: 0; }
+.pzc-item-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.pzc-item-top strong { font-size: 16px; line-height: 1.3; }
+.pzc-item-top a { color: inherit; text-decoration: none; }
+.pzc-item-top a:hover { color: var(--cyan); }
+.pzc-meta { margin: 0; color: var(--muted); font-size: 12px; }
+.pzc-hint { margin: 4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.pzc-item.is-accepted .pzc-hint { color: #6fdc9f; }
+html[data-theme="day"] .pzc-item.is-accepted .pzc-hint { color: #1c7a47; }
+
+@media (max-width: 560px) {
+  .pzc-item { grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 12px; }
+  .pzc-thumb { width: 64px; }
+  .pzc-step-text { font-size: 11.5px; }
+  .pzc-step-text small { font-size: 10px; }
+}
+
 /* ---------- Add a link: watch link, download link, or both ----------------
    One URL can be published in both sections at once; the kind of each row is
    shown as a chip in the list below, and both rows of the same URL say the

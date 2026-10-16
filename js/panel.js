@@ -293,6 +293,7 @@
     hydrateAvatars($("#panel-root"));
     hydrateMedals($("#panel-root"));
     if (allowed.includes("reports")) refreshChannelReportCount();
+    if (allowed.includes("prizes")) refreshClaimCount();
     renderSection();
   }
 
@@ -862,7 +863,20 @@
 
   // Prizes: three tabs (add / manage / statistics) live in js/panel-prizes.js.
   async function viewPrizes(main) {
-    await window.PanelPrizes.render(main, { staff: state.staff });
+    await window.PanelPrizes.render(main, { staff: state.staff, refreshClaims: refreshClaimCount });
+  }
+
+  // Prize claims waiting for the team (Claim submitted + Claim under review,
+  // sql/prize_claims.sql): the badge on Prizes in the side menu. Prizes > Prize
+  // claims passes the new count after every change.
+  async function refreshClaimCount(known) {
+    const n = Number.isFinite(known)
+      ? known
+      : await window.CineAura.countRows("/rest/v1/prize_claims?status=in.(submitted,review)&select=id").catch(() => 0);
+    const nav = $('#panel-root .side-nav [data-section="prizes"]');
+    if (!nav) return;
+    nav.querySelector(".crp-badge")?.remove();
+    if (n) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge" title="${escapeHtml(t("pzc.pendingN", { n }))}">${n > 99 ? "99+" : n}</span>`);
   }
 
   // ---------- Messages: admin team chat + member requests ----------

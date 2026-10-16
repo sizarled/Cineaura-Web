@@ -3357,6 +3357,9 @@
       challenge: t("prize.mode.challenge"),
       lottery: t("prize.mode.lottery"),
       claim: t("points.mode.claim"),
+      // taken by the prize team when a claim was rejected (sql/prize_claims.sql)
+      penalty: t("points.mode.penalty"),
+      reset: t("points.mode.reset"),
     };
     const rows = spends.rows.map((r) => {
       const when = String(r.created_at || "").slice(0, 10);

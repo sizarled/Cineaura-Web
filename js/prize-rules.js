@@ -180,9 +180,117 @@
     return { req, prog: Math.min(req, prog), done: prog >= req };
   }
 
+  // ---- claims (sql/prize_claims.sql) -------------------------------------------
+  // Every claim of a winner: submitted -> review -> accepted | rejected. Shown in
+  // Panel > Prizes > Prize claims, Dashboard > Prizes > Prize claims and on the
+  // prize page. A rejected claim may block the member's prize claims for a while.
+  const CLAIM_STATES = ["submitted", "review", "accepted", "rejected"];
+  const claimState = (c) => (CLAIM_STATES.includes(lc(c?.status)) ? lc(c.status) : "submitted");
+
+  // memberId: one member's claims (newest first); none: every claim (panel).
+  // missing = the table is not there yet (sql/prize_claims.sql not run).
+  async function loadClaims(memberId) {
+    const path = memberId
+      ? `/rest/v1/prize_claims?member_id=eq.${restValue(memberId)}&select=*&order=submitted_at.desc,id.desc`
+      : "/rest/v1/prize_claims?select=*&order=submitted_at.desc,id.desc&limit=5000";
+    const res = await supabaseRequest(path).catch(() => ({ ok: false, status: 0 }));
+    const ok = res.ok && Array.isArray(res.data);
+    return { ok, rows: ok ? res.data : [], missing: !ok && (res.status === 404 || res.data?.code === "PGRST205" || res.data?.code === "42P01") };
+  }
+
+  // The block on prize claims still running ({ until: ms, claim }), or null.
+  function claimBlock(rows) {
+    let best = null;
+    (rows || []).forEach((c) => {
+      if (claimState(c) !== "rejected" || c.lifted_at || !c.restricted_until) return;
+      const until = Date.parse(c.restricted_until);
+      if (Number.isNaN(until) || until <= Date.now()) return;
+      if (!best || until > best.until) best = { until, claim: c };
+    });
+    return best;
+  }
+
+  // The claim of one entry (prize with modes) / of one prize without modes.
+  const claimForEntry = (rows, entryId) =>
+    entryId == null ? null : (rows || []).find((c) => c.entry_id != null && String(c.entry_id) === String(entryId)) || null;
+  const claimForPrize = (rows, prize) =>
+    (rows || []).find((c) => lc(c.mode) === "claim" && (
+      (c.prize_id != null && prize?.id != null && String(c.prize_id) === String(prize.id)) ||
+      (c.prize_id == null && String(c.prize_title || "") === String(prize?.title || ""))
+    )) || null;
+
+  const claimWhen = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    if (!d || Number.isNaN(d.getTime())) return "";
+    try {
+      return d.toLocaleString(C.getLocale(), { dateStyle: "medium", timeStyle: "short", numberingSystem: "latn" });
+    } catch {
+      return d.toLocaleString();
+    }
+  };
+
+  // What the team did when rejecting: ["50 points deducted", "Prize claims blocked …"].
+  function claimActions(c) {
+    const out = [];
+    const pts = Number(c?.penalty_points || 0);
+    if (c?.penalty === "deduct") out.push(C.t("pzc.pen.deduct", { n: pts }));
+    if (c?.penalty === "reset") out.push(C.t("pzc.pen.reset", { n: pts }));
+    if (c?.restricted_until) {
+      let text = C.t("pzc.pen.block", { n: Number(c.restrict_days || 0), d: claimWhen(c.restricted_until) });
+      if (c.lifted_at) text += ` · ${C.t("pzc.pen.lifted", { d: claimWhen(c.lifted_at) })}`;
+      else if (Date.parse(c.restricted_until) <= Date.now()) text += ` · ${C.t("pzc.pen.ended")}`;
+      out.push(text);
+    }
+    return out;
+  }
+
+  // drawn, not typed: every device shows them, whatever its fonts
+  const CLAIM_ICON = {
+    check: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false"><path d="M5 12.5l4.3 4.3L19 7" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    cross: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg>',
+    ban: '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M5.7 5.7l12.6 12.6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
+  };
+
+  // The three steps of a claim: Claim submitted -> Claim under review -> Claim
+  // accepted / Claim rejected. opts.staff adds who took each step (panel only).
+  function claimStepsHtml(c, opts = {}) {
+    const esc = C.escapeHtml;
+    const st = claimState(c);
+    const decided = st === "accepted" || st === "rejected";
+    const by = (who) => (opts.staff && who ? ` · ${esc(C.t("pzc.by", { who }))}` : "");
+    const steps = [
+      { label: C.t("pzc.st.submitted"), at: c.submitted_at, mark: "done" },
+      { label: C.t("pzc.st.review"), at: c.review_at || (decided ? c.decided_at : null), who: c.review_by,
+        mark: st === "submitted" ? "todo" : st === "review" ? "now" : "done" },
+      st === "accepted" ? { label: C.t("pzc.st.accepted"), at: c.decided_at, who: c.decided_by, mark: "ok" }
+        : st === "rejected" ? { label: C.t("pzc.st.rejected"), at: c.decided_at, who: c.decided_by, mark: "bad" }
+        : { label: C.t("pzc.step.decision"), mark: "todo" },
+    ];
+    const dot = (s, i) => (s.mark === "bad" ? CLAIM_ICON.cross : s.mark === "done" || s.mark === "ok" ? CLAIM_ICON.check : String(i + 1));
+    return `<ol class="pzc-steps" data-state="${st}">${steps.map((s, i) => `
+      <li class="pzc-step is-${s.mark}"${s.mark === "now" ? ' aria-current="step"' : ""}>
+        <span class="pzc-dot" aria-hidden="true">${dot(s, i)}</span>
+        <span class="pzc-step-text"><b>${esc(s.label)}</b>${s.at ? `<small>${esc(claimWhen(s.at))}${by(s.who)}</small>` : ""}</span>
+      </li>`).join("")}
+    </ol>`;
+  }
+
+  // Reason and actions of a rejected claim ("" for the other states).
+  function claimVerdictHtml(c) {
+    if (claimState(c) !== "rejected") return "";
+    const esc = C.escapeHtml;
+    const acts = claimActions(c);
+    return `<div class="pzc-verdict">
+      <p><b>${esc(C.t("pzc.reason"))}:</b> <bdi class="pzc-reason">${esc(c.reason || "—")}</bdi></p>
+      ${acts.length ? `<p><b>${esc(C.t("pzc.actionTaken"))}:</b> <span class="pzc-acts">${acts.map(esc).join(" · ")}</span></p>` : ""}
+    </div>`;
+  }
+
   window.PrizeRules = {
     TIERS, MODES, COUNTRIES, DEFAULT_LIMITS,
     list, lc, tierIndex, cfgOf, dayMs, ageOf, accountDays,
     audienceFails, windowFor, loadLimits, usage, limitCheck, activityCounts, conditionProgress,
+    CLAIM_STATES, CLAIM_ICON, claimState, loadClaims, claimBlock, claimForEntry, claimForPrize, claimWhen, claimActions,
+    claimStepsHtml, claimVerdictHtml,
   };
 })();

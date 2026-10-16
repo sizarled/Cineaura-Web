@@ -1214,6 +1214,11 @@
     message: "prof.newMsg",
     iptv: "notif.iptv",
     iptv_renew: "notif.iptvRenew",
+    // the review of a prize claim (sql/prize_claims.sql)
+    prize_claim_review: "notif.claimReview",
+    prize_claim_accepted: "notif.claimAccepted",
+    prize_claim_rejected: "notif.claimRejected",
+    prize_claim_unblocked: "notif.claimUnblocked",
   };
 
   function noteTitle(n) {
