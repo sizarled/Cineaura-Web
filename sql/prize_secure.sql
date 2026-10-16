@@ -316,12 +316,17 @@ revoke all on function public._notify_new_prize(bigint) from public, anon, authe
 create or replace function public._points(p_member text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare
-  pr record; earned int; sh int; pl int; rc int; cm int; lk int := 0;
-  dl int := 0; clicks int; has_dl boolean;
+  pr record; earned bigint; watch bigint; sh int; pl int; rc int; cm int; lk int := 0;
+  dl bigint := 0; clicks bigint; has_dl boolean;
 begin
-  select coalesce(private_minutes, 0) + coalesce(public_minutes, 0) as mins, coalesce(points_spent, 0) as spent into pr
-  from public.profiles where member_id = p_member;
-  if not found then return jsonb_build_object('earned', 0, 'spent', 0, 'available', 0); end if;
+  select coalesce(p.private_minutes, 0) + coalesce(p.public_minutes, 0) as mins,
+         coalesce(p.points_spent, 0) as spent,
+         to_jsonb(p) ->> 'watch_points' as wp
+    into pr
+  from public.profiles p where p.member_id = p_member;
+  if not found then return jsonb_build_object('earned', 0, 'spent', 0, 'available', 0, 'watch', 0); end if;
+  -- watch points: stored by sql/point_levels.sql (country tier x level); before that file, 1 a minute
+  watch := case when pr.wp is null then pr.mins else floor(pr.wp::numeric)::bigint end;
   select count(*) into sh from public.post_events where kind = 'share' and network = 'referral' and member_id = p_member;
   select count(*) into pl from public.playlists where owner_id = p_member and visibility in ('public', 'exclusive');
   select count(*) into rc from public.posts where owner_id = p_member and kind in ('recommendation', 'reclist') and visibility in ('public', 'exclusive');
@@ -356,8 +361,8 @@ begin
       dl := dl + coalesce(clicks, 0);
     end if;
   end if;
-  earned := pr.mins + sh / 5 + pl / 10 + rc / 50 + cm / 100 + lk / 500 + dl / 1000;
-  return jsonb_build_object('earned', earned, 'spent', pr.spent, 'available', greatest(0, earned - pr.spent));
+  earned := watch + sh / 5 + pl / 10 + rc / 50 + cm / 100 + lk / 500 + dl / 1000;
+  return jsonb_build_object('earned', earned, 'spent', pr.spent, 'available', greatest(0, earned - pr.spent), 'watch', watch);
 end $$;
 
 -- Locks the profile row, checks the balance, spends and writes the spending ledger
@@ -370,7 +375,7 @@ begin
   perform 1 from public.profiles where member_id = p_member for update;
   if not found then return false; end if;
   pts := public._points(p_member);
-  if (pts->>'available')::int < p_amount then return false; end if;
+  if (pts->>'available')::bigint < p_amount then return false; end if;
   update public.profiles set points_spent = coalesce(points_spent, 0) + p_amount where member_id = p_member;
   insert into public.point_spends (member_id, amount, prize_title, mode) values (p_member, p_amount, coalesce(p_prize, ''), coalesce(p_mode, ''));
   return true;

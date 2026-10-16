@@ -4,8 +4,11 @@
 --
 -- A member earns points from seven sources, each at its own rate:
 --
---   1 watch minute — watched by the member, or watched by someone
---                    through a link the member published   = 1 point
+--   watch minutes — watched by the member, or watched by someone
+--                   through a link the member published:
+--                   1 point per 1 / 5 / 10 / 50 minutes depending on the
+--                   viewer's country, times the multiplier of the member's
+--                   level (sql/point_levels.sql; 1 point a minute before it)
 --   5 new-member registrations attributed to the member's shared links = 1 point
 --   500 watch links published by the member (movielink + tvlink,
 --       banned links excluded)                              = 1 point
@@ -23,7 +26,9 @@
 -- Point totals are not stored per source. Counts are read live from the activity
 -- tables; the private member_referrals table only guarantees one conversion per new account:
 --
---   minutes          profiles.private_minutes + profiles.public_minutes
+--   minutes          profiles.watch_points (stored when each minute is credited,
+--                    sql/point_levels.sql); without that file
+--                    profiles.private_minutes + profiles.public_minutes
 --   shares           post_events      where kind = 'share', network = 'referral', and member_id = me
 --   links            movielink + tvlink where member_id = me and banned = false
 --   downloads        sum(clicks) of movielink + tvlink where member_id = me
