@@ -2,12 +2,17 @@
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, urljoin, unquote, quote
 import base64
+import collections
+import hashlib
+import http.client
 import io
 import html as html_module
 import ipaddress
 import json
 import os
 import re
+import ssl
+import threading
 import time
 import socket
 import sys
@@ -460,20 +465,65 @@ def thumb_for(url):
     return payload
 
 
+DNS_TTL = 60  # seconds a host's checked addresses are remembered
+_dns_cache = {}
+_dns_lock = threading.Lock()
+
+
+def _blocked_ip(ip):
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+
+
+def public_addresses(host, port):
+    """The addresses of `host` when every one of them is public, else None (SSRF guard).
+
+    Remembered for a minute: a live channel asks for its playlist every few
+    seconds and for a segment more often still, and each request used to cost a
+    DNS lookup or two. The relay connects to exactly these addresses, so a
+    second, different DNS answer cannot steer it to a private one.
+    """
+    key = (host.lower(), port)
+    now = time.monotonic()
+    with _dns_lock:
+        hit = _dns_cache.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    addrs = None
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        infos = []
+    if infos:
+        addrs = []
+        for family, _type, _proto, _name, sockaddr in infos:
+            try:
+                ip = ipaddress.ip_address(str(sockaddr[0]).split("%")[0])
+            except ValueError:
+                addrs = None
+                break
+            if _blocked_ip(ip):
+                addrs = None
+                break
+            if (family, sockaddr) not in addrs:
+                addrs.append((family, sockaddr))
+    with _dns_lock:
+        _dns_cache[key] = (now + (DNS_TTL if addrs else 10), addrs)
+        if len(_dns_cache) > 2048:
+            for old in [k for k, v in _dns_cache.items() if v[0] <= now] or list(_dns_cache)[:1024]:
+                _dns_cache.pop(old, None)
+    return addrs
+
+
 def is_public_http_url(url):
     """Allow only http(s) URLs that resolve to public addresses (SSRF guard)."""
     p = urlparse(url)
     if p.scheme not in ("http", "https") or not p.hostname:
         return False
     try:
-        infos = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80))
-    except OSError:
+        port = p.port or (443 if p.scheme == "https" else 80)
+    except ValueError:
         return False
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
-            return False
-    return True
+    return public_addresses(p.hostname, port) is not None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -531,20 +581,78 @@ def stream_relay_url(url):
     return "/api/stream?url=" + quote(url, safe="")
 
 
-def rewrite_hls(text, base):
-    """Point every URI of an HLS playlist (variants, segments, keys, maps) at the relay."""
+def _tag_int(line, default=0):
+    try:
+        return int(line.split(":", 1)[1].strip())
+    except (IndexError, ValueError):
+        return default
+
+
+def rewrite_hls(text, base, live=""):
+    """Point every URI of an HLS playlist (variants, segments, keys, maps) at the relay.
+
+    `live`: the id of a live window (see LiveWindows). Its segments then also
+    carry their media sequence number, so that the relay can keep and share
+    them — even when a server reuses segment names in a loop.
+    """
     out = []
+    seq = 0
     for line in text.splitlines():
         s = line.strip()
         if not s:
             continue
         if s.startswith("#"):
+            if s.upper().startswith("#EXT-X-MEDIA-SEQUENCE:"):
+                seq = _tag_int(s)
             if 'URI="' in s:
                 s = _HLS_URI_RE.sub(lambda m: 'URI="%s"' % stream_relay_url(urljoin(base, m.group(1))), s)
             out.append(s)
         else:
-            out.append(stream_relay_url(urljoin(base, s)))
+            relayed = stream_relay_url(urljoin(base, s))
+            if live and relayed.startswith("/api/stream?"):
+                relayed += "&seq=%d&live=%s" % (seq, live)
+            out.append(relayed)
+            seq += 1
     return "\n".join(out) + "\n"
+
+
+def parse_live_playlist(text, base):
+    """(target duration, [(media sequence, absolute url, duration)]) of a live media playlist.
+
+    None for anything else: a master playlist, a finished (VOD) one, or one with
+    byte ranges, whose segments share a single address.
+    """
+    target = 0.0
+    seq = 0
+    duration = None
+    segments = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            tag = s.upper()
+            if tag.startswith(("#EXT-X-ENDLIST", "#EXT-X-BYTERANGE", "#EXT-X-STREAM-INF", "#EXT-X-PLAYLIST-TYPE:VOD")):
+                return None
+            if tag.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+                seq = _tag_int(s)
+            elif tag.startswith("#EXT-X-TARGETDURATION:"):
+                target = float(_tag_int(s))
+            elif tag.startswith("#EXTINF:"):
+                try:
+                    duration = float(s[8:].split(",", 1)[0].strip())
+                except ValueError:
+                    duration = 0.0
+            continue
+        if not s.startswith("data:"):
+            segments.append((seq, urljoin(base, s), duration if duration and duration > 0 else 0.0))
+        seq += 1
+        duration = None
+    if not segments:
+        return None
+    if target <= 0:
+        target = max(d for _s, _u, d in segments) or 6.0
+    return target, [(n, u, d or target) for n, u, d in segments]
 
 
 def is_hls_playlist(content_type, head):
@@ -568,26 +676,230 @@ def looks_like_media(head):
     return len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0  # AAC (ADTS)
 
 
+# Upstream connections stay open between requests (HTTP keep-alive). A live
+# channel asks the same IPTV server for its playlist and for a segment every few
+# seconds; a new TCP (and TLS) connection for each request cost one or more round
+# trips every time — time the player then lacked to keep its buffer filled.
+UPSTREAM_IDLE = 15  # seconds an idle upstream connection is kept
+UPSTREAM_IDLE_PER_HOST = 4
+_tls_context = None
+
+
+def _tls():
+    global _tls_context
+    if _tls_context is None:
+        _tls_context = ssl.create_default_context()
+    return _tls_context
+
+
+def _connect_any(addrs, timeout):
+    """A TCP connection to the first approved address that answers."""
+    error = None
+    for family, sockaddr in addrs[:3]:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            return sock
+        except OSError as err:
+            error = err
+            sock.close()
+    raise error or OSError("no address to connect to")
+
+
+class _GuardedHTTPConnection(http.client.HTTPConnection):
+    """Connects to the addresses the SSRF guard checked, never to a second DNS answer."""
+
+    def __init__(self, host, port, addrs, timeout):
+        super().__init__(host, port, timeout=timeout)
+        self.addrs = addrs
+
+    def connect(self):
+        self.sock = _connect_any(self.addrs, self.timeout)
+
+
+class _GuardedHTTPSConnection(_GuardedHTTPConnection):
+    default_port = 443
+
+    def connect(self):
+        super().connect()
+        self.sock = _tls().wrap_socket(self.sock, server_hostname=self.host)
+
+
+class UpstreamPool:
+    """Idle keep-alive connections to IPTV servers, by (scheme, host, port)."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.idle = {}
+
+    def take(self, key):
+        now = time.monotonic()
+        conn = None
+        stale = []
+        with self.lock:
+            stack = self.idle.get(key) or []
+            while stack:
+                candidate, parked = stack.pop()
+                if now - parked < UPSTREAM_IDLE and candidate.sock is not None:
+                    conn = candidate
+                    break
+                stale.append(candidate)
+            if not stack:
+                self.idle.pop(key, None)
+        for old in stale:
+            old.close()
+        return conn
+
+    def park(self, key, conn):
+        now = time.monotonic()
+        stale = []
+        with self.lock:
+            stack = self.idle.setdefault(key, [])
+            if len(stack) < UPSTREAM_IDLE_PER_HOST:
+                stack.append((conn, now))
+                conn = None
+            if len(self.idle) > 256:
+                for k in list(self.idle):
+                    keep = [(c, at) for c, at in self.idle[k] if now - at < UPSTREAM_IDLE]
+                    stale.extend(c for c, at in self.idle[k] if now - at >= UPSTREAM_IDLE)
+                    if keep:
+                        self.idle[k] = keep
+                    else:
+                        del self.idle[k]
+        if conn is not None:
+            stale.append(conn)
+        for old in stale:
+            old.close()
+
+
+_upstream_pool = UpstreamPool()
+
+
+class UpstreamResponse:
+    """An upstream answer. Its connection returns to the pool once the body was read to the end."""
+
+    def __init__(self, key, conn, resp, url):
+        self._key = key
+        self._conn = conn
+        self._resp = resp
+        self.url = url
+        self.status = resp.status
+        self.reason = resp.reason
+        self.headers = resp.headers
+
+    def read(self, amt=None):
+        return self._resp.read(amt)
+
+    def read1(self, n=-1):
+        return self._resp.read1(n)
+
+    def close(self):
+        resp, conn = self._resp, self._conn
+        if resp is None:
+            return
+        self._resp = self._conn = None
+        # read1() leaves a Content-Length body "open" at its end, read() closes it
+        finished = resp.isclosed() or (not resp.chunked and resp.length == 0)
+        reusable = finished and not resp.will_close
+        resp.close()
+        if reusable:
+            _upstream_pool.park(self._key, conn)
+        else:
+            conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+# a kept-alive connection the server closed meanwhile: retried once on a new one
+_STALE_CONNECTION = (
+    http.client.RemoteDisconnected,
+    http.client.BadStatusLine,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    BrokenPipeError,
+)
+
+
+def upstream_get(url, headers, timeout):
+    """GET `url` (whatever the status) over a kept-alive connection to an approved address."""
+    p = urlparse(url)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        raise PermissionError("blocked")
+    try:
+        port = p.port or (443 if p.scheme == "https" else 80)
+    except ValueError:
+        raise PermissionError("blocked")
+    addrs = public_addresses(p.hostname, port)
+    if not addrs:
+        raise PermissionError("blocked")
+    target = quote(p.path or "/", safe="/%:@!$&'()*+,;=-._~")
+    if p.query:
+        target += "?" + quote(p.query, safe="=&%:@!$'()*+,;/?-._~[]")
+    key = (p.scheme, p.hostname.lower(), port)
+    for attempt in (0, 1):
+        conn = _upstream_pool.take(key) if attempt == 0 else None
+        reused = conn is not None
+        if reused:
+            conn.timeout = timeout
+            conn.sock.settimeout(timeout)
+        else:
+            cls = _GuardedHTTPSConnection if p.scheme == "https" else _GuardedHTTPConnection
+            conn = cls(p.hostname, port, addrs, timeout)
+        try:
+            conn.request("GET", target, headers=headers)
+            resp = conn.getresponse()
+        except _STALE_CONNECTION:
+            conn.close()
+            if reused:
+                continue
+            raise
+        except BaseException:
+            conn.close()
+            raise
+        return UpstreamResponse(key, conn, resp, url)
+    raise ConnectionError("the server closed the connection")
+
+
+def _drain(resp, limit=65536):
+    """Read the short body of a redirect or an error, so that its connection can be reused."""
+    try:
+        length = int(resp.headers.get("Content-Length") or -1)
+        if 0 <= length <= limit:
+            resp.read(length)
+    except Exception:
+        pass
+    resp.close()
+
+
 def open_stream(url, headers, timeout=STREAM_TIMEOUT):
     """Open an upstream stream, following redirects through the SSRF guard.
 
     Returns (response, final_url): relative URIs in a playlist are resolved
     against the address the playlist really came from (IPTV servers often
-    redirect to a load balancer with a token).
+    redirect to a load balancer with a token). Error answers raise
+    urllib.error.HTTPError, as they did when this went through urllib.
     """
-    opener = urllib.request.build_opener(_NoRedirect)
     for _ in range(6):
-        if not is_public_http_url(url):
-            raise PermissionError("blocked")
-        req = urllib.request.Request(url, headers=headers)
-        try:
-            return opener.open(req, timeout=timeout), url
-        except urllib.error.HTTPError as err:
-            if err.code in (301, 302, 303, 307, 308) and err.headers.get("Location"):
-                url = urljoin(url, err.headers["Location"])
-                err.close()
-                continue
-            raise
+        resp = upstream_get(url, headers, timeout)
+        if resp.status in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location")
+            if not location:
+                _drain(resp)
+                raise urllib.error.HTTPError(url, resp.status, resp.reason, resp.headers, io.BytesIO())
+            _drain(resp)
+            url = urljoin(url, location)
+            continue
+        if resp.status >= 400:
+            error = urllib.error.HTTPError(url, resp.status, resp.reason, resp.headers, io.BytesIO())
+            _drain(resp)
+            raise error
+        return resp, url
     raise ValueError("too many redirects")
 
 
@@ -725,7 +1037,432 @@ def check_stream(links, user_agent):
     return verdict
 
 
+# ---------- live HLS: segments kept, shared and fetched ahead ----------
+# hls.js loads one segment at a time and asks for the next only when the last
+# one has arrived. Through the relay each of those requests also waited for the
+# IPTV server to answer — often half a second or more — and on a slow server
+# that wait ate the margin the player needed: the picture stopped at the end
+# of every segment. So for live windows the relay now
+#   * fetches the next segments while the viewer is still downloading the
+#     current one (READ_AHEAD, one download at a time per viewer, so an
+#     account allowed a single connection is not asked for more);
+#   * hands out a segment while it is still arriving (one upstream download,
+#     however many requests: a retry, or several viewers of one channel);
+#   * keeps finished segments for SEGMENT_TTL seconds within SEGMENT_CACHE_MB.
+# A segment that cannot be kept (too large, cache full, upstream error) is
+# relayed directly, exactly as before. CINEAURA_SEGMENT_CACHE_MB=0 turns this
+# off; CINEAURA_READ_AHEAD=0 keeps the sharing but fetches nothing ahead.
+
+
+def _env_int(name, default):
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+SEGMENT_CACHE_MB = _env_int("CINEAURA_SEGMENT_CACHE_MB", 96)
+READ_AHEAD = _env_int("CINEAURA_READ_AHEAD", 2)
+SEGMENT_MAX = 16 * 1024 * 1024  # a larger segment is relayed, never kept
+SEGMENT_TTL = 90  # seconds a finished segment stays available
+SEGMENT_FETCHERS = 12  # background downloads at once, every viewer together
+LIVE_IDLE = 40  # seconds without a request before a live window is forgotten
+
+
+def segment_key(url, seq):
+    return "%d|%s" % (seq, url)
+
+
+class CachedSegment:
+    """One segment, complete or still arriving."""
+
+    def __init__(self, key, url):
+        self.key = key
+        self.url = url
+        self.cond = threading.Condition()
+        self.chunks = []
+        self.size = 0
+        self.status = 200
+        self.ctype = "application/octet-stream"
+        self.length = -1  # Content-Length of the upstream answer, -1 if it gave none
+        self.ready = False  # status and headers known; data may follow
+        self.done = False  # the whole body arrived
+        self.failed = ""  # why the download stopped
+        self.used = time.monotonic()
+
+
+class SegmentCache:
+    def __init__(self, budget):
+        self.budget = budget
+        self.lock = threading.Lock()
+        self.items = collections.OrderedDict()  # key -> CachedSegment, least recently used first
+        self.bytes = 0
+        self.fetchers = threading.BoundedSemaphore(SEGMENT_FETCHERS)
+
+    def get(self, key, url, headers):
+        """(segment, started here) for `key`; the download starts when it is not kept yet.
+
+        (None, False) when no download can start (cache full, too many at
+        once): the caller relays the segment itself.
+        """
+        now = time.monotonic()
+        with self.lock:
+            self._trim(now)
+            seg = self.items.get(key)
+            if seg is not None:
+                seg.used = now
+                self.items.move_to_end(key)
+                return seg, False
+            if self.bytes > self.budget or not self.fetchers.acquire(False):
+                return None, False
+            seg = CachedSegment(key, url)
+            self.items[key] = seg
+        try:
+            threading.Thread(target=self._download, args=(seg, dict(headers)), daemon=True).start()
+        except RuntimeError:  # the system has no thread left
+            self.fetchers.release()
+            self._fail(seg, "no thread")
+            return None, False
+        return seg, True
+
+    def peek(self, key):
+        with self.lock:
+            return self.items.get(key)
+
+    def _trim(self, now):
+        """Forget expired segments, then the least recently used finished ones beyond the budget."""
+        for key in [k for k, seg in self.items.items() if seg.done and now - seg.used > SEGMENT_TTL]:
+            self._drop(key)
+        if self.bytes > self.budget:
+            for key in [k for k, seg in self.items.items() if seg.done]:
+                if self.bytes <= self.budget * 0.8:
+                    break
+                self._drop(key)
+
+    def _drop(self, key):
+        seg = self.items.pop(key, None)
+        if seg is not None:
+            self.bytes -= seg.size
+
+    def _fail(self, seg, why):
+        with seg.cond:
+            seg.failed = why or "failed"
+            seg.cond.notify_all()
+        with self.lock:
+            if self.items.get(seg.key) is seg:
+                self._drop(seg.key)
+
+    def _download(self, seg, headers):
+        try:
+            resp, _final = open_stream(seg.url, headers)
+            with resp:
+                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                try:
+                    length = int(resp.headers.get("Content-Length") or -1)
+                except ValueError:
+                    length = -1
+                if length > SEGMENT_MAX:
+                    raise ValueError("segment too large to keep")
+                head = resp.read1(STREAM_CHUNK)
+                labelled = is_relayable_media(ctype)
+                if not (labelled or looks_like_media(head) or length == 16):
+                    raise ValueError("not media")
+                with seg.cond:
+                    seg.status = resp.status if resp.status in (200, 206) else 200
+                    seg.ctype = (ctype if labelled else "") or "application/octet-stream"
+                    seg.length = length
+                    seg.ready = True
+                    seg.cond.notify_all()
+                chunk = head
+                while chunk:
+                    if seg.size + len(chunk) > SEGMENT_MAX:
+                        raise ValueError("segment too large to keep")
+                    with self.lock:
+                        if self.items.get(seg.key) is seg:
+                            self.bytes += len(chunk)
+                    with seg.cond:
+                        seg.chunks.append(chunk)
+                        seg.size += len(chunk)
+                        seg.cond.notify_all()
+                    chunk = resp.read1(STREAM_CHUNK)
+                if 0 <= length != seg.size:
+                    raise ValueError("segment cut short")
+            with seg.cond:
+                seg.done = True
+                seg.used = time.monotonic()
+                seg.cond.notify_all()
+        except urllib.error.HTTPError as err:
+            err.close()
+            self._fail(seg, "http %d" % err.code)
+        except Exception as err:
+            self._fail(seg, str(err) or err.__class__.__name__)
+        finally:
+            self.fetchers.release()
+
+
+def live_id(url):
+    """Id of the live window of a playlist address (the one the player asks for)."""
+    return hashlib.sha1(url.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def fetch_playlist(url, headers, timeout=STREAM_TIMEOUT):
+    """(text, final url) of an HLS playlist; raises when the answer is not one."""
+    resp, final_url = open_stream(url, headers, timeout)
+    with resp:
+        content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        head = resp.read1(STREAM_CHUNK)
+        if not is_hls_playlist(content_type, head):
+            raise ValueError("not a playlist")
+        raw = head + resp.read(MAX_HLS_PLAYLIST + 1 - len(head))
+    if len(raw) > MAX_HLS_PLAYLIST:
+        raise ValueError("playlist too large")
+    return raw.decode("utf-8", "replace").lstrip("\ufeff"), final_url
+
+
+class LiveWindow:
+    """What the relay knows of one live playlist and of the player reading it."""
+
+    def __init__(self, sid, source):
+        self.sid = sid
+        self.source = source  # the address the player asks for
+        self.final = source  # where it last came from (after redirects)
+        self.urls = {}  # media sequence -> segment url, of the newest window
+        self.order = []
+        self.target = 6.0
+        self.last_dur = 6.0
+        self.headers = {}
+        self.body = b""  # the relayed playlist, as the player receives it
+        self.fetched = 0.0  # when `body` came from the IPTV server
+        self.changed = 0.0  # when a new segment last appeared
+        self.newest = -1
+        self.seen = time.monotonic()  # the player's last request of any kind
+        self.seg_seen = 0.0  # its last segment request
+        self.wanted = None  # newest segment it asked for
+        self.queue = collections.deque()
+        self.queued = set()
+        self.running = False  # a fetcher works on the queue
+        self.polling = False  # a poller keeps the playlist current
+        self.next_poll = 0.0
+        self.poll_errors = 0
+        self.ahead_on = True
+        self.fetched_ahead = set()
+        self.asked = set()
+        self.unused = 0
+
+
+class LiveWindows:
+    """Read-ahead for live playlists.
+
+    While a player plays a live window, a poller re-reads the playlist just
+    after the next segment is due, and a fetcher downloads each new segment at
+    once — usually before the player even knows it exists. The player's own
+    playlist reloads are then answered from that fresh copy. One poller and
+    one download at a time per window, so an IPTV account limited to one
+    connection is not asked for more than the player itself would ask.
+    """
+
+    def __init__(self, cache, ahead):
+        self.cache = cache
+        self.ahead = ahead if cache is not None else 0
+        self.lock = threading.Lock()
+        self.items = {}
+
+    @staticmethod
+    def start_index(target, segments):
+        """Where hls.js starts in a fresh window: 3 target durations from its live edge."""
+        total = sum(d for _s, _u, d in segments)
+        pos = max(0.0, min(total - 3 * target, total - target))
+        t = 0.0
+        for i, (_s, _u, d) in enumerate(segments):
+            if t + d > pos + 0.001:
+                return i
+            t += d
+        return max(0, len(segments) - 1)
+
+    def _idle(self, win, now):
+        return now - win.seen > max(10.0, 2.5 * win.target)
+
+    def _update(self, win, target, segments, body, final, now):  # the caller holds self.lock
+        win.target = target
+        win.urls = {seq: url for seq, url, _d in segments}
+        win.order = [seq for seq, _u, _d in segments]
+        win.last_dur = segments[-1][2]
+        win.final = final
+        first = win.order[0]
+        # read-ahead nobody asked for: a server that hands out new addresses on
+        # every reload (a fresh token each time) gains nothing from it
+        for n in [n for n in win.fetched_ahead if n < first]:
+            win.fetched_ahead.discard(n)
+            if n not in win.asked:
+                win.unused += 1
+        if win.unused >= 4:
+            win.ahead_on = False
+        win.asked = {n for n in win.asked if n >= first}
+        win.queued = {n for n in win.queued if n >= first}
+        if win.order[-1] > win.newest:
+            win.newest = win.order[-1]
+            win.changed = now
+        win.body = body
+        win.fetched = now
+
+    def playlist(self, sid, source, final, target, segments, body, headers):
+        """A player received a live window straight from the IPTV server."""
+        if not self.ahead:
+            return
+        now = time.monotonic()
+        with self.lock:
+            for old in [k for k, w in self.items.items() if not (w.running or w.polling) and now - w.seen > LIVE_IDLE]:
+                del self.items[old]
+            win = self.items.get(sid)
+            fresh = win is None or not win.order
+            if win is None:
+                win = self.items[sid] = LiveWindow(sid, source)
+            win.headers = headers
+            win.seen = now
+            self._update(win, target, segments, body, final, now)
+            if fresh:
+                win.next_poll = now + max(0.5, min(target, segments[-1][2]) / 2)
+                if win.ahead_on:
+                    start = self.start_index(target, segments)
+                    self._enqueue(win, win.order[start:start + self.ahead + 1])
+            else:
+                self._plan(win)
+            self._start_poller(win)
+
+    def cached_playlist(self, sid):
+        """The poller's copy of the window while it keeps it current, else None."""
+        if not self.ahead:
+            return None
+        now = time.monotonic()
+        with self.lock:
+            win = self.items.get(sid)
+            if win is None or not win.polling or win.poll_errors or not win.body:
+                return None
+            if now - win.fetched > win.target + 0.5:
+                return None
+            win.seen = now
+            return win.body
+
+    def segment(self, sid, seq):
+        """The player asked for segment `seq`: keep the next ones coming."""
+        with self.lock:
+            win = self.items.get(sid)
+            if win is None:
+                return
+            win.seen = win.seg_seen = time.monotonic()
+            win.asked.add(seq)
+            if win.wanted is None or seq > win.wanted:
+                win.wanted = seq
+            self._plan(win, seq)
+
+    def _plan(self, win, after=None):  # the caller holds self.lock
+        if not win.ahead_on:
+            return
+        base = win.wanted if after is None else after
+        if base is None or time.monotonic() - win.seg_seen > max(10.0, 3 * win.target):
+            return  # only for a player that keeps asking for segments
+        self._enqueue(win, [n for n in win.order if n > base][: self.ahead])
+
+    def _enqueue(self, win, plan):  # the caller holds self.lock
+        for seq in plan:
+            if seq not in win.queued:
+                win.queued.add(seq)
+                win.queue.append(seq)
+        if win.queue and not win.running:
+            win.running = True
+            try:
+                threading.Thread(target=self._fetch, args=(win,), daemon=True).start()
+            except RuntimeError:
+                win.running = False
+
+    def _start_poller(self, win):  # the caller holds self.lock
+        if win.polling or not win.ahead_on:
+            return
+        win.polling = True
+        win.poll_errors = 0
+        try:
+            threading.Thread(target=self._poll, args=(win,), daemon=True).start()
+        except RuntimeError:
+            win.polling = False
+
+    def _fetch(self, win):
+        """Download the queued segments of one window, one after the other."""
+        while True:
+            with self.lock:
+                if self._idle(win, time.monotonic()) or not win.queue:
+                    win.queue.clear()
+                    win.running = False
+                    return
+                seq = win.queue.popleft()
+                url = win.urls.get(seq)
+                headers = win.headers
+                if url:
+                    win.fetched_ahead.add(seq)
+            if not url:
+                continue  # already out of the window
+            seg, _started = self.cache.get(segment_key(url, seq), url, headers)
+            if seg is None:
+                continue  # no room right now: the player's own request fetches it
+            deadline = time.monotonic() + 2 * STREAM_TIMEOUT
+            with seg.cond:
+                while not seg.done and not seg.failed:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    seg.cond.wait(left)
+
+    def _poll(self, win):
+        """Re-read the playlist while its player plays, just after each new segment is due."""
+        while True:
+            with self.lock:
+                now = time.monotonic()
+                if self._idle(win, now) or not win.ahead_on or win.poll_errors >= 3:
+                    win.polling = False
+                    return
+                wait = win.next_poll - now
+                urls = [win.final, win.source] if win.final != win.source else [win.source]
+                headers = win.headers
+            if wait > 0:
+                time.sleep(min(wait, 0.5))
+                continue
+            window = text = final = None
+            for url in urls:
+                try:
+                    text, final = fetch_playlist(url, headers, timeout=CHECK_TIMEOUT)
+                    window = parse_live_playlist(text, final)
+                    break
+                except Exception:
+                    continue
+            now = time.monotonic()
+            with self.lock:
+                if not window:
+                    win.poll_errors += 1
+                    win.next_poll = now + max(1.0, win.target / 2)
+                    continue
+                win.poll_errors = 0
+                before = win.newest
+                self._update(win, window[0], window[1], rewrite_hls(text, final, win.sid).encode("utf-8"), final, now)
+                if win.newest > before:
+                    win.next_poll = now + max(0.5, win.last_dur - 0.3)  # the next one is due about then
+                elif now - win.changed > 2 * win.target:
+                    win.next_poll = now + max(1.0, win.target / 2)  # the channel stalls: ask less often
+                else:
+                    win.next_poll = now + max(0.3, min(0.5, win.target / 4))
+                self._plan(win)
+
+
+_segments = SegmentCache(SEGMENT_CACHE_MB * 1024 * 1024) if SEGMENT_CACHE_MB > 0 else None
+_live = LiveWindows(_segments, READ_AHEAD)
+_LIVE_ID_RE = re.compile(r"[0-9a-f]{16}")
+
+
 class Handler(SimpleHTTPRequestHandler):
+    # Keep-alive towards the browser (or the proxy in front of this server): the
+    # playlist and segment requests of a live channel reuse one connection.
+    # Every answer below states its length, or is sent in chunks.
+    protocol_version = "HTTP/1.1"
+    timeout = 45  # seconds a silent connection is kept
+
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
         ".js": "application/javascript; charset=utf-8",
@@ -784,6 +1521,70 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def begin_body(self, length):
+        """Frame a body of `length` bytes (-1: unknown). True: it goes out in chunks."""
+        if length >= 0:
+            self.send_header("Content-Length", str(length))
+            return False
+        if self.request_version == "HTTP/1.1":
+            self.send_header("Transfer-Encoding", "chunked")
+            return True
+        self.send_header("Connection", "close")
+        return False
+
+    def write_body(self, data, chunked):
+        if chunked:
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
+        else:
+            self.wfile.write(data)
+
+    def send_cached(self, seg, label):
+        """Answer with a kept segment, also while it is still arriving. False: nothing was sent."""
+        deadline = time.monotonic() + STREAM_TIMEOUT
+        with seg.cond:
+            while not seg.ready and not seg.failed:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                seg.cond.wait(left)
+            if not seg.ready:
+                return False
+            status, ctype, length = seg.status, seg.ctype, seg.length
+            if seg.done:
+                label = "hit"
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        chunked = self.begin_body(length)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Relay-Cache", label)
+        self.end_headers()
+        sent = 0
+        complete = False
+        try:
+            while True:
+                with seg.cond:
+                    while sent >= len(seg.chunks) and not seg.done and not seg.failed:
+                        if not seg.cond.wait(STREAM_TIMEOUT):
+                            break
+                    chunks = seg.chunks[sent:]
+                    finished = seg.done
+                for chunk in chunks:
+                    self.write_body(chunk, chunked)
+                sent += len(chunks)
+                if finished and sent >= len(seg.chunks):
+                    complete = True
+                    break
+                if not chunks:
+                    break  # the download failed, or sent nothing for STREAM_TIMEOUT
+            if complete and chunked:
+                self.wfile.write(b"0\r\n\r\n")
+        except OSError:  # the viewer went away
+            complete = False
+        if not complete:
+            self.close_connection = True  # a cut answer must not look complete
+        return True
+
     def proxy_stream(self, parsed):
         query = parse_qs(parsed.query)
         if (query.get("probe") or [""])[0]:
@@ -803,6 +1604,28 @@ class Handler(SimpleHTTPRequestHandler):
         wanted_range = (self.headers.get("Range") or "").strip()
         if re.fullmatch(r"bytes=\d*-\d*", wanted_range):
             headers["Range"] = wanted_range  # seeking inside films and series episodes
+        else:
+            wanted_range = ""
+        # a segment of a live window (rewrite_hls tagged it): kept, shared, fetched ahead
+        seq = (query.get("seq") or [""])[0]
+        live = (query.get("live") or [""])[0]
+        if _segments is not None and not wanted_range and seq.isdigit() and len(seq) <= 18 and _LIVE_ID_RE.fullmatch(live):
+            _live.segment(live, int(seq))
+            seg, started = _segments.get(segment_key(url, int(seq)), url, headers)
+            if seg is not None and self.send_cached(seg, "miss" if started else "join"):
+                return
+        elif not wanted_range:
+            cached = _live.cached_playlist(live_id(url))
+            if cached is not None:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Content-Length", str(len(cached)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Relay-Cache", "hit")
+                self.end_headers()
+                self.wfile.write(cached)
+                return
         try:
             resp, final_url = open_stream(url, headers)
         except PermissionError:
@@ -835,7 +1658,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if len(raw) > MAX_HLS_PLAYLIST:
                     self.send_error(502, "Playlist too large")
                     return
-                body = rewrite_hls(raw.decode("utf-8", "replace").lstrip("\ufeff"), final_url).encode("utf-8")
+                text = raw.decode("utf-8", "replace").lstrip("\ufeff")
+                window = parse_live_playlist(text, final_url) if _segments is not None else None
+                if window:
+                    sid = live_id(url)
+                    body = rewrite_hls(text, final_url, sid).encode("utf-8")
+                    _live.playlist(sid, url, final_url, window[0], window[1], body, dict(headers))
+                else:
+                    body = rewrite_hls(text, final_url).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/vnd.apple.mpegurl")
                 self.send_header("Content-Length", str(len(body)))
@@ -855,20 +1685,29 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self.send_response(resp.status if resp.status in (200, 206) else 200)
             self.send_header("Content-Type", (content_type if labelled else "") or "application/octet-stream")
-            for name in ("Content-Length", "Content-Range", "Accept-Ranges"):
+            for name in ("Content-Range", "Accept-Ranges"):
                 value = resp.headers.get(name)
                 if value:
                     self.send_header(name, value)
+            chunked = self.begin_body(length)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             # a live channel never ends: copy until the viewer closes the player
+            sent = 0
+            complete = False
             try:
                 chunk = head
                 while chunk:
-                    self.wfile.write(chunk)
+                    self.write_body(chunk, chunked)
+                    sent += len(chunk)
                     chunk = resp.read1(STREAM_CHUNK)
-            except OSError:  # viewer gone (broken pipe / reset) or upstream stalled
+                complete = length < 0 or sent == length
+                if complete and chunked:
+                    self.wfile.write(b"0\r\n\r\n")
+            except (OSError, http.client.HTTPException):  # viewer gone, or upstream stalled or cut
+                complete = False
+            if not complete:
                 self.close_connection = True
 
     def stream_check(self, parsed):
