@@ -2378,6 +2378,10 @@
     "chan.epg.fail": "The programme guide could not be loaded.",
     "chan.epg.none": "No programme information for this channel.",
     "chan.epg.tz": "Times are shown in your time zone.",
+
+    // ── Free channels list ──
+    "chan.freeNone": "No free channels yet.",
+    "chan.signinBack": "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.",
   };
 
   const dict = {};

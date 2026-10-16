@@ -488,8 +488,10 @@
     }
   }
 
-  // IPTV "Explore": signed-in members go to the IPTV tab of the dashboard,
-  // everyone else is sent to the sign-in page and brought back there afterwards.
+  // IPTV "Explore" of the premium channels: signed-in members go to the IPTV tab
+  // of the dashboard, everyone else is sent to the sign-in page and brought back
+  // there afterwards. (The free channels card links straight to
+  // Listchannels.html?free=1, which guests may browse before signing in.)
   document.addEventListener("click", (e) => {
     const link = e.target.closest("[data-iptv-explore]");
     if (!link) return;

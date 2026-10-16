@@ -1,5 +1,6 @@
 /* Listchannels.html — the channels, movies and series of one IPTV package
- * (?package=<name>).
+ * (?package=<name>), or of every free package together (?free=1: the
+ * "Explore" button of the free channels on the home page).
  *
  * Filters, kept in the address so a reload or a shared link keeps them:
  *   type    all | live | movie | series     tabs with counts
@@ -19,8 +20,9 @@
  * Who may play: free packages play for every signed-in member, a premium
  * package for the member it is assigned to (the same rule as Dashboard > IPTV:
  * owner_id holds the member id, or the username on a row typed by hand), and
- * the staff always. &channel=<id> opens a channel at once, and the browser's
- * Back button closes the player.
+ * the staff always. Guests see the list with a sign-in notice that brings them
+ * back here. &channel=<id> opens a channel at once, and the browser's Back
+ * button closes the player.
  *
  * When the package has a programme guide (EPG), every live channel card that
  * comes near the screen shows what is on now, with how far it has got.
@@ -50,10 +52,13 @@
 
   const params = new URLSearchParams(location.search);
   const pack = (params.get("package") || "").trim();
+  // ?free=1: the channels of every package marked free in Panel > IPTV
+  const freeMode = !pack && params.has("free") && params.get("free") !== "0";
   const pick = (value, list, fallback) => (list.includes(value) ? value : fallback);
 
   const state = {
     rows: [],
+    packs: [], // free mode: the free packages, in the order of Panel > IPTV
     byKey: new Map(), // check key -> row indexes (one stream can sit in several groups)
     access: "ok", // ok | signin | locked
     query: "",
@@ -121,11 +126,30 @@
     }
   }
 
+  // the packages of the page: one, or in free mode every free package
+  function packageFilter() {
+    if (!freeMode) return `package_name=eq.${restValue(pack)}`;
+    const quoted = state.packs.map((name) => `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+    return `package_name=in.(${encodeURIComponent(quoted.join(","))})`;
+  }
+
+  async function loadFreePacks() {
+    const res = await supabaseRequest("/rest/v1/iptv?type=ilike.free&select=name&order=id.asc");
+    if (!res.ok || !Array.isArray(res.data)) throw new Error("free packages could not be loaded");
+    const names = [];
+    res.data.forEach((a) => {
+      const name = String(a.name || "").trim();
+      if (name && !names.includes(name)) names.push(name);
+    });
+    return names;
+  }
+
   async function loadChannels() {
     const rows = [];
+    if (freeMode && !state.packs.length) return rows;
     for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
       const res = await supabaseRequest(
-        `/rest/v1/listchannels?package_name=eq.${restValue(pack)}&select=*&order=group_name.asc,id.asc&limit=${PAGE}&offset=${offset}`
+        `/rest/v1/listchannels?${packageFilter()}&select=*&order=group_name.asc,id.asc&limit=${PAGE}&offset=${offset}`
       );
       if (!res.ok || !Array.isArray(res.data)) {
         if (!rows.length) throw new Error("channels could not be loaded");
@@ -141,6 +165,7 @@
     const session = getSession();
     if (staffSession()) return "ok";
     if (!session?.member_id) return "signin";
+    if (freeMode) return "ok"; // free packages play for every signed-in member
     const res = await supabaseRequest(`/rest/v1/iptv?name=eq.${restValue(pack)}&select=id,type,owner_id`);
     const accounts = res.ok && Array.isArray(res.data) ? res.data : [];
     if (!accounts.length) return "ok"; // not registered in Panel > IPTV: nothing to check against
@@ -165,7 +190,9 @@
     return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
   }
 
-  const checkKey = (row) => hash(`${pack}\n${String(row.stream_url || "").trim() || `name:${norm(row.channel_name)}`}`);
+  const rowPack = (row) => (freeMode ? String(row?.package_name || "") : pack);
+  // the same key on the free list and on the package's own page
+  const checkKey = (row) => hash(`${rowPack(row)}\n${String(row.stream_url || "").trim() || `name:${norm(row.channel_name)}`}`);
 
   function readSaved() {
     const items = new Map();
@@ -302,8 +329,8 @@
     if (state.access === "signin") {
       return `
         <div class="chl-note" id="chl-note">
-          <div><strong>${escapeHtml(t("chan.signinTitle"))}</strong><p>${escapeHtml(t("chan.signinText"))}</p></div>
-          <a class="btn btn-sm btn-primary" href="./login.html?next=dashboard.html%23iptv">${escapeHtml(t("common.signin"))}</a>
+          <div><strong>${escapeHtml(t("chan.signinTitle"))}</strong><p>${escapeHtml(t("chan.signinBack"))}</p></div>
+          <a class="btn btn-sm btn-primary" href="${escapeHtml(signinUrl())}" data-signin>${escapeHtml(t("common.signin"))}</a>
         </div>`;
     }
     if (state.access === "locked") {
@@ -351,10 +378,12 @@
       </div>`;
   }
 
+  const pageTitle = () => (freeMode ? t("home.iptv.free") : pack);
+
   function render() {
     const root = document.getElementById("root");
     if (!root) return;
-    if (!pack) {
+    if (!pack && !freeMode) {
       root.innerHTML = `
         <section class="glass dash-main chl-page chl-gate">
           <p class="eyebrow">${escapeHtml(t("dash.liveTv"))}</p>
@@ -368,14 +397,14 @@
       root.innerHTML = `
         <section class="glass dash-main chl-page">
           <p class="eyebrow">${escapeHtml(t("dash.liveTv"))}</p>
-          <h1>${escapeHtml(pack)}</h1>
+          <h1>${escapeHtml(pageTitle())}</h1>
           <p class="muted chl-loading"><span class="chl-spin" aria-hidden="true"></span>${escapeHtml(t("common.loading"))}</p>
         </section>`;
       return;
     }
     const total = state.rows.length;
     const groups = new Set(state.rows.map((r) => r._group)).size;
-    let body = `<p class="empty">${escapeHtml(t("chan.empty"))}</p>`;
+    let body = `<p class="empty">${escapeHtml(t(freeMode ? "chan.freeNone" : "chan.empty"))}</p>`;
     if (state.failed) body = `<p class="empty">${escapeHtml(t("chan.loadFail"))}</p>`;
     else if (total) body = bodyHtml();
     root.innerHTML = `
@@ -383,7 +412,7 @@
         <div class="chl-head">
           <div class="chl-title">
             <p class="eyebrow">${escapeHtml(t("dash.liveTv"))}</p>
-            <h1>${escapeHtml(pack)}</h1>
+            <h1>${escapeHtml(pageTitle())}</h1>
             ${total ? `<p class="muted">${escapeHtml(t("chan.count", { n: total, g: groups }))}</p>` : ""}
           </div>
           ${
@@ -497,10 +526,11 @@
     const locked = state.access !== "ok";
     const st = statusOf(ch);
     const running = checker.current.has(ch._ck);
-    const href = `?package=${encodeURIComponent(pack)}&channel=${encodeURIComponent(ch.id)}`;
+    const href = `?${baseQuery()}&channel=${encodeURIComponent(ch.id)}`;
     const sub = [];
     if (!state.sectioned && !state.group) sub.push(groupLabel(ch._group));
     if (state.type === "all" || !sub.length) sub.push(player().typeLabel(ch));
+    if (state.packs.length > 1 && ch.package_name) sub.push(ch.package_name); // free list of several packages
     return `
       <a class="ch-card${locked ? " locked" : ""}${i === state.playing ? " is-playing" : ""}" href="${href}" data-ch="${i}"${isLive(ch) ? ' data-live="1"' : ""} data-name="${escapeHtml(ch._name)}" title="${escapeHtml(ch.channel_name)}" aria-label="${escapeHtml(cardLabel(ch, st, running))}">
         <span class="ch-thumb">${player().logoHtml(ch, "ch-logo")}<span class="ch-dot" data-st="${running ? "run" : st.state}" title="${escapeHtml(statusText(st, running))}"></span></span>
@@ -512,7 +542,8 @@
   // ---------- what is on now: the programme guide (EPG) of the package ----------
   // Live channel cards that come near the screen ask the guide what is on now,
   // 60 channels at a time (js/channel-player.js reads it through /api/epg).
-  const onNow = { url: null, pending: new Set(), timer: 0, tries: 0, watch: null, tick: 0 };
+  // The free list can mix packages: every package asks its own guide.
+  const onNow = { urls: null, none: false, pending: new Set(), timer: 0, tries: 0, watch: null, tick: 0 };
   const isLive = (ch) => !["movie", "series"].includes(String(ch.channel_type || "live").toLowerCase());
 
   function nowHtml(ch) {
@@ -538,7 +569,7 @@
   }
 
   function watchNow() {
-    if (onNow.url === "" || state.access !== "ok" || !("IntersectionObserver" in window) || !player()?.epgLookup) return;
+    if (onNow.none || state.access !== "ok" || !("IntersectionObserver" in window) || !player()?.epgLookup) return;
     if (!onNow.watch) {
       onNow.watch = new IntersectionObserver((entries) => {
         entries.forEach((en) => {
@@ -577,20 +608,38 @@
     onNow.timer = setTimeout(fetchNow, delay);
   }
 
+  // package -> guide address ("" = no guide), looked up once per page
+  async function guideUrls() {
+    if (!onNow.urls) {
+      const names = freeMode ? state.packs : [pack];
+      const urls = await Promise.all(names.map((name) => player().epgSource(name).catch(() => "")));
+      onNow.urls = new Map(names.map((name, k) => [name, urls[k] || ""]));
+    }
+    return onNow.urls;
+  }
+
   async function fetchNow() {
     onNow.timer = 0;
-    if (onNow.url === null) onNow.url = await player().epgSource(pack).catch(() => "");
-    if (!onNow.url) {
+    const urls = await guideUrls();
+    const guideOf = (i) => urls.get(rowPack(state.rows[i])) || "";
+    if (![...urls.values()].some(Boolean)) {
+      onNow.none = true;
       onNow.pending.clear();
       onNow.watch?.disconnect();
       return;
     }
-    const ids = [...onNow.pending].slice(0, 60);
+    onNow.pending.forEach((i) => {
+      if (!guideOf(i)) onNow.pending.delete(i); // a package without a guide
+    });
+    if (!onNow.pending.size) return;
+    // one guide per request: the guide of the first channel waiting
+    const url = guideOf(onNow.pending.values().next().value);
+    const ids = [...onNow.pending].filter((i) => guideOf(i) === url).slice(0, 60);
     ids.forEach((i) => onNow.pending.delete(i));
     const rows = ids.map((i) => state.rows[i]).filter(Boolean);
     let answer = null;
     try {
-      answer = await player().epgLookup(onNow.url, rows, 0);
+      answer = await player().epgLookup(url, rows, 0);
     } catch {
       answer = null;
     }
@@ -989,16 +1038,25 @@
     if (state.playing >= 0) document.querySelector(`#chl-groups .ch-card[data-ch="${state.playing}"]`)?.classList.add("is-playing");
   }
 
-  function pageUrl(row) {
-    const p = new URLSearchParams();
-    p.set("package", pack);
+  // ?package=<name>, or ?free=1 for the free list
+  function baseQuery() {
+    return freeMode ? "free=1" : `package=${encodeURIComponent(pack)}`;
+  }
+
+  function pageQuery(row) {
+    const p = new URLSearchParams(baseQuery());
     if (state.type !== "all") p.set("type", state.type);
     if (state.group) p.set("group", state.group);
     if (state.status !== "all") p.set("status", state.status);
     if (state.sort !== "list") p.set("sort", state.sort);
     if (row) p.set("channel", String(row.id));
-    return `${location.pathname}?${p}`;
+    return String(p);
   }
+
+  const pageUrl = (row) => `${location.pathname}?${pageQuery(row)}`;
+
+  // the sign-in page brings the member back to this list, filters included
+  const signinUrl = () => `./login.html?next=${encodeURIComponent(`Listchannels.html?${pageQuery(null)}`)}`;
 
   function syncFilterUrl() {
     if (!state.loaded || player().isOpen()) return;
@@ -1126,6 +1184,11 @@
 
   function bind(root) {
     root.addEventListener("click", (e) => {
+      const signin = e.target.closest("[data-signin]");
+      if (signin) {
+        signin.href = signinUrl();
+        return;
+      }
       const card = e.target.closest(".ch-card");
       if (card) {
         // Ctrl/Cmd/middle click keeps the link: the channel opens in a new tab
@@ -1177,7 +1240,7 @@
     setupChrome();
     const root = document.getElementById("root");
     render();
-    if (!pack) return;
+    if (!pack && !freeMode) return;
     bind(root);
     window.addEventListener("popstate", () => {
       if (state.leaving) {
@@ -1194,6 +1257,7 @@
       if (state.loaded) render();
     });
     try {
+      if (freeMode) state.packs = await loadFreePacks();
       const [rows, access] = await Promise.all([loadChannels(), loadAccess().catch(() => "ok")]);
       prepare(rows);
       state.rows = rows;

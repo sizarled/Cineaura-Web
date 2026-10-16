@@ -2083,4 +2083,8 @@
  "The programme guide could not be loaded.": "De programmagids kon niet worden geladen.",
  "No programme information for this channel.": "Geen programma-informatie voor deze zender.",
  "Times are shown in your time zone.": "Tijden worden in jouw tijdzone getoond.",
+
+ /* ── Free channels list ── */
+ "No free channels yet.": "Nog geen gratis kanalen.",
+ "Live channels play for registered CineAura members. Sign in and you will come straight back to this list.": "Livekanalen zijn er voor geregistreerde CineAura-leden. Log in en je komt meteen terug bij deze lijst.",
 };

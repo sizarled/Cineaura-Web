@@ -23,11 +23,13 @@
     el.innerHTML = html;
   }
 
-  // ?next=dashboard.html%23iptv — only a dashboard section or the notifications
-  // page (with its period) is accepted as a target.
+  // ?next=dashboard.html%23iptv — only a dashboard section, the notifications
+  // page (with its period) or a channel list (Listchannels.html?free=1,
+  // ?package=…) of this site is accepted as a target.
   function nextTarget() {
     const next = new URLSearchParams(location.search).get("next") || "";
-    return /^(dashboard\.html(#[a-z]+)?|notifications\.html(\?period=[a-z]+)?)$/.test(next) ? "./" + next : "";
+    const ok = /^(dashboard\.html(#[a-z]+)?|notifications\.html(\?period=[a-z]+)?|[Ll]istchannels\.html\?[\w%.~*+=&-]*)$/.test(next);
+    return ok ? "./" + next : "";
   }
 
   function showSuccess(member) {
