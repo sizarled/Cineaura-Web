@@ -1589,3 +1589,26 @@ This device is already linked to your code {code}. Unlink it first to link it to
 This MAC address is already linked to a code of another account. = This MAC address is already linked to a code of another account.
 Adding devices by hand and their type need the updated sql/code_devices.sql: run it again in Supabase. = Adding devices by hand and their type need the updated sql/code_devices.sql: run it again in Supabase.
 This device was added to the linked devices. = This device was added to the linked devices.
+
+# ── Watch points by country tier and account level (LV0 … LV Max) ──
+{country} · tier {tier}: 1 point / {min} min × {n} ({level}) — yours or through your links = {country} · tier {tier}: 1 point / {min} min × {n} ({level}) — yours or through your links
+1 point / 1 to 50 min depending on the country × {n} ({level}) — yours or through your links = 1 point / 1 to 50 min depending on the country × {n} ({level}) — yours or through your links
+{n} collected — whole points count = {n} collected — whole points count
+Watch points ×{n} = Watch points ×{n}
+{have} / {need} points to {level} = {have} / {need} points to {level}
+Highest level reached = Highest level reached
+Levels and watch rates = Levels and watch rates
+Levels = Levels
+Watch rates by country = Watch rates by country
+Level = Level
+Points earned = Points earned
+Tier = Tier
+Countries = Countries
+At ×1 = At ×1
+Tier {n} = Tier {n}
+All other countries = All other countries
+1 point / {n} min = 1 point / {n} min
+new account = new account
+Your level counts every point your account has earned, from every source; spending points on prizes never lowers it. A watched minute is worth your level's multiplier divided by the minutes of the viewer's tier: in tier 4 at ×2, 50 minutes give 2 points. A minute watched through your link follows the viewer's country. The country is the one of the internet connection, not the one picked in the site settings. Minutes watched before levels kept 1 point each. = Your level counts every point your account has earned, from every source; spending points on prizes never lowers it. A watched minute is worth your level's multiplier divided by the minutes of the viewer's tier: in tier 4 at ×2, 50 minutes give 2 points. A minute watched through your link follows the viewer's country. The country is the one of the internet connection, not the one picked in the site settings. Minutes watched before levels kept 1 point each.
+New level: {level} — your watch points are now ×{n} = New level: {level} — your watch points are now ×{n}
+You reached a new level = You reached a new level

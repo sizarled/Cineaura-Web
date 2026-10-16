@@ -1589,3 +1589,26 @@ This device is already linked to your code {code}. Unlink it first to link it to
 This MAC address is already linked to a code of another account. = Dit MAC-adres is al gekoppeld aan een code van een ander account.
 Adding devices by hand and their type need the updated sql/code_devices.sql: run it again in Supabase. = Apparaten met de hand toevoegen en hun type vereisen de bijgewerkte sql/code_devices.sql: voer hem opnieuw uit in Supabase.
 This device was added to the linked devices. = Dit apparaat is toegevoegd aan de gekoppelde apparaten.
+
+# ── Watch points by country tier and account level (LV0 … LV Max) ──
+{country} · tier {tier}: 1 point / {min} min × {n} ({level}) — yours or through your links = {country} · categorie {tier}: 1 punt / {min} min × {n} ({level}) — je eigen minuten of via je links
+1 point / 1 to 50 min depending on the country × {n} ({level}) — yours or through your links = 1 punt / 1 tot 50 min afhankelijk van het land × {n} ({level}) — je eigen minuten of via je links
+{n} collected — whole points count = {n} verzameld — alleen hele punten tellen
+Watch points ×{n} = Kijkpunten ×{n}
+{have} / {need} points to {level} = {have} / {need} punten tot {level}
+Highest level reached = Hoogste level bereikt
+Levels and watch rates = Levels en kijktarieven
+Levels = Levels
+Watch rates by country = Kijktarieven per land
+Level = Level
+Points earned = Verdiende punten
+Tier = Categorie
+Countries = Landen
+At ×1 = Bij ×1
+Tier {n} = Categorie {n}
+All other countries = Alle andere landen
+1 point / {n} min = 1 punt / {n} min
+new account = nieuw account
+Your level counts every point your account has earned, from every source; spending points on prizes never lowers it. A watched minute is worth your level's multiplier divided by the minutes of the viewer's tier: in tier 4 at ×2, 50 minutes give 2 points. A minute watched through your link follows the viewer's country. The country is the one of the internet connection, not the one picked in the site settings. Minutes watched before levels kept 1 point each. = Je level telt alle punten die je account heeft verdiend, uit alle bronnen; punten uitgeven aan prijzen verlaagt het nooit. Een bekeken minuut is de vermenigvuldiger van je level gedeeld door de minuten van de categorie van de kijker waard: in categorie 4 bij ×2 leveren 50 minuten 2 punten op. Een minuut die via je link wordt bekeken, volgt het land van de kijker. Het land is dat van de internetverbinding, niet het land dat in de site-instellingen is gekozen. Minuten die vóór de levels zijn bekeken, hebben elk 1 punt behouden.
+New level: {level} — your watch points are now ×{n} = Nieuw level: {level} — je kijkpunten tellen nu ×{n}
+You reached a new level = Je hebt een nieuw level bereikt

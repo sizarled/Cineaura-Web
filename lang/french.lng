@@ -1589,3 +1589,26 @@ This device is already linked to your code {code}. Unlink it first to link it to
 This MAC address is already linked to a code of another account. = Cette adresse MAC est déjà liée à un code d'un autre compte.
 Adding devices by hand and their type need the updated sql/code_devices.sql: run it again in Supabase. = L'ajout d'appareils à la main et leur type nécessitent le fichier sql/code_devices.sql mis à jour : exécutez-le à nouveau dans Supabase.
 This device was added to the linked devices. = Cet appareil a été ajouté aux appareils liés.
+
+# ── Watch points by country tier and account level (LV0 … LV Max) ──
+{country} · tier {tier}: 1 point / {min} min × {n} ({level}) — yours or through your links = {country} · palier {tier} : 1 point / {min} min × {n} ({level}) — vos minutes ou via vos liens
+1 point / 1 to 50 min depending on the country × {n} ({level}) — yours or through your links = 1 point / 1 à 50 min selon le pays × {n} ({level}) — vos minutes ou via vos liens
+{n} collected — whole points count = {n} cumulés — seuls les points entiers comptent
+Watch points ×{n} = Points de visionnage ×{n}
+{have} / {need} points to {level} = {have} / {need} points pour {level}
+Highest level reached = Niveau le plus élevé atteint
+Levels and watch rates = Niveaux et taux de visionnage
+Levels = Niveaux
+Watch rates by country = Taux de visionnage par pays
+Level = Niveau
+Points earned = Points gagnés
+Tier = Palier
+Countries = Pays
+At ×1 = À ×1
+Tier {n} = Palier {n}
+All other countries = Tous les autres pays
+1 point / {n} min = 1 point / {n} min
+new account = nouveau compte
+Your level counts every point your account has earned, from every source; spending points on prizes never lowers it. A watched minute is worth your level's multiplier divided by the minutes of the viewer's tier: in tier 4 at ×2, 50 minutes give 2 points. A minute watched through your link follows the viewer's country. The country is the one of the internet connection, not the one picked in the site settings. Minutes watched before levels kept 1 point each. = Votre niveau compte tous les points gagnés par votre compte, toutes sources confondues ; dépenser des points en prix ne le fait jamais baisser. Une minute regardée vaut le multiplicateur de votre niveau divisé par les minutes du palier du spectateur : au palier 4 à ×2, 50 minutes donnent 2 points. Une minute regardée via votre lien suit le pays du spectateur. Le pays est celui de la connexion Internet, pas celui choisi dans les réglages du site. Les minutes regardées avant les niveaux ont gardé 1 point chacune.
+New level: {level} — your watch points are now ×{n} = Nouveau niveau : {level} — vos points de visionnage sont maintenant ×{n}
+You reached a new level = Vous avez atteint un nouveau niveau
