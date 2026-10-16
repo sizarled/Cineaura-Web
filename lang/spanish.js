@@ -2113,8 +2113,4 @@
  "Free channels play at once; premium channels need a premium membership.": "Los canales gratis se ven al instante; los canales premium requieren una membresía premium.",
  "Premium membership required": "Requiere membresía premium",
  "1 view": "1 vista",
- "Free with every CineAura account: sign in and it starts playing at once.": "Gratis con cualquier cuenta de CineAura: inicia sesión y empezará al instante.",
- "This channel is part of the premium lineup: watching it requires a premium membership.": "Este canal forma parte de la oferta premium: para verlo se requiere una membresía premium.",
- "This channel is no longer available.": "Este canal ya no está disponible.",
- "The channel could not be opened. Please try again.": "No se pudo abrir el canal. Inténtalo de nuevo.",
 };
