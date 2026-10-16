@@ -1108,6 +1108,7 @@
     pauseCheck(true);
     player().open(list, index, {
       report: true,
+      countViews: true, // home page > Most watched channels
       onResult(row, ok) {
         if (!row || !row._ck) return;
         setStatus(row, ok);

@@ -6,6 +6,7 @@
  *     channels  rows of public.listchannels ({ id, package_name, channel_name,
  *               group_name, logo_url, channel_type, stream_url })
  *     options   { report: true,        show the "Report channel" button
+ *                 countViews: true,    count what members watch (see below)
  *                 accounts: [...],     iptv rows of the package (stream lookup)
  *                 onChange(index),     the dialog moved to another channel
  *                 onResult(row, ok),   a channel started (true) or failed (false)
@@ -36,6 +37,12 @@
  * staff read in Panel > Reports > Channels. What the player saw (which routes
  * failed and why) travels with the report as error_detail.
  *
+ * Most watched channels (home page): with countViews, a signed-in member who
+ * has had 15 seconds of moving picture on a live channel counts as one viewer
+ * of it (channel_view_add, sql/channel_views.sql: once per member, channel and
+ * day). Zapping past a channel does not count, and the staff's tests in the
+ * panel never do.
+ *
  * Programme guide (EPG): when the IPTV account of the package has a guide
  * (CineAura.iptvEpgUrl), a live channel shows what is on now and next under its
  * name, and the guide button (G) lists the next hours. server.py reads the
@@ -59,6 +66,7 @@
   const ROUTE_MAX = 3000;
   const VOLUME_KEY = "cineaura_chvolume";
   const RAIL_SPAN = 30; // channels on each side of the current one in the strip
+  const VIEW_AFTER = 15000; // ms of moving picture before a live channel counts as watched
 
   // smooth playback (seconds)
   const START_AHEAD = 1.2; // buffered before a channel starts to play
@@ -856,6 +864,8 @@
     recon: 0,
     reconTimer: 0,
     okSince: 0,
+    watchMs: 0, // moving picture on the current channel (countViews)
+    watchAt: 0,
     // what the viewer sees
     speed: 0,
     speedIdle: true,
@@ -1002,7 +1012,10 @@
   async function play(index, { auto = false, resume = 0 } = {}) {
     const run = ++S.run;
     teardown();
-    if (!auto) S.recon = 0;
+    if (!auto) {
+      S.recon = 0;
+      S.watchMs = 0; // a reconnect goes on counting the same channel
+    }
     const moved = !S.first && (index + S.list.length) % S.list.length !== S.index;
     S.index = (index + S.list.length) % S.list.length;
     S.error = "";
@@ -1268,10 +1281,38 @@
     return "good";
   }
 
+  // ---------- most watched channels ----------
+  const viewed = new Set(); // member + channel already counted while this page is open
+  let viewsOff = false; // the database has no channel_view_add (sql/channel_views.sql not run)
+
+  function watchTime(at) {
+    const v = S.video;
+    const moving = S.opts.countViews && S.state === "playing" && S.phase === "play" && v && !v.paused && !v.seeking && !v.ended;
+    if (moving) {
+      S.watchMs += Math.min(1000, at - (S.watchAt || at));
+      if (S.watchMs >= VIEW_AFTER) countView(current());
+    }
+    S.watchAt = at;
+  }
+
+  function countView(ch) {
+    const me = getSession()?.member_id;
+    if (!ch || !me || viewsOff || rowType(ch) !== "live") return;
+    const key = `${me}\n${norm(ch.channel_name)}`;
+    if (viewed.has(key)) return;
+    viewed.add(key);
+    C.rpc("channel_view_add", { p_member: String(me), p_package: String(ch.package_name || ""), p_channel: String(ch.channel_name || "") })
+      .then((res) => {
+        if (res.status === 404) viewsOff = true;
+      })
+      .catch(() => setTimeout(() => viewed.delete(key), 30000)); // offline: try again in a while
+  }
+
   function tick() {
     if (!S.root) return;
     const at = now();
     smooth(at);
+    watchTime(at);
     S.ticks += 1;
     if (S.ticks % 4 === 0 && S.state === "playing") {
       measure();

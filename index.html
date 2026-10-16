@@ -257,6 +257,18 @@
             </div>
             <p data-i18n="home.iptv.p">Jump into free public streams or unlock the premium live lineup.</p>
           </div>
+        </div>
+        <!-- Most watched channels: filled by js/home-channels.js (sql/channel_views.sql) -->
+        <div class="tch" id="iptv-top" role="region" data-state="loading" aria-labelledby="iptv-top-h">
+          <div class="container tch-head">
+            <h3 id="iptv-top-h"><span class="live-dot" aria-hidden="true"><i></i></span><span data-i18n="home.iptv.top.h3">Most watched channels</span></h3>
+            <p data-i18n="home.iptv.top.p">Free channels play at once; premium channels need a premium membership.</p>
+          </div>
+          <div class="marquee-wrap tch-wrap">
+            <div class="marquee tch-track" id="iptv-top-track" aria-busy="true"></div>
+          </div>
+        </div>
+        <div class="container">
           <div class="iptv-grid">
             <article class="glass iptv-card iptv-free">
               <div>
@@ -522,6 +534,7 @@
   <script src="js/lang.js"></script>
   <script src="js/common.js"></script>
   <script src="js/main.js"></script>
+  <script src="js/home-channels.js"></script>
   <script src="js/prize-rules.js"></script>
   <script src="js/prize.js"></script>
 </body>

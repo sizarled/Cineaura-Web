@@ -443,6 +443,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
   scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
   scrollbar-width: thin; scrollbar-color: var(--scroll) transparent;
   padding-bottom: 12px;
+  /* cards snap in line with the section title, not against the window edge */
+  scroll-padding-inline: max(16px, calc((100% - 1180px) / 2));
 }
 .marquee-wrap::-webkit-scrollbar { height: 8px; }
 .marquee-wrap::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: 8px; }
