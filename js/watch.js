@@ -3223,7 +3223,7 @@
         <div class="meta-row">
           <span class="chip score">★ ${ratingText(d.vote_average)} · ${score}%</span>
           <span class="chip">${escapeHtml(date)}</span>
-          <span class="chip chip-age" title="${escapeHtml(ageNoticeText())}">${certChipText(d)}</span>
+          <span class="chip chip-age" dir="ltr" title="${escapeHtml(ageNoticeText())}">${certChipText(d)}</span>
           <span class="chip">${formatRuntime(currentRuntime())}</span>
           <span class="chip" id="watch-min-chip">${minutesLabel(state.watchMinutes)}</span>
           <span class="chip">${escapeHtml(genres)}</span>
