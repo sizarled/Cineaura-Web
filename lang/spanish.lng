@@ -1647,3 +1647,9 @@ Premium channels unlocked and the account remembered on this device. = Canales p
 Premium channels unlocked and the code remembered on this device. = Canales premium desbloqueados y código recordado en este dispositivo.
 This username and password don’t match a premium IPTV account. = Este usuario y contraseña no coinciden con ninguna cuenta IPTV premium.
 Something went wrong. Try again. = Algo salió mal. Inténtalo de nuevo.
+
+# ── Most watched premium cards open on the premium list; the gate's "Use an access code" button ──
+Use an access code = Usar un código de acceso
+Use a username and password = Usar usuario y contraseña
+Starts automatically as soon as the list is unlocked. = Empieza automáticamente en cuanto se desbloquea la lista.
+{name} isn’t in the premium channel list. = {name} no está en la lista de canales premium.

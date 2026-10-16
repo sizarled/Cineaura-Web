@@ -2304,4 +2304,10 @@
  "Premium channels unlocked and the code remembered on this device.": "Premium-Sender freigeschaltet und der Code auf diesem Gerät gemerkt.",
  "This username and password don’t match a premium IPTV account.": "Benutzername und Passwort passen zu keinem Premium-IPTV-Konto.",
  "Something went wrong. Try again.": "Etwas ist schiefgelaufen. Bitte erneut versuchen.",
+
+ /* ── Most watched premium cards open on the premium list; the gate's "Use an access code" button ── */
+ "Use an access code": "Zugangscode verwenden",
+ "Use a username and password": "Benutzername und Passwort verwenden",
+ "Starts automatically as soon as the list is unlocked.": "Startet automatisch, sobald die Liste freigeschaltet ist.",
+ "{name} isn’t in the premium channel list.": "{name} ist nicht in der Liste der Premium-Sender.",
 };

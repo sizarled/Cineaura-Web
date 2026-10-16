@@ -1749,6 +1749,12 @@
     "iptvp.okCode": "Premium channels unlocked and the code remembered on this device.",
     "iptvp.badLogin": "This username and password don’t match a premium IPTV account.",
     "iptvp.error": "Something went wrong. Try again.",
+
+    // ── Most watched premium cards open on the premium list; the gate's "Use an access code" button ──
+    "iptvp.useCode": "Use an access code",
+    "iptvp.useAccount": "Use a username and password",
+    "iptvp.wantedHint": "Starts automatically as soon as the list is unlocked.",
+    "iptvp.notInList": "{name} isn’t in the premium channel list.",
     "dash.prizeFail": "Could not claim the prize. Please try again.",
     "prize.cond.share": "Share the {type} with TMDB ID {id}",
     "prize.cond.invites": "Bring {n} new member(s) to CineAura",

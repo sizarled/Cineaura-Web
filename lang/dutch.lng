@@ -1647,3 +1647,9 @@ Premium channels unlocked and the account remembered on this device. = Premium z
 Premium channels unlocked and the code remembered on this device. = Premium zenders ontgrendeld en de code onthouden op dit apparaat.
 This username and password don’t match a premium IPTV account. = Deze gebruikersnaam en dit wachtwoord horen bij geen enkel premium IPTV-account.
 Something went wrong. Try again. = Er ging iets mis. Probeer het opnieuw.
+
+# ── Most watched premium cards open on the premium list; the gate's "Use an access code" button ──
+Use an access code = Een toegangscode gebruiken
+Use a username and password = Gebruikersnaam en wachtwoord gebruiken
+Starts automatically as soon as the list is unlocked. = Start automatisch zodra de lijst is ontgrendeld.
+{name} isn’t in the premium channel list. = {name} staat niet in de lijst met premium zenders.

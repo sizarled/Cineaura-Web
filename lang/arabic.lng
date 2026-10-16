@@ -1677,3 +1677,9 @@ Premium channels unlocked and the account remembered on this device. = تم فت
 Premium channels unlocked and the code remembered on this device. = تم فتح القنوات المميزة وحفظ الكود على هذا الجهاز.
 This username and password don’t match a premium IPTV account. = اسم المستخدم وكلمة المرور لا يطابقان أي حساب IPTV مميز.
 Something went wrong. Try again. = حدث خطأ. حاول مرة أخرى.
+
+# ── Most watched premium cards open on the premium list; the gate's "Use an access code" button ──
+Use an access code = استخدم كود المشاهدة
+Use a username and password = استخدم اسم المستخدم وكلمة المرور
+Starts automatically as soon as the list is unlocked. = تبدأ تلقائيًا فور فتح القائمة.
+{name} isn’t in the premium channel list. = القناة {name} غير موجودة في قائمة القنوات المميزة.
