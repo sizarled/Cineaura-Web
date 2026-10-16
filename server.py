@@ -2,6 +2,7 @@
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, urljoin, unquote, quote
 import base64
+import calendar
 import collections
 import hashlib
 import http.client
@@ -9,6 +10,7 @@ import io
 import html as html_module
 import ipaddress
 import json
+import lzma
 import os
 import re
 import ssl
@@ -16,8 +18,11 @@ import threading
 import time
 import socket
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
+import zlib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 os.chdir(ROOT)
@@ -1453,6 +1458,347 @@ class LiveWindows:
 
 _segments = SegmentCache(SEGMENT_CACHE_MB * 1024 * 1024) if SEGMENT_CACHE_MB > 0 else None
 _live = LiveWindows(_segments, READ_AHEAD)
+# ---------- /api/epg: programme guide (XMLTV) for the channel player ----------
+# An IPTV account can name its guide: the url-tvg of its playlist, a link typed in
+# Panel > IPTV, or the xmltv.php of an Xtream server. Guides are big (tens of MB
+# of XML, usually gzipped), so the server downloads a guide once in the
+# background, keeps only what airs from a little before now to a day ahead, and
+# answers small JSON questions about a few channels at a time:
+#
+#   GET /api/epg?url=<guide>&c=<tvg-id>%0A<channel name>&c=…&hours=6&lang=ar
+#
+# A channel is found by its tvg-id (listchannels.epg_id), or else by its name.
+# While a guide downloads the answer is 202 {"status": "loading", "retry": 3}.
+
+EPG_MAX_MB = _env_int("CINEAURA_EPG_MAX_MB", 300)  # uncompressed XML read at most
+EPG_TTL = 4 * 3600  # a guide is downloaded again after this many seconds
+EPG_FAIL_TTL = 10 * 60  # a guide that failed is not tried again before this
+EPG_KEEP = max(1, _env_int("CINEAURA_EPG_KEEP", 3))  # guides kept in memory
+EPG_PAST = 2 * 3600  # programmes kept from this long ago…
+EPG_AHEAD = 26 * 3600  # …until this far ahead
+EPG_MAX_PROGRAMMES = 250000  # per guide (about 60-100 MB of memory)
+EPG_DESC = 280  # characters of a description kept
+EPG_WAIT = 2.0  # seconds a question waits for a guide that is still loading
+EPG_TIMEOUT = 25  # seconds per connection / read
+EPG_BUDGET = 180  # seconds for a whole download
+EPG_NEW_PER_10MIN = 30  # new guide downloads started at most, every viewer together
+EPG_MAX_CHANNELS = 60  # channels per question
+
+_EPG_TIME_RE = re.compile(r"\s*(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?\s*(?:([+-])(\d{2}):?(\d{2}))?")
+_EPG_NOISE_RE = re.compile(
+    r"\b(?:f?hd|uhd|sd|hq|lq|4k|8k|hevc|h\.?26[45]|\d{3,4}p|\d{2}fps|backup|vip|raw|multi(?:audio)?|direct|live)\b"
+)
+_EPG_PREFIX_RE = re.compile(r"^\s*(?:\|[^|]{1,14}\||[^\W\d_]{2,4}\s*[:|]|[^\W\d_]{2,3}\s+-\s+)\s*")
+
+
+def epg_time(value):
+    """XMLTV time ("20261016203000 +0100") -> seconds since the epoch, or None."""
+    m = _EPG_TIME_RE.match(value or "")
+    if not m:
+        return None
+    y, mo, d, h, mi, s = (int(x or 0) for x in m.groups()[:6])
+    try:
+        t = calendar.timegm((y, mo, d, h, mi, s, 0, 0, 0))
+    except (OverflowError, ValueError):
+        return None
+    if m.group(7):
+        offset = int(m.group(8)) * 3600 + int(m.group(9)) * 60
+        t -= offset if m.group(7) == "+" else -offset
+    return t
+
+
+def epg_name_keys(name):
+    """Ways to recognise a channel by its name: "AR: beIN Sports 1 HD" and
+    "beIN SPORTS 1" both give "beinsports1"."""
+    text = unicodedata.normalize("NFKD", str(name or "")).casefold()
+    text = "".join(c for c in text if not unicodedata.combining(c)).replace("+", " plus ").replace("&", " and ")
+    text = re.sub(r"[\[\(\{][^\]\)\}]{0,24}[\]\)\}]", " ", text)
+    keys = []
+    for variant in (text, _EPG_PREFIX_RE.sub(" ", text, count=1)):
+        key = re.sub(r"[\W_]+", "", _EPG_NOISE_RE.sub(" ", variant))
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+class EpgError(Exception):
+    pass
+
+
+def _epg_chunks(resp, deadline):
+    """Body of the guide, unpacked (gzip / zlib / xz are recognised by their first bytes)."""
+    first = resp.read(STREAM_CHUNK)
+    if not first:
+        return
+    if first[:2] == b"\x1f\x8b" or first[:1] == b"\x78":
+        unpack = zlib.decompressobj(47)  # gzip or zlib header, found by itself
+    elif first[:6] == b"\xfd7zXZ\x00":
+        unpack = lzma.LZMADecompressor()
+    else:
+        unpack = None
+    chunk = first
+    while chunk:
+        if time.monotonic() > deadline:
+            raise EpgError("timeout")
+        if unpack is None:
+            yield chunk
+        elif isinstance(unpack, lzma.LZMADecompressor):
+            if not unpack.eof:
+                yield unpack.decompress(chunk)
+        else:
+            data = unpack.decompress(chunk, 1 << 20)
+            while True:
+                if data:
+                    yield data
+                if unpack.unconsumed_tail:
+                    data = unpack.decompress(unpack.unconsumed_tail, 1 << 20)
+                    continue
+                if unpack.eof and unpack.unused_data:  # several gzip members, one after the other
+                    rest = unpack.unused_data
+                    unpack = zlib.decompressobj(47)
+                    data = unpack.decompress(rest, 1 << 20)
+                    continue
+                break
+        chunk = resp.read(STREAM_CHUNK)
+
+
+class EpgGuide:
+    def __init__(self, url):
+        self.url = url
+        self.state = "loading"  # loading | ready | error
+        self.error = ""
+        self.loaded_at = 0.0
+        self.refreshing = True
+        self.done = threading.Event()
+        self.channels = {}  # channel id -> display name
+        self.ids = {}  # casefolded id -> channel id
+        self.names = {}  # name key -> channel id
+        self.programmes = {}  # channel id -> [(start, stop, title, desc, {lang: title} | None)]
+        self.count = 0
+
+    def find(self, epg_id, name):
+        epg_id = (epg_id or "").strip()
+        if epg_id:
+            if epg_id in self.programmes:
+                return epg_id, "id"
+            found = self.ids.get(epg_id.casefold())
+            if found:
+                return found, "id"
+        for key in epg_name_keys(name):
+            found = self.names.get(key)
+            if found:
+                return found, "name"
+        if epg_id:  # tvg-ids are often names too: "beINSports1.qa"
+            for key in epg_name_keys(re.sub(r"\.[a-z]{2,3}$", "", epg_id, flags=re.I)):
+                found = self.names.get(key)
+                if found:
+                    return found, "name"
+        return None, ""
+
+    def lookup(self, wanted, hours, lang, now):
+        out = []
+        until = now + hours * 3600
+        for epg_id, name in wanted:
+            cid, how = self.find(epg_id, name)
+            items = self.programmes.get(cid) if cid else None
+            if not items:
+                out.append(None)
+                continue
+            # the first programme that has not ended yet (the list is sorted by start)
+            lo, hi = 0, len(items)
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if items[mid][1] <= now:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            picked = []
+            most = 2 if hours == 0 else 40  # hours=0: what is on now and what comes next
+            for start, stop, title, desc, alt in items[lo:]:
+                if len(picked) >= most or (picked and hours and start >= until):
+                    break
+                if alt and lang and lang in alt:
+                    title = alt[lang]
+                picked.append([start, stop, title, desc])
+            out.append({"id": cid, "name": self.channels.get(cid, cid), "match": how, "programmes": picked})
+        return out
+
+
+def load_epg(url, now=None):
+    """Download and read one guide. Returns the new EpgGuide data (raises EpgError)."""
+    now = now or time.time()
+    keep_from, keep_to = now - EPG_PAST, now + EPG_AHEAD
+    deadline = time.monotonic() + EPG_BUDGET
+    try:
+        resp, _final = open_stream(url, {"User-Agent": "Mozilla/5.0 CineAura-EPG", "Accept": "*/*"}, timeout=EPG_TIMEOUT)
+    except urllib.error.HTTPError as err:
+        raise EpgError("http %d" % err.code)
+    except (ValueError, PermissionError) as err:  # the SSRF guard: not a public address
+        raise EpgError("blocked" if isinstance(err, PermissionError) else str(err) or "blocked")
+    except (OSError, http.client.HTTPException) as err:
+        raise EpgError(type(err).__name__)
+    guide = EpgGuide(url)
+    parser = ET.XMLPullParser(events=("start", "end"))
+    limit = EPG_MAX_MB * 1024 * 1024
+    total = 0
+    seen_root = False
+    root = None
+    full = False
+    try:
+        with resp:
+            for data in _epg_chunks(resp, deadline):
+                if not data:
+                    continue
+                if not seen_root:
+                    head = data[:8192].lstrip()
+                    if b"<!ENTITY" in head.upper():
+                        raise EpgError("entities")  # no entity tricks: a real guide has none
+                    if not head.lstrip(b"\xef\xbb\xbf").lstrip().startswith((b"<?xml", b"<tv", b"<!DOCTYPE", b"<!--")):
+                        raise EpgError("not xmltv")
+                    seen_root = True
+                total += len(data)
+                if total > limit:
+                    raise EpgError("too large")
+                parser.feed(data)
+                for event, el in parser.read_events():
+                    if event == "start":
+                        if root is None:
+                            root = el
+                        continue
+                    tag = el.tag
+                    if tag == "programme":
+                        if not full:
+                            _epg_programme(guide, el, keep_from, keep_to)
+                            full = guide.count >= EPG_MAX_PROGRAMMES
+                        el.clear()
+                    elif tag == "channel":
+                        cid = (el.get("id") or "").strip()
+                        if cid:
+                            names = [(dn.text or "").strip() for dn in el.findall("display-name")]
+                            names = [n for n in names if n]
+                            guide.channels[cid] = names[0] if names else cid
+                            guide.ids.setdefault(cid.casefold(), cid)
+                            for n in names + [cid]:
+                                for key in epg_name_keys(n):
+                                    guide.names.setdefault(key, cid)
+                        el.clear()
+                # what was read is no longer needed (an element still open stays with the parser)
+                if root is not None:
+                    root.clear()
+            parser.close()
+    except ET.ParseError as err:
+        if not guide.count:
+            raise EpgError("bad xml")
+        sys.stderr.write("epg: %s: stopped at %s\n" % (url[:80], err))  # keep what was read
+    if not seen_root:
+        raise EpgError("empty")
+    for items in guide.programmes.values():
+        items.sort(key=lambda p: (p[0], p[1]))
+    for cid in guide.programmes:
+        guide.ids.setdefault(cid.casefold(), cid)
+    return guide
+
+
+def _epg_programme(guide, el, keep_from, keep_to):
+    cid = (el.get("channel") or "").strip()
+    start = epg_time(el.get("start"))
+    if not cid or start is None:
+        return
+    stop = epg_time(el.get("stop")) or start + 1800
+    if stop <= keep_from or start >= keep_to or stop <= start:
+        return
+    title, alt, desc = "", None, ""
+    for child in el:
+        if child.tag == "title" and child.text:
+            text = sys.intern(child.text.strip()[:200])  # "News", "Movie": the same text is kept once
+            if not title:
+                title = text
+            lang = (child.get("lang") or "").strip().lower()[:2]
+            if lang:
+                alt = alt or {}
+                alt.setdefault(lang, text)
+        elif child.tag == "desc" and child.text and not desc:
+            desc = child.text.strip()[:EPG_DESC]
+    if alt and len(alt) < 2:
+        alt = None
+    guide.programmes.setdefault(cid, []).append((start, stop, title, desc, alt))
+    guide.count += 1
+
+
+class EpgStore:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.guides = collections.OrderedDict()  # url -> EpgGuide
+        self.gate = threading.Semaphore(2)  # guides read at once (a slow one cannot hold up the others)
+        self.started = collections.deque()  # when the last downloads began
+
+    def get(self, url):
+        """The guide for url, loading in the background if needed; None when too many new guides were asked for."""
+        now = time.time()
+        with self.lock:
+            guide = self.guides.get(url)
+            if guide is not None:
+                self.guides.move_to_end(url)
+                stale = now - guide.loaded_at > (EPG_FAIL_TTL if guide.state == "error" else EPG_TTL)
+                if guide.state != "loading" and stale and not guide.refreshing:
+                    guide.refreshing = True
+                    if guide.state == "error":  # a new try: ask again in a moment
+                        guide.state = "loading"
+                        guide.done.clear()
+                    self._spawn(guide)  # a ready guide is served until the new one is in
+                return guide
+            while self.started and now - self.started[0] > 600:
+                self.started.popleft()
+            if len(self.started) >= EPG_NEW_PER_10MIN:
+                return None
+            self.started.append(now)
+            guide = EpgGuide(url)
+            self.guides[url] = guide
+            self._trim(now)
+            self._spawn(guide)
+            return guide
+
+    def _trim(self, now):  # the caller holds self.lock
+        # the least recently asked guides go first; a failed one is only remembered
+        # (so that it is not downloaded again and again) for EPG_FAIL_TTL
+        ready = [u for u, g in self.guides.items() if g.state == "ready"]
+        for url in ready[: max(0, len(ready) - EPG_KEEP)]:
+            del self.guides[url]
+        for url, g in list(self.guides.items()):
+            if g.state == "error" and (now - g.loaded_at > EPG_FAIL_TTL or len(self.guides) > 64):
+                del self.guides[url]
+
+    def _spawn(self, guide):
+        threading.Thread(target=self._load, args=(guide,), name="epg", daemon=True).start()
+
+    def _load(self, guide):
+        with self.gate:
+            try:
+                fresh = load_epg(guide.url)
+            except EpgError as err:
+                fresh, error = None, str(err)
+            except Exception as err:  # a broken guide must never take the server down
+                fresh, error = None, type(err).__name__
+        with self.lock:
+            guide.loaded_at = time.time()
+            guide.refreshing = False
+            if fresh is not None:
+                guide.channels, guide.ids, guide.names = fresh.channels, fresh.ids, fresh.names
+                guide.programmes, guide.count = fresh.programmes, fresh.count
+                guide.state, guide.error = "ready", ""
+            elif guide.state == "ready":
+                guide.loaded_at -= EPG_TTL - EPG_FAIL_TTL  # keep the old guide, try again sooner
+            else:
+                guide.state, guide.error = "error", error
+            guide.done.set()
+            self._trim(time.time())
+        if fresh is None:
+            sys.stderr.write("epg: %s: %s\n" % (guide.url[:80], error))
+
+
+EPG = EpgStore()
+
+
 _LIVE_ID_RE = re.compile(r"[0-9a-f]{16}")
 
 
@@ -1710,6 +2056,42 @@ class Handler(SimpleHTTPRequestHandler):
             if not complete:
                 self.close_connection = True
 
+    def send_json(self, status, payload, cache="no-store"):
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def epg_lookup(self, parsed):
+        query = parse_qs(parsed.query)
+        url = (query.get("url") or [""])[0].strip()
+        if not url.startswith(("http://", "https://")) or len(url) > 4000:
+            return self.send_json(400, {"status": "error", "error": "bad url"})
+        wanted = []
+        for raw in (query.get("c") or [])[:EPG_MAX_CHANNELS]:
+            epg_id, _sep, name = raw.partition("\n")
+            wanted.append((epg_id.strip()[:200], name.strip()[:200]))
+        try:
+            hours = max(0, min(26, int((query.get("hours") or ["6"])[0])))
+        except ValueError:
+            hours = 6
+        lang = re.sub(r"[^a-z]", "", (query.get("lang") or [""])[0].lower())[:2]
+        guide = EPG.get(url)
+        if guide is None:
+            return self.send_json(429, {"status": "busy", "retry": 60})
+        if guide.state == "loading":
+            guide.done.wait(EPG_WAIT)
+        if guide.state == "loading":
+            return self.send_json(202, {"status": "loading", "retry": 3})
+        if guide.state == "error":
+            return self.send_json(502, {"status": "error", "error": guide.error})
+        now = int(time.time())
+        payload = {"status": "ok", "now": now, "updated": int(guide.loaded_at), "channels": guide.lookup(wanted, hours, lang, now)}
+        self.send_json(200, payload, cache="private, max-age=60")
+
     def stream_check(self, parsed):
         query = parse_qs(parsed.query)
         if (query.get("probe") or [""])[0]:
@@ -1746,6 +2128,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.proxy_stream(parsed)
         if parsed.path == "/api/stream-check":
             return self.stream_check(parsed)
+        if parsed.path == "/api/epg":
+            return self.epg_lookup(parsed)
         mapped = ROUTES.get(parsed.path)
         if mapped and not os.path.exists(os.path.join(ROOT, mapped)):
             # the page may sit in the checkout with another case (listchannels.html)

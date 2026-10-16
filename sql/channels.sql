@@ -8,11 +8,18 @@
 --    from Panel > IPTV fills the column for good.
 -- 2) public.channel_reports receives the "Report channel" button of the player
 --    and feeds Panel > Reports > Channels.
+-- 3) public.listchannels.epg_id links a channel to the programme guide (EPG).
 
 alter table public.listchannels add column if not exists stream_url text not null default '';
+-- epg_id is the tvg-id of the channel in the M3U: the key of the channel in the
+-- programme guide (XMLTV) of its package. Channels imported before this column
+-- existed are matched to the guide by their name.
+alter table public.listchannels add column if not exists epg_id text not null default '';
 
 comment on column public.listchannels.stream_url is
   'Stream link of the channel: the URL line under #EXTINF in the imported M3U';
+comment on column public.listchannels.epg_id is
+  'tvg-id of the channel in the imported M3U: its id in the package programme guide (XMLTV)';
 
 create index if not exists listchannels_package_idx on public.listchannels (package_name, group_name);
 
