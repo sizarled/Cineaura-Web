@@ -1384,8 +1384,15 @@ html[data-theme="day"] .vis-chip.vis-private { color: #c62f35; }
    scroll sideways, so a long list never pushes the comments out of reach. */
 .src-rails {
   display: grid;
+  /* one column no wider than the panel: a long rail scrolls inside itself
+     instead of widening the whole page on a phone */
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   margin-top: 14px;
+}
+
+.src-rails > .src-block {
+  min-width: 0;
 }
 
 .src-block-head {
