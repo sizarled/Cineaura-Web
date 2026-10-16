@@ -919,6 +919,49 @@
     return [browser, os].filter(Boolean).join(" · ") || "Browser";
   }
 
+  /* ---------- Linked devices (Dashboard > Codes > Linked devices) ----------
+     Every device linked to a code has a type. The watch page adds a device as
+     "web" (for now the site is the only app); its owner can add one by hand
+     with any type, and change it. */
+  const DEVICE_ICON_PATHS = {
+    web: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/>',
+    computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+    phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.2"/><path d="M11 18.5h2"/>',
+    tv: '<rect x="2.5" y="6.5" width="19" height="12" rx="2"/><path d="M8 2.5l4 4 4-4M8 21.5h8"/>',
+    tablet: '<rect x="4.5" y="2.5" width="15" height="19" rx="2.2"/><path d="M11 18.5h2"/>',
+  };
+  const DEVICE_TYPES = [
+    { id: "web", label: "dash.dev.type.web" },
+    { id: "computer", label: "dash.dev.type.computer" },
+    { id: "phone", label: "dash.dev.type.phone" },
+    { id: "tv", label: "dash.dev.type.tv" },
+    { id: "tablet", label: "dash.dev.type.tablet" },
+  ];
+
+  function deviceType(id) {
+    return DEVICE_TYPES.find((type) => type.id === String(id || "").trim().toLowerCase()) || null;
+  }
+
+  function deviceTypeIcon(id, size = 18) {
+    const type = deviceType(id) || DEVICE_TYPES[0];
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${DEVICE_ICON_PATHS[type.id]}</svg>`;
+  }
+
+  /* A MAC address typed by hand, as the database keeps it (sql/code_devices.sql
+     _code_mac): "0a-1b-2c-3d-4e-5f", "0A1B2C3D4E5F" or "0a1b.2c3d.4e5f" ->
+     "0A:1B:2C:3D:4E:5F". "" for anything else, and for the addresses no device
+     has (all zeros, broadcast, multicast). */
+  function normalizeMac(input) {
+    const raw = String(input || "").trim().toUpperCase();
+    let hex = "";
+    if (/^[0-9A-F]{2}([:-][0-9A-F]{2}){5}$/.test(raw)) hex = raw.replace(/[:-]/g, "");
+    else if (/^[0-9A-F]{12}$/.test(raw)) hex = raw;
+    else if (/^[0-9A-F]{4}\.[0-9A-F]{4}\.[0-9A-F]{4}$/.test(raw)) hex = raw.replace(/\./g, "");
+    if (!hex || hex === "000000000000" || hex === "FFFFFFFFFFFF") return "";
+    if (parseInt(hex[1], 16) % 2 === 1) return ""; // multicast
+    return hex.match(/../g).join(":");
+  }
+
   // The public IP, asked once per page and never stored. The database prefers
   // the address the API gateway saw; this is only its fallback.
   let ipPromise = null;
@@ -3336,6 +3379,10 @@
     deviceMac,
     deviceName,
     publicIp,
+    DEVICE_TYPES,
+    deviceType,
+    deviceTypeIcon,
+    normalizeMac,
     AGE_TIERS,
     AGE_UNKNOWN,
     AGE_GATE_MIN,

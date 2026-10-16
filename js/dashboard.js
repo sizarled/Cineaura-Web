@@ -614,6 +614,15 @@
     }
   }
 
+  // "[icon] Living room TV · Smart TV" under a linked device's MAC address
+  function deviceKindHtml(c) {
+    const type = C.deviceType(c.device_type);
+    const name = String(c.device_name || "").trim();
+    if (!type && !name) return "";
+    const parts = [name ? `<bdi>${escapeHtml(name)}</bdi>` : "", type ? escapeHtml(t(type.label)) : ""].filter(Boolean);
+    return `<small class="dev-sub dev-kind">${type ? C.deviceTypeIcon(type.id, 14) : ""}<span>${parts.join(" · ")}</span></small>`;
+  }
+
   // Overview card: the device the code is linked to ("This device" for this browser)
   function ovDeviceHtml(c) {
     if (!Object.prototype.hasOwnProperty.call(c, "device_mac")) return ""; // sql/code_devices.sql not run
@@ -624,6 +633,7 @@
             <span class="ov-label">${t("dash.code.device")}</span>
             ${mac ? `<span class="dev-mac" dir="ltr">${escapeHtml(mac)}</span>` : `<span class="muted">${t("dash.code.notLinked")}</span>`}
             ${mine ? `<span class="code-here">${t("dash.code.thisDevice")}</span>` : ""}
+            ${mac ? deviceKindHtml(c) : ""}
           </div>`;
   }
 
@@ -1365,12 +1375,30 @@
     // this browser's device address, and the code it remembers ("Remember the code")
     const here = C.deviceMac();
     const saved = C.getStoredCode();
-    // a database without sql/code_devices.sql has no device columns yet
-    const devicesReady = !codes.length || codes.some((c) => Object.prototype.hasOwnProperty.call(c, "device_mac"));
+    // a database without sql/code_devices.sql has no device columns yet, and
+    // one with its first version has no device name / type yet
+    const has = (c, col) => Object.prototype.hasOwnProperty.call(c, col);
+    const devicesReady = !codes.length || codes.some((c) => has(c, "device_mac"));
+    const typesReady = devicesReady && (!codes.length || codes.some((c) => has(c, "device_type")));
+    const now = Date.now();
+    const stateOf = (c) => codeState(c, codeTiming(c, now));
+    // Linked devices: one per linked code, this device first, then the newest
+    const devices = devicesReady
+      ? codes
+          .filter((c) => c.device_mac)
+          .sort((a, b) => (b.device_mac === here) - (a.device_mac === here) || (Date.parse(b.device_linked_at || "") || 0) - (Date.parse(a.device_linked_at || "") || 0))
+      : [];
+    // the codes a device can be linked to by hand: active and free
+    const freeCodes = codes.filter((c) => !c.device_mac && stateOf(c) === "active");
     main.innerHTML = `
       <p class="eyebrow">${t("dash.accessCodes")}</p>
       <h1>${t("dash.nav.codes")}</h1>
       <p class="muted">${t("dash.codesLead", { plan: tr(state.member.membership_type || "Free"), max: plan.maxCodes, months: plan.months })}</p>
+      <div class="tabs follow-tabs dash-code-tabs" data-tabbar role="tablist" aria-label="${escapeHtml(t("dash.nav.codes"))}">
+        <button type="button" role="tab" class="follow-tab" data-dtab="codes-list">${t("dash.nav.codes")}<span class="follow-count">${codes.length}</span></button>
+        <button type="button" role="tab" class="follow-tab" data-dtab="codes-devices">${t("dash.dev.tab")}<span class="follow-count">${devices.length}</span></button>
+      </div>
+      <section class="follow-pane" data-dpane="codes-list" hidden>
       <div class="form-row">
         <input id="new-code" maxlength="6" placeholder="${t("dash.codePh")}" />
         <button class="btn btn-sm btn-ghost" id="gen-code" type="button">${t("common.generate")}</button>
@@ -1408,7 +1436,9 @@
           <th></th>
         </tr></thead>
         <tbody id="code-rows"></tbody></table>
-      </div>`;
+      </div>
+      </section>
+      <section class="follow-pane dev-pane" data-dpane="codes-devices" hidden>${devicesPaneHtml()}</section>`;
     $("#code-rows").innerHTML =
       codes.map(codeRowHtml).join("") ||
       `<tr><td colspan="${devicesReady ? 7 : 6}" class="empty">${t("dash.noCodes")}</td></tr>`;
@@ -1445,13 +1475,13 @@
         : mac
           ? `<td class="dev-cell" ${label("dash.code.device")}><div>
               <span class="dev-mac" dir="ltr">${escapeHtml(mac)}</span>
-              ${c.device_name ? `<small class="dev-sub">${escapeHtml(c.device_name)}</small>` : ""}
+              ${deviceKindHtml(c)}
+              ${c.device_agent ? `<small class="dev-sub">${escapeHtml(c.device_agent)}</small>` : ""}
               ${c.device_linked_at ? `<small class="dev-sub">${t("dash.code.linkedOn", { date: dayText(Date.parse(c.device_linked_at)) })}</small>` : ""}
               ${devButtons}
             </div></td>`
           : `<td class="dev-cell" ${label("dash.code.device")}><div><span class="muted">${t("dash.code.notLinked")}</span>${devButtons}</div></td>`;
       let ip = "—";
-      const ipClass = (value) => `code-ip${String(value).includes(":") ? " is-v6" : ""}`; // a long IPv6 may wrap
       if (mac && c.device_ip) ip = `<span class="${ipClass(c.device_ip)}" dir="ltr">${escapeHtml(c.device_ip)}</span>`;
       else if (!mac && c.ip) ip = `<span class="${ipClass(c.ip)} muted" dir="ltr" title="${escapeHtml(t("dash.code.ipCreated"))}">${escapeHtml(c.ip)}</span>`;
       // "18 and over — no limit" -> "18 and over" in the table, the whole label on hover
@@ -1477,6 +1507,122 @@
     // Codes saved before the age tiers existed carry no limit.
     function codeAgeLabel(value) {
       return value ? t(ageTier(value).label) : t("code.ageNone");
+    }
+
+    function ipClass(value) {
+      return `code-ip${String(value).includes(":") ? " is-v6" : ""}`; // a long IPv6 may wrap
+    }
+
+    /* ---------- Linked devices ----------
+       One row per device, each linked to one code: added by the watch page the
+       first time a code is entered on a device (type web, no name), or here by
+       hand (name, type, MAC address, one of the free codes, Link). */
+    function codeOptionText(c) {
+      const exp = String(c.expires_at || "").slice(0, 10);
+      return [c.code, codeAgeLabel(c.age_rating).split(" — ")[0], exp].filter(Boolean).map(escapeHtml).join(" · ");
+    }
+
+    function freeCodeOptions() {
+      if (!freeCodes.length) return `<option value="">—</option>`;
+      return `<option value="">${escapeHtml(t("dash.dev.pickCode"))}</option>${freeCodes
+        .map((c) => `<option value="${escapeHtml(c.code)}">${codeOptionText(c)}</option>`)
+        .join("")}`;
+    }
+
+    function devicesPaneHtml() {
+      if (!devicesReady) return `<p class="dev-notice">${t("dash.code.devSql")}</p>`;
+      const typeOptions = C.DEVICE_TYPES.map((type) => `<option value="${type.id}">${escapeHtml(t(type.label))}</option>`).join("");
+      const form = typesReady
+        ? `
+        <div class="dev-toolbar">
+          <button class="btn btn-sm btn-primary" id="dev-open" type="button" aria-expanded="false" aria-controls="dev-form">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            ${t("dash.dev.add")}
+          </button>
+        </div>
+        <form class="dev-form" id="dev-form" hidden novalidate>
+          <h3 id="dev-form-title">${t("dash.dev.add")}</h3>
+          <div class="dev-grid">
+            <label class="dev-field">
+              <span>${t("dash.dev.name")} <small>(${t("dash.dev.optional")})</small></span>
+              <input id="dev-name" maxlength="60" autocomplete="off" placeholder="${escapeHtml(t("dash.dev.namePh"))}" />
+            </label>
+            <label class="dev-field">
+              <span>${t("common.type")}</span>
+              <select id="dev-type">${typeOptions}</select>
+            </label>
+            <label class="dev-field">
+              <span>${t("dash.dev.mac")}</span>
+              <input id="dev-mac" class="dev-mac-input" dir="ltr" maxlength="17" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="AA:BB:CC:DD:EE:FF" />
+              <small class="dev-mine" id="dev-mine">${t("dash.code.thisMac")} <b dir="ltr">${escapeHtml(here)}</b> <button class="dev-link-btn" id="dev-use-mine" type="button">${t("dash.dev.useMine")}</button></small>
+            </label>
+            <label class="dev-field">
+              <span>${t("dash.dev.code")}</span>
+              <select id="dev-code"${freeCodes.length ? "" : " disabled"}>${freeCodeOptions()}</select>
+              <small class="dev-warn" id="dev-nofree"${freeCodes.length ? " hidden" : ""}>${t("dash.dev.noFree")}</small>
+            </label>
+          </div>
+          <p class="dev-msg" id="dev-msg" role="alert"></p>
+          <div class="dev-form-actions">
+            <button class="btn btn-sm btn-primary" id="dev-submit" type="submit">${t("dash.dev.link")}</button>
+            <button class="btn btn-sm btn-ghost" id="dev-cancel" type="button">${t("common.cancel")}</button>
+          </div>
+        </form>`
+        : `<p class="dev-notice">${t("dash.dev.sql")}</p>`;
+      return `
+        <p class="muted dev-lead">${t("dash.dev.lead")}</p>
+        ${form}
+        <div class="codes-wrap">
+          <table class="table devices-table"><thead><tr>
+            <th>${t("dash.dev.device")}</th>
+            <th>${t("common.type")}</th>
+            <th>${t("dash.dev.mac")}</th>
+            <th>${t("dash.dev.code")}</th>
+            <th>IP</th>
+            <th>${t("dash.dev.linked")}</th>
+            <th></th>
+          </tr></thead>
+          <tbody id="dev-rows">${devices.map(deviceRowHtml).join("") || `<tr><td colspan="7" class="empty">${t("dash.dev.none")}</td></tr>`}</tbody></table>
+        </div>`;
+    }
+
+    function deviceRowHtml(c) {
+      const code = escapeHtml(c.code);
+      const mac = String(c.device_mac || "");
+      const mine = mac === here;
+      // a device linked before the types existed was linked by the site
+      const type = C.deviceType(c.device_type) || C.deviceType("web");
+      const typeLabel = t(type.label);
+      const name = String(c.device_name || "").trim();
+      const st = stateOf(c);
+      const label = (key) => `data-label="${escapeHtml(t(key))}"`;
+      const linked = Date.parse(c.device_linked_at || "");
+      const seen = Date.parse(c.device_seen_at || "");
+      const ip = c.device_ip
+        ? `<span class="${ipClass(c.device_ip)}" dir="ltr">${escapeHtml(c.device_ip)}</span>`
+        : `<span class="muted">—</span>`;
+      return `
+      <tr class="${mine ? "is-here" : ""}" data-dev="${code}">
+        <td class="dev-main" ${label("dash.dev.device")}>
+          <div class="dev-id">
+            <span class="dev-ic" title="${escapeHtml(typeLabel)}">${C.deviceTypeIcon(type.id, 20)}</span>
+            <div class="dev-id-text">
+              <b class="dev-name${name ? "" : " is-empty"}">${name ? `<bdi>${escapeHtml(name)}</bdi>` : t("dash.dev.noName")}</b>
+              ${mine ? `<span class="code-here">${t("dash.code.thisDevice")}</span>` : ""}
+              ${c.device_agent ? `<small class="dev-sub">${escapeHtml(c.device_agent)}</small>` : ""}
+            </div>
+          </div>
+        </td>
+        <td ${label("common.type")}><span class="dev-type">${escapeHtml(typeLabel)}</span></td>
+        <td ${label("dash.dev.mac")}><span class="dev-mac" dir="ltr">${escapeHtml(mac)}</span></td>
+        <td ${label("dash.dev.code")}><div class="dev-code"><span class="code-digits" dir="ltr">${code}</span>${st !== "active" ? `<span class="ov-st ${st}">${t(`dash.ov.st.${st}`)}</span>` : ""}</div></td>
+        <td ${label("dash.ipPh")}>${ip}</td>
+        <td class="dev-when" ${label("dash.dev.linked")}><div>${Number.isFinite(linked) ? escapeHtml(dayText(linked)) : "—"}<small class="dev-sub">${Number.isFinite(seen) ? t("dash.dev.lastUsed", { date: escapeHtml(whenText(seen)) }) : t("dash.dev.notUsed")}</small></div></td>
+        <td class="code-acts"><div class="actions">
+          ${typesReady ? `<button class="btn btn-sm btn-ghost" data-dev-edit="${code}" type="button">${t("dash.editBtn")}</button>` : ""}
+          <button class="btn btn-sm btn-ghost" data-unlink="${code}" data-mac="${escapeHtml(mac)}" type="button">${t("dash.code.unlink")}</button>
+        </div></td>
+      </tr>`;
     }
 
     const fillIp = (ip) => {
@@ -1638,6 +1784,143 @@
       toast(t("dash.code.unlinked", { code }));
       viewCodes(main);
     }
+
+    /* Linked devices > Add device / Edit: one form. Adding links a device (its
+       MAC address) to one of the free codes; editing changes its name and type
+       (to move a device to another code: Unlink, then add it again). */
+    let editing = null;
+    const devMsg = (text) => {
+      const el = $("#dev-msg");
+      if (el) el.textContent = text || "";
+    };
+
+    function openDeviceForm(c) {
+      const form = $("#dev-form");
+      if (!form) return;
+      editing = c ? String(c.code) : null;
+      form.hidden = false;
+      form.classList.toggle("is-edit", Boolean(c));
+      $("#dev-open")?.setAttribute("aria-expanded", "true");
+      $("#dev-form-title").textContent = c ? t("dash.dev.editTitle") : t("dash.dev.add");
+      $("#dev-submit").textContent = c ? t("common.save") : t("dash.dev.link");
+      $("#dev-name").value = c ? String(c.device_name || "") : "";
+      $("#dev-type").value = c ? (C.deviceType(c.device_type) || C.deviceType("web")).id : "web";
+      const macInput = $("#dev-mac");
+      macInput.value = c ? String(c.device_mac || "") : "";
+      macInput.disabled = Boolean(c);
+      $("#dev-mine").hidden = Boolean(c);
+      const codeSel = $("#dev-code");
+      codeSel.innerHTML = c ? `<option value="${escapeHtml(c.code)}">${codeOptionText(c)}</option>` : freeCodeOptions();
+      codeSel.disabled = Boolean(c) || !freeCodes.length;
+      $("#dev-nofree").hidden = Boolean(c) || freeCodes.length > 0;
+      devMsg("");
+      form.scrollIntoView({ block: "nearest" });
+      $("#dev-name").focus({ preventScroll: true });
+    }
+
+    function closeDeviceForm() {
+      const form = $("#dev-form");
+      if (!form) return;
+      form.hidden = true;
+      editing = null;
+      $("#dev-open")?.setAttribute("aria-expanded", "false");
+      devMsg("");
+    }
+
+    function deviceFailText(r, d) {
+      if (rpcMissing(r)) return t("dash.dev.sql");
+      switch (d?.reason) {
+        case "bad_mac":
+          return t("dash.dev.badMac");
+        case "code_linked":
+          return t("dash.code.otherFirst");
+        case "mac_linked":
+          return t("dash.dev.macMine", { code: `\u2066${d.code || ""}\u2069` });
+        case "mac_taken":
+          return t("dash.dev.macTaken");
+        case "expired":
+        case "disabled":
+        case "banned":
+          return t("dash.code.notUsable", { status: t(`dash.ov.st.${d.reason}`) });
+        default:
+          return t("dash.code.devFail");
+      }
+    }
+
+    async function submitDevice(e) {
+      e.preventDefault();
+      const btn = $("#dev-submit");
+      const name = $("#dev-name").value.trim();
+      const type = $("#dev-type").value;
+      let r;
+      if (editing) {
+        btn.disabled = true;
+        r = await codeRpc("code_device_edit", { p_member: state.member.member_id, p_code: editing, p_name: name, p_type: type });
+      } else {
+        const mac = C.normalizeMac($("#dev-mac").value);
+        if (!mac) {
+          devMsg(t("dash.dev.badMac"));
+          return $("#dev-mac").focus();
+        }
+        const code = $("#dev-code").value;
+        if (!code) {
+          devMsg(freeCodes.length ? t("dash.dev.needCode") : t("dash.dev.noFree"));
+          return $("#dev-code").focus();
+        }
+        btn.disabled = true;
+        r = await codeRpc("code_device_add", { p_member: state.member.member_id, p_code: code, p_mac: mac, p_name: name, p_type: type });
+      }
+      const d = r.ok && r.data && typeof r.data === "object" ? r.data : null;
+      btn.disabled = false;
+      if (!d?.ok) {
+        if (r.blocked) return;
+        return devMsg(deviceFailText(r, d));
+      }
+      if (editing) toast(t("dash.dev.savedOk"));
+      else toast(t("dash.dev.linkedOk", { device: d.name ? `\u2068${d.name}\u2069` : `\u2066${d.mac}\u2069`, code: `\u2066${d.code}\u2069` }));
+      viewCodes(main);
+    }
+
+    if ($("#dev-form")) {
+      $("#dev-open").onclick = () => ($("#dev-form").hidden || editing ? openDeviceForm(null) : closeDeviceForm());
+      $("#dev-cancel").onclick = closeDeviceForm;
+      $("#dev-form").onsubmit = submitDevice;
+      // a message about the last try goes as soon as the form is changed
+      $("#dev-form").addEventListener("input", () => devMsg(""));
+      $("#dev-form").addEventListener("change", () => devMsg(""));
+      $("#dev-use-mine").onclick = () => {
+        $("#dev-mac").value = here;
+        devMsg("");
+      };
+      // "0a1b2c3d4e5f", "0a-1b-…": shown as 0A:1B:2C:3D:4E:5F while typing
+      $("#dev-mac").addEventListener("input", (e) => {
+        const hex = e.target.value.toUpperCase().replace(/[^0-9A-F]/g, "").slice(0, 12);
+        e.target.value = (hex.match(/.{1,2}/g) || []).join(":");
+      });
+    }
+    const devRows = $("#dev-rows");
+    if (devRows) {
+      devRows.onclick = (e) => {
+        const edit = e.target.closest("[data-dev-edit]");
+        const unlink = e.target.closest("[data-unlink]");
+        if (unlink) return unlinkCode(unlink);
+        if (edit) {
+          const c = codes.find((x) => String(x.code) === edit.dataset.devEdit);
+          if (c) openDeviceForm(c);
+        }
+      };
+    }
+
+    // the two tabs; the address follows (dashboard.html#devices opens Linked devices)
+    wireTabs(main, "codes");
+    const syncCodesHash = () => {
+      const hash = state.tabs?.codes === "codes-devices" ? "#devices" : "#codes";
+      if (location.hash !== hash) history.replaceState(history.state, "", hash);
+    };
+    main.querySelector(".dash-code-tabs")?.addEventListener("click", (e) => {
+      if (e.target.closest("[data-dtab]")) syncCodesHash();
+    });
+    syncCodesHash();
 
     $("#code-rows").onclick = async (e) => {
       const copy = e.target.closest("[data-copy]");
@@ -2484,7 +2767,11 @@
 
   const SECTIONS = ["overview","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"];
   // dashboard.html#claims: Prizes > Prize claims (where the claim notifications lead)
-  const HASH_ALIASES = { claims: { section: "prizes", tabs: { prizeModes: "prize-claims" } } };
+  // dashboard.html#devices: Codes > Linked devices (named by the watch page)
+  const HASH_ALIASES = {
+    claims: { section: "prizes", tabs: { prizeModes: "prize-claims" } },
+    devices: { section: "codes", tabs: { codes: "codes-devices" } },
+  };
 
   function routeOf(hash) {
     let key = "";

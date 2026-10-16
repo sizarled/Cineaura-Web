@@ -1028,15 +1028,17 @@ html:not([data-theme="day"]) .ov-st.disabled { color: #f7b928; }
 }
 
 .table.codes-table th,
-.table.codes-table td { padding: 12px 8px; vertical-align: top; }
-.table.codes-table tr.is-here td { background: rgba(45, 136, 255, 0.07); }
-html[data-theme="day"] .table.codes-table tr.is-here td { background: rgba(24, 119, 242, 0.06); }
-.table.codes-table .code-exp { white-space: nowrap; }
-.table.codes-table .code-ip { white-space: nowrap; }
-.table.codes-table .code-ip.is-v6 { white-space: normal; overflow-wrap: anywhere; }
-.table.codes-table .chip { white-space: nowrap; cursor: help; }
-.table.codes-table .code-acts .actions { justify-content: flex-end; }
-.table.codes-table .code-acts .btn { min-width: 64px; }
+.table.devices-table th,
+.table.codes-table td,
+.table.devices-table td { padding: 12px 8px; vertical-align: top; text-align: start; }
+.table.codes-table tr.is-here td, .table.devices-table tr.is-here td { background: rgba(45, 136, 255, 0.07); }
+html[data-theme="day"] .table.codes-table tr.is-here td, html[data-theme="day"] .table.devices-table tr.is-here td { background: rgba(24, 119, 242, 0.06); }
+.table.codes-table .code-exp, .table.devices-table .code-exp { white-space: nowrap; }
+.table.codes-table .code-ip, .table.devices-table .code-ip { white-space: nowrap; }
+.table.codes-table .code-ip.is-v6, .table.devices-table .code-ip.is-v6 { white-space: normal; overflow-wrap: anywhere; }
+.table.codes-table .chip, .table.devices-table .chip { white-space: nowrap; cursor: help; }
+.table.codes-table .code-acts .actions, .table.devices-table .code-acts .actions { justify-content: flex-end; }
+.table.codes-table .code-acts .btn, .table.devices-table .code-acts .btn { min-width: 64px; }
 
 .code-digits,
 .dev-mac {
@@ -1104,47 +1106,165 @@ html[data-theme="day"] .table.codes-table tr.is-here td { background: rgba(24, 1
 
 /* Phones: one card per code, each value under its name */
 @media (max-width: 720px) {
-  .table.codes-table thead { display: none; }
+  .table.codes-table thead, .table.devices-table thead { display: none; }
   .table.codes-table,
+  .table.devices-table,
   .table.codes-table tbody,
+  .table.devices-table tbody,
   .table.codes-table tr,
-  .table.codes-table td { display: block; width: 100%; }
-  .table.codes-table tr {
+  .table.devices-table tr,
+  .table.codes-table td,
+  .table.devices-table td { display: block; width: 100%; }
+  .table.codes-table tr, .table.devices-table tr {
     margin-bottom: 12px;
     padding: 12px 14px;
     border: 1px solid var(--line);
     border-radius: 8px;
   }
-  .table.codes-table tr.is-here { border-color: var(--cyan); }
-  .table.codes-table tr.is-here td { background: none; }
-  .table.codes-table td {
+  .table.codes-table tr.is-here, .table.devices-table tr.is-here { border-color: var(--cyan); }
+  .table.codes-table tr.is-here td, .table.devices-table tr.is-here td { background: none; }
+  .table.codes-table td, .table.devices-table td {
     display: grid;
     grid-template-columns: minmax(96px, 34%) 1fr;
     gap: 10px;
     padding: 6px 0;
     border: 0;
   }
-  .table.codes-table td > .ov-st,
-  .table.codes-table td > .chip { justify-self: start; }
-  .table.codes-table td[data-label]::before {
+  /* each value at the start of its column, also a MAC or an IP inside an
+     Arabic card (they are laid out left to right themselves) */
+  .table.codes-table td > *,
+  .table.devices-table td > * { justify-self: start; min-width: 0; }
+  .table.codes-table td[data-label]::before, .table.devices-table td[data-label]::before {
     content: attr(data-label);
     font-size: 12.5px;
     font-weight: 600;
     color: var(--muted);
   }
-  .table.codes-table td.code-cell { display: block; padding-top: 0; }
-  .table.codes-table td.code-cell::before { display: none; }
-  .table.codes-table td.code-cell .code-digits { display: inline-block; font-size: 20px; margin-inline-end: 8px; }
-  .table.codes-table td.code-cell .code-memo { max-width: none; }
-  .table.codes-table td.empty { display: block; }
-  .table.codes-table td.code-acts {
+  .table.codes-table td.code-cell, .table.devices-table td.code-cell { display: block; padding-top: 0; }
+  .table.codes-table td.code-cell::before, .table.devices-table td.code-cell::before { display: none; }
+  .table.codes-table td.code-cell .code-digits, .table.devices-table td.code-cell .code-digits { display: inline-block; font-size: 20px; margin-inline-end: 8px; }
+  .table.codes-table td.code-cell .code-memo, .table.devices-table td.code-cell .code-memo { max-width: none; }
+  .table.codes-table td.empty, .table.devices-table td.empty { display: block; }
+  .table.codes-table td.code-acts, .table.devices-table td.code-acts {
     display: block;
     padding-top: 10px;
     border-top: 1px solid var(--line);
     margin-top: 6px;
   }
-  .table.codes-table .code-acts .actions { justify-content: flex-start; }
-  .table.codes-table tbody tr:hover { background: none; }
+  .table.codes-table .code-acts .actions, .table.devices-table .code-acts .actions { justify-content: flex-start; }
+  .table.codes-table tbody tr:hover, .table.devices-table tbody tr:hover { background: none; }
+}
+
+/* ---------- Linked devices (Dashboard > Codes > Linked devices) ----------
+   Every device linked to a code: added by the watch page (type Web) or here by
+   hand with its name, type and MAC address. One form adds and edits. */
+.dash-code-tabs { margin: 18px 0 6px; }
+.dev-lead { margin: 10px 0 14px; max-width: 780px; font-size: 13.5px; line-height: 1.6; }
+
+.dev-notice {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border: 1px solid rgba(247, 185, 40, 0.45);
+  border-radius: 8px;
+  background: rgba(247, 185, 40, 0.1);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.dev-toolbar { display: flex; margin-bottom: 12px; }
+.dev-toolbar .btn { display: inline-flex; align-items: center; gap: 6px; }
+
+.dev-form {
+  margin: 0 0 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--sub-bg);
+}
+
+.dev-form[hidden] { display: none; }
+.dev-form h3 { margin: 0 0 12px; font-size: 16px; }
+.dev-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+
+.dev-field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dev-field > span small { font-weight: 500; }
+
+.dev-field input,
+.dev-field select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.dev-field input:disabled,
+.dev-field select:disabled { opacity: 0.6; cursor: not-allowed; }
+.dev-field input.dev-mac-input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.06em; }
+
+.dev-mine,
+.dev-warn { font-size: 12px; font-weight: 500; line-height: 1.5; }
+.dev-mine b { font: 700 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); }
+.dev-mine[hidden],
+.dev-warn[hidden] { display: none; }
+.dev-warn { color: #c98a00; }
+html:not([data-theme="day"]) .dev-warn { color: #f7b928; }
+
+.dev-link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cyan);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.dev-msg { margin: 10px 0 0; font-size: 13px; line-height: 1.5; color: var(--red); }
+.dev-msg:empty { display: none; }
+.dev-form-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* a row: the type's icon, the name (or "No name"), "This device", the browser */
+.dev-id { display: flex; align-items: flex-start; gap: 10px; }
+
+.dev-ic {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: rgba(1, 180, 228, 0.12);
+  color: var(--cyan);
+}
+
+.dev-id-text { min-width: 0; }
+.dev-name { display: block; font-size: 14.5px; overflow-wrap: anywhere; }
+.dev-name.is-empty { color: var(--muted); font-weight: 600; }
+.dev-type { white-space: nowrap; }
+.dev-code { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dev-code .code-digits { display: inline-block; }
+.dev-kind { display: flex; align-items: center; gap: 5px; }
+.dev-kind svg { flex: none; }
+.table.devices-table td.dev-main { min-width: 190px; }
+.table.devices-table td.dev-when { min-width: 120px; }
+
+@media (max-width: 720px) {
+  .dev-grid { grid-template-columns: 1fr; }
+  .table.devices-table td.dev-main { display: block; min-width: 0; padding-top: 0; }
+  .table.devices-table td.dev-main::before { display: none; }
+  .table.devices-table td.dev-when { min-width: 0; }
 }
 
 /* ---------- Premium IPTV accounts (Panel > IPTV gives them to a member) ----------
