@@ -5,11 +5,12 @@
  *   ?premium=1  the premium channels: the playlist IPTV-Premuim.m3u, whose links
  *               carry the words Username and Password. They play once replaced
  *               with a premium IPTV account: its username and password typed on
- *               the page, or a watch code (the premium account of the code's
- *               owner). A device linked to a code (Dashboard > Codes > Linked
- *               devices) is not asked again, nor is an account kept with
- *               "Remember on this device". A code is linked to the device only
- *               with "Remember the code" (sql/code_devices.sql, sql/iptv_premium.sql).
+ *               the page, or, behind the button "Use an access code", a watch
+ *               code alone (the premium account of the code's owner). A device
+ *               linked to a code (Dashboard > Codes > Linked devices) is not
+ *               asked again, nor is an account kept with "Remember on this
+ *               device". A code is linked to the device only with "Remember the
+ *               code" (sql/code_devices.sql, sql/iptv_premium.sql).
  *
  * Filters, kept in the address so a reload or a shared link keeps them:
  *   type    all | live | movie | series     tabs with counts
@@ -30,10 +31,17 @@
  * package for the member it is assigned to (the same rule as Dashboard > IPTV:
  * owner_id holds the member id, or the username on a row typed by hand), and
  * the staff always. Guests see the list with a sign-in notice that brings them
- * back here. &channel=<id> opens a channel at once (the "Watch Now" of a free
- * channel under Most watched channels on the home page), and the browser's Back
+ * back here. &channel=<id> opens a channel at once, and the browser's Back
  * button closes the player. A guest who opens such a link, or tries a card,
  * comes back from the sign-in page with that channel playing.
+ *
+ * The cards of Most watched channels on the home page (js/home-channels.js)
+ * come with the id of public.listchannels: a free channel opens on ?free=1, a
+ * premium one on ?premium=1, where the playlist's channel of the same name is
+ * looked up (else the same stream number on the same server, else the name
+ * without a country prefix or quality tags such as "AR:" and "HD"). On a locked
+ * premium list the gate shows that channel, and it plays the moment the list
+ * is unlocked; so does a card tapped while the list is locked.
  *
  * When the package has a programme guide (EPG), every live channel card that
  * comes near the screen shows what is on now, with how far it has got.
@@ -75,11 +83,15 @@
     packs: [], // free mode: the free packages, in the order of Panel > IPTV
     byKey: new Map(), // check key -> row indexes (one stream can sit in several groups)
     access: "ok", // ok | signin | locked | unlock (premium list waiting for an account)
-    wanted: "", // a guest: id of the channel to play after signing in
+    wanted: "", // id of the channel to play after signing in (a guest), or once the premium list is unlocked
     m3u: null, // the playlist of a home page list: { key, name, url, epg }
     unlock: null, // premium list: { user, pass, via: login | code | device, code, remembered }
+    unlockWay: "login", // the premium gate: login (username + password) | code ("Use an access code")
     unlockBusy: false,
     unlockMsg: "",
+    unlockOk: false, // the message is good news ("Checking…")
+    autoDone: false, // the silent unlock (kept account, remembered code, linked device) has had its go
+    arrivalFocus: false,
     query: "",
     groupQuery: "",
     type: pick(params.get("type"), TYPES, "all"),
@@ -103,6 +115,8 @@
     search: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
     pulse: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>',
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+    key: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4"/><path d="M10.4 12.6L20 3"/><path d="M16.5 6.5l2.5 2.5"/><path d="M14 9l2 2"/></svg>',
+    user: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
   };
   const TYPE_LABEL = { all: "chan.f.all", live: "chan.f.live", movie: "chan.f.movie", series: "chan.f.series" };
 
@@ -375,9 +389,49 @@
   }
 
   // ---------- markup ----------
+  // The channel waiting for the unlock (&channel= of a Most watched card on the
+  // home page, or a card tapped while the list is locked): it plays as soon as
+  // the list opens.
+  function wantedHtml() {
+    const row = state.wanted ? state.rows.find((r) => String(r.id) === state.wanted) : null;
+    if (!row) return "";
+    return `
+            <div class="chl-wanted" id="ul-wanted">
+              ${player().logoHtml(row, "ch-logo")}
+              <div class="chl-wanted-text"><strong dir="auto">${escapeHtml(row.channel_name)}</strong><small>${escapeHtml(t("iptvp.wantedHint"))}</small></div>
+            </div>`;
+  }
+
+  // The premium gate: the username and password of a premium IPTV account, or,
+  // behind the button "Use an access code", a watch code alone. Both forms stay
+  // on the page (one hidden), so switching keeps what was typed.
   function unlockHtml() {
     const busy = state.unlockBusy ? " disabled" : "";
     const signedIn = Boolean(getSession()?.member_id);
+    const way = (name, form, other, icon, label) => `
+            <div class="chl-way-box" data-way="${name}"${state.unlockWay === name ? "" : " hidden"}>
+              ${form}
+              <div class="chl-or" aria-hidden="true"><span>${escapeHtml(t("iptvp.or"))}</span></div>
+              <button class="btn btn-sm btn-ghost chl-switch" type="button" data-unlock-way="${other}"${busy}>${icon}<span>${escapeHtml(t(label))}</span></button>
+            </div>`;
+    const login = `
+              <form class="chl-way" id="ul-login" novalidate>
+                <h3>${escapeHtml(t("iptvp.byAccount"))}</h3>
+                <label><span>${escapeHtml(t("iptvp.user"))}</span><input id="ul-user" name="username" autocomplete="username" dir="ltr" spellcheck="false" autocapitalize="off" required${busy} /></label>
+                <label><span>${escapeHtml(t("iptvp.pass"))}</span><input id="ul-pass" name="password" type="password" autocomplete="current-password" dir="ltr" required${busy} /></label>
+                <label class="check-row"><input type="checkbox" id="ul-keep"${busy} /><span>${escapeHtml(t("iptvp.keep"))}</span></label>
+                <button class="btn btn-sm btn-primary" type="submit"${busy}>${escapeHtml(t("iptvp.unlock"))}</button>
+              </form>`;
+    const code = `
+              <form class="chl-way" id="ul-code-form" novalidate>
+                <h3>${escapeHtml(t("iptvp.byCode"))}</h3>
+                <label><span>${escapeHtml(t("iptvp.code"))}</span><input id="ul-code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" dir="ltr" placeholder="000000" required${busy} /></label>
+                <label class="check-row"><input type="checkbox" id="ul-remember"${busy} /><span>${escapeHtml(t("watch.remember"))}</span></label>
+                <p class="muted chl-way-hint">${escapeHtml(t("iptvp.rememberHint"))}</p>
+                <button class="btn btn-sm btn-primary" type="submit"${busy}>${escapeHtml(t("iptvp.unlock"))}</button>
+                <p class="muted chl-unlock-device">${escapeHtml(t("watch.deviceLine", { mac: `\u2066${C.deviceMac()}\u2069` }))}</p>
+              </form>`;
+    const msgClass = state.unlockMsg ? (state.unlockOk ? " ok" : " error") : "";
     return `
         <div class="chl-note chl-unlock" id="chl-note">
           <div class="chl-unlock-head">
@@ -387,25 +441,9 @@
               <p>${escapeHtml(t("iptvp.lead"))}${signedIn ? ` <a href="./dashboard.html#iptv">${escapeHtml(t("iptvp.whereAccount"))}</a>` : ""}</p>
             </div>
           </div>
-          <div class="chl-unlock-ways">
-            <form class="chl-way" id="ul-login" novalidate>
-              <h3>${escapeHtml(t("iptvp.byAccount"))}</h3>
-              <label><span>${escapeHtml(t("iptvp.user"))}</span><input id="ul-user" name="username" autocomplete="username" dir="ltr" spellcheck="false" autocapitalize="off" required${busy} /></label>
-              <label><span>${escapeHtml(t("iptvp.pass"))}</span><input id="ul-pass" name="password" type="password" autocomplete="current-password" dir="ltr" required${busy} /></label>
-              <label class="check-row"><input type="checkbox" id="ul-keep"${busy} /><span>${escapeHtml(t("iptvp.keep"))}</span></label>
-              <button class="btn btn-sm btn-primary" type="submit"${busy}>${escapeHtml(t("iptvp.unlock"))}</button>
-            </form>
-            <div class="chl-or" aria-hidden="true"><span>${escapeHtml(t("iptvp.or"))}</span></div>
-            <form class="chl-way" id="ul-code-form" novalidate>
-              <h3>${escapeHtml(t("iptvp.byCode"))}</h3>
-              <label><span>${escapeHtml(t("iptvp.code"))}</span><input id="ul-code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" dir="ltr" placeholder="000000" required${busy} /></label>
-              <label class="check-row"><input type="checkbox" id="ul-remember"${busy} /><span>${escapeHtml(t("watch.remember"))}</span></label>
-              <p class="muted chl-way-hint">${escapeHtml(t("iptvp.rememberHint"))}</p>
-              <button class="btn btn-sm btn-primary" type="submit"${busy}>${escapeHtml(t("iptvp.unlock"))}</button>
-            </form>
+          <div class="chl-unlock-body">${wantedHtml()}${way("login", login, "code", ICON.key, "iptvp.useCode")}${way("code", code, "login", ICON.user, "iptvp.useAccount")}
+            <p class="gate-msg${msgClass}" id="ul-msg" role="status" aria-live="polite">${escapeHtml(state.unlockMsg)}</p>
           </div>
-          <p class="gate-msg${state.unlockMsg ? " error" : ""}" id="ul-msg" role="status" aria-live="polite">${escapeHtml(state.unlockMsg)}</p>
-          <p class="muted chl-unlock-device">${escapeHtml(t("watch.deviceLine", { mac: `\u2066${C.deviceMac()}\u2069` }))}</p>
         </div>`;
   }
 
@@ -524,7 +562,6 @@
         ${body}
       </section>`;
     if (!state.failed && total) refresh();
-    if (state.access === "unlock") bindUnlock();
   }
 
   // Re-painting a box of buttons must not throw the keyboard focus out of it.
@@ -967,7 +1004,7 @@
     if (state.access === "unlock") {
       toast(t("iptvp.lockedToast"));
       flashNotice();
-      setTimeout(() => document.getElementById("ul-user")?.focus({ preventScroll: true }), 350);
+      setTimeout(focusUnlock, 350);
       return false;
     }
     toast(t(state.access === "signin" ? "chan.signinPlay" : "chan.lockedTitle"));
@@ -1170,9 +1207,17 @@
   // to the channel they wanted playing
   const signinUrl = () => `./login.html?next=${encodeURIComponent(`Listchannels.html?${pageQuery(state.wanted ? { id: state.wanted } : null)}`)}`;
 
-  // a guest asked for this channel: it is the one that plays after signing in
+  // A channel asked for while it can't play yet: it is the one that plays after
+  // signing in (a guest), or the moment the premium list is unlocked.
   function want(row) {
-    if (state.access !== "signin" || !row) return;
+    if (!row) return;
+    if (state.access === "unlock") {
+      state.wanted = String(row.id);
+      paintWanted();
+      syncFilterUrl();
+      return;
+    }
+    if (state.access !== "signin") return;
     state.wanted = String(row.id);
     const link = document.querySelector("#chl-note [data-signin]");
     if (link) link.href = signinUrl();
@@ -1181,7 +1226,8 @@
   function syncFilterUrl() {
     if (!state.loaded || player().isOpen()) return;
     try {
-      history.replaceState(history.state, "", pageUrl(null));
+      // a channel waiting for the premium list to be unlocked stays in the address
+      history.replaceState(history.state, "", pageUrl(state.access === "unlock" && state.wanted ? { id: state.wanted } : null));
     } catch {
       /* sandboxed frame: the address simply stays */
     }
@@ -1255,7 +1301,7 @@
   function openCard(card) {
     const i = Number(card.dataset.ch);
     if (!canPlay()) {
-      want(state.rows[i]);
+      want(state.rows[i]); // a guest: after signing in; a locked premium list: once unlocked
       return;
     }
     const at = state.view.indexOf(i);
@@ -1263,20 +1309,71 @@
     openPlayer(list.map((j) => state.rows[j]), Math.max(0, at), true);
   }
 
-  // The free list from the playlist, opened by a card of Most watched channels
-  // (&channel=<id of public.listchannels>): the playlist's channel of that name,
-  // else the channel of the database itself.
+  // "http://line.ottcst.net:80/user/pass/1784957" -> "line.ottcst.net live 1784957":
+  // the server and the stream number, whatever account the link carries
+  function streamKey(url) {
+    try {
+      const u = new URL(String(url || ""));
+      const last = (u.pathname.split("/").filter(Boolean).pop() || "").replace(/\.[a-z0-9]+$/i, "");
+      if (!/^\d+$/.test(last)) return "";
+      const kind = /\/movie\//i.test(u.pathname) ? "movie" : /\/series\//i.test(u.pathname) ? "series" : "live";
+      return `${u.hostname.toLowerCase()} ${kind} ${last}`;
+    } catch {
+      return "";
+    }
+  }
+
+  // "AR: beIN Sports 1 HD" -> "bein sports 1": a name without its country
+  // prefix, its quality tags, what stands in brackets, and punctuation
+  function looseName(name) {
+    return norm(name)
+      .replace(/^\|?[a-z]{2,3}\s*[|:]\s*/, "")
+      .replace(/[([][^)\]]*[)\]]/g, " ")
+      .replace(/(^|[^a-z0-9])(?:fhd|uhd|hd|sd|4k|8k|hevc|h\.?26[45]|\d{3,4}p)(?=$|[^a-z0-9])/g, "$1 ")
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+  }
+
+  // A channel of the database (public.listchannels) on this list: the same
+  // name, else the same stream on the same server, else a loosely equal name.
+  function sameChannel(row) {
+    const name = norm(row.channel_name);
+    const key = streamKey(row.stream_url);
+    const loose = looseName(row.channel_name);
+    return (
+      state.rows.find((r) => r._name === name) ||
+      (key && state.rows.find((r) => streamKey(r._tpl || r.stream_url) === key)) ||
+      (loose && state.rows.find((r) => looseName(r.channel_name) === loose)) ||
+      null
+    );
+  }
+
+  // A card of Most watched channels on the home page (&channel=<id of
+  // public.listchannels>) on a list read from its playlist. The free list plays
+  // the channel of the database itself when the playlist lacks it; the premium
+  // list says so (that link carries another account's login).
   async function openDatabaseChannel(id) {
     if (!/^\d+$/.test(id)) return;
     const res = await supabaseRequest(`/rest/v1/listchannels?id=eq.${restValue(id)}&select=*`).catch(() => null);
     const row = res?.ok && Array.isArray(res.data) ? res.data[0] : null;
     if (!row) return;
-    const same = state.rows.find((r) => r._name === norm(row.channel_name));
+    const same = sameChannel(row);
+    if (!same && premiumMode) {
+      toast(t("iptvp.notInList", { name: row.channel_name }));
+      return;
+    }
+    if (state.access === "unlock") {
+      // the gate shows the channel; it plays the moment the list is unlocked
+      want(same);
+      focusArrival();
+      return;
+    }
     if (state.access !== "ok") {
       want(same || row);
       canPlay();
       return;
     }
+    if (player().isOpen()) return; // something is playing already (a quick tap)
     if (same) {
       const list = state.view.includes(same._i) ? state.view : state.rows.map((r) => r._i);
       openPlayer(list.map((i) => state.rows[i]), list.indexOf(same._i), false);
@@ -1289,13 +1386,13 @@
     const wanted = (params.get("channel") || "").trim();
     if (!wanted) return;
     if (state.m3u && !state.rows.some((r) => String(r.id) === wanted)) {
-      if (freeMode) openDatabaseChannel(wanted);
+      openDatabaseChannel(wanted); // a card of Most watched channels on the home page
       return;
     }
     if (state.access === "unlock") {
-      // premium: the channel plays once the list is unlocked
-      state.wanted = wanted;
-      canPlay();
+      // premium: the gate shows the channel, which plays once the list is unlocked
+      want(state.rows.find((r) => String(r.id) === wanted));
+      focusArrival();
       return;
     }
     if (state.access !== "ok") {
@@ -1321,6 +1418,7 @@
   function unlocked(acc) {
     state.unlock = acc;
     state.unlockMsg = "";
+    state.unlockOk = false;
     state.rows.forEach((r) => {
       if (r._tpl) r.stream_url = C.fillCredentials(r._tpl, acc.user, acc.pass);
     });
@@ -1330,10 +1428,11 @@
     render();
     warmPlayer(document.getElementById("root"));
     if (state.wanted) {
+      // the channel picked on the home page, or tapped while the list was locked
       const wanted = state.wanted;
       state.wanted = "";
       const row = state.rows.find((r) => String(r.id) === wanted);
-      if (row) {
+      if (row && !player().isOpen()) {
         const list = state.view.includes(row._i) ? state.view : state.rows.map((r) => r._i);
         openPlayer(list.map((i) => state.rows[i]), list.indexOf(row._i), false);
       }
@@ -1344,6 +1443,7 @@
   // (no repaint: what was typed stays).
   function setUnlockMsg(text, ok = false) {
     state.unlockMsg = text || "";
+    state.unlockOk = Boolean(ok && state.unlockMsg);
     const el = document.getElementById("ul-msg");
     if (!el) return;
     el.textContent = state.unlockMsg;
@@ -1352,41 +1452,95 @@
 
   function setUnlockBusy(on) {
     state.unlockBusy = on;
-    document.querySelectorAll("#chl-note .chl-way input, #chl-note .chl-way button").forEach((el) => {
+    document.querySelectorAll("#chl-note .chl-way-box input, #chl-note .chl-way-box button").forEach((el) => {
       el.disabled = on;
     });
+  }
+
+  // the first field of the way on show: the username, or the code
+  function focusUnlock() {
+    document.getElementById(state.unlockWay === "code" ? "ul-code" : "ul-user")?.focus({ preventScroll: true });
+  }
+
+  // "Use an access code" / "Use a username and password": the other form shows,
+  // the first one keeps what was typed. A lock-out still applies to both.
+  function switchWay(way, focus = true) {
+    if (state.unlockBusy) return;
+    state.unlockWay = way === "code" ? "code" : "login";
+    document.querySelectorAll("#chl-note .chl-way-box").forEach((box) => {
+      box.hidden = box.dataset.way !== state.unlockWay;
+    });
+    setUnlockMsg(lockMessage());
+    if (focus) focusUnlock();
+  }
+
+  // The gate's line about the channel waiting for the unlock, painted alone (the
+  // forms keep what was typed).
+  function paintWanted() {
+    const body = document.querySelector("#chl-note .chl-unlock-body");
+    if (!body) return;
+    body.querySelector("#ul-wanted")?.remove();
+    const html = wantedHtml();
+    if (html) body.insertAdjacentHTML("afterbegin", html);
+  }
+
+  // Arriving for a channel on a locked list: once the silent unlock has failed,
+  // the first field waits for the account. Not on touch screens, where it would
+  // throw the keyboard over the page, nor once the visitor is busy elsewhere.
+  function focusArrival() {
+    if (!state.autoDone || state.access !== "unlock" || !state.wanted || state.arrivalFocus) return;
+    state.arrivalFocus = true;
+    if (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) return;
+    focusUnlock();
+  }
+
+  // A remembered code (or this device's code) that no longer opens the list:
+  // its message sits with the code form, unless an account is being typed.
+  function showCodeWay() {
+    const typing = ["ul-user", "ul-pass"].some((id) => document.getElementById(id)?.value);
+    if (!typing && state.unlockWay !== "code") switchWay("code", false);
   }
 
   // Without typing: an account kept on this device, the code remembered here, or
   // the code this device is linked to (Linked devices).
   async function autoUnlock() {
-    const saved = C.storedIptvLogin();
-    if (saved) {
-      const r = await C.premiumLogin(saved.user, saved.pass);
-      if (r.ok) return unlocked({ user: r.user, pass: r.pass, via: "login", remembered: saved.remembered });
-      if (r.reason === "bad_login" || r.reason === "expired") {
-        C.forgetIptvLogin();
-        setUnlockMsg(t(r.reason === "expired" ? "iptvp.expired" : "iptvp.savedGone"));
+    try {
+      const saved = C.storedIptvLogin();
+      if (saved) {
+        const r = await C.premiumLogin(saved.user, saved.pass);
+        if (r.ok) return unlocked({ user: r.user, pass: r.pass, via: "login", remembered: saved.remembered });
+        if (r.reason === "bad_login" || r.reason === "expired") {
+          C.forgetIptvLogin();
+          setUnlockMsg(t(r.reason === "expired" ? "iptvp.expired" : "iptvp.savedGone"));
+        }
       }
+      const stored = C.getStoredCode();
+      const r = await C.premiumUnlock({ code: stored || "", silent: true, remember: Boolean(stored) });
+      if (r.ok) return unlocked({ user: r.user, pass: r.pass, via: r.by_device ? "device" : "code", code: r.code, remembered: true });
+      if (stored) {
+        // the same rule as the watch page: a remembered code that no longer works here is forgotten
+        if (["not_found", "expired", "disabled", "banned", "other_device", "unlinked", "invalid"].includes(r.reason)) C.clearStoredCode();
+        showCodeWay();
+        setUnlockMsg(C.premiumCodeMessage(r, stored, true));
+      } else if (r.by_device && r.reason !== "no_device") {
+        showCodeWay();
+        setUnlockMsg(C.premiumCodeMessage(r, "", true));
+      }
+      return null;
+    } finally {
+      state.autoDone = true;
+      focusArrival();
     }
-    const stored = C.getStoredCode();
-    const r = await C.premiumUnlock({ code: stored || "", silent: true, remember: Boolean(stored) });
-    if (r.ok) return unlocked({ user: r.user, pass: r.pass, via: r.by_device ? "device" : "code", code: r.code, remembered: true });
-    if (stored) {
-      // the same rule as the watch page: a remembered code that no longer works here is forgotten
-      if (["not_found", "expired", "disabled", "banned", "other_device", "unlinked", "invalid"].includes(r.reason)) C.clearStoredCode();
-      setUnlockMsg(C.premiumCodeMessage(r, stored, true));
-    } else if (r.by_device && r.reason !== "no_device") {
-      setUnlockMsg(C.premiumCodeMessage(r, "", true));
-    }
-    return null;
   }
 
   function lockMessage() {
     const left = C.codeLockLeft();
     if (!left) return "";
-    const h = Math.floor(left / 3600000);
-    const m = Math.ceil((left % 3600000) / 60000);
+    const mins = Math.ceil(left / 60000); // whole minutes first: never "23h 60m"
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
     return t("iptvp.lockedOut", { time: h ? `${h}h ${m}m` : `${m}m` });
   }
 
@@ -1453,22 +1607,11 @@
     if (!C.codeLockLeft()) document.getElementById(kind === "login" ? "ul-pass" : "ul-code")?.focus();
   }
 
-  function bindUnlock() {
-    const login = document.getElementById("ul-login");
-    const code = document.getElementById("ul-code-form");
-    login?.addEventListener("submit", (e) => {
-      e.preventDefault();
-      submitUnlock("login");
-    });
-    code?.addEventListener("submit", (e) => {
-      e.preventDefault();
-      submitUnlock("code");
-    });
-  }
-
-  // "Use another account": the list locks again; an account kept here is forgotten.
+  // "Use another account": the list locks again; an account kept here is
+  // forgotten. The gate opens on the way that was used.
   function relock() {
     if (state.unlock?.via === "login") C.forgetIptvLogin();
+    state.unlockWay = !state.unlock || state.unlock.via === "login" ? "login" : "code";
     state.unlock = null;
     state.access = "unlock";
     state.rows.forEach((r) => {
@@ -1476,7 +1619,7 @@
     });
     if (player().isOpen()) player().close();
     render();
-    document.getElementById("ul-user")?.focus();
+    focusUnlock();
   }
 
   // ---------- boot ----------
@@ -1522,6 +1665,11 @@
         relock();
         return;
       }
+      const way = e.target.closest("[data-unlock-way]");
+      if (way) {
+        switchWay(way.dataset.unlockWay);
+        return;
+      }
       const card = e.target.closest(".ch-card");
       if (card) {
         // Ctrl/Cmd/middle click keeps the link: the channel opens in a new tab
@@ -1540,6 +1688,13 @@
       if (e.target.closest("#chl-more")) return renderMore();
       if (e.target.closest("[data-clear]")) return clearFilters();
       return undefined;
+    });
+    // the premium gate's two forms (painted again with the page)
+    root.addEventListener("submit", (e) => {
+      const kind = { "ul-login": "login", "ul-code-form": "code" }[e.target.id];
+      if (!kind) return;
+      e.preventDefault();
+      submitUnlock(kind);
     });
     // capture phase: also catches input/change events that do not bubble (set from scripts)
     root.addEventListener(

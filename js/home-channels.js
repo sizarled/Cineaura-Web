@@ -8,14 +8,18 @@
  * While few channels have been watched, the first channels of the free and
  * premium packages fill the row, in turn.
  *
- * Every card says what it is, and leaves the home page:
- *   Free     "Watch Now": Listchannels.html with the free channels, this one
- *            playing at once (?free=1&channel=<id>). A guest sees the list with
- *            Sign In, and comes back to the channel playing.
- *   Premium  "Premium membership required": Dashboard > IPTV
- *            (dashboard.html#iptv), where a member finds the premium packages
- *            given to them. A guest gets the dashboard's sign-in step there and
- *            comes back to the IPTV section.
+ * Every card says what it is, and opens that channel on Listchannels.html:
+ *   Free     "Watch Now": the free channels, this one playing at once
+ *            (?free=1&channel=<id>). A guest sees the list with Sign In, and
+ *            comes back to the channel playing.
+ *   Premium  "Premium membership required": the premium channels
+ *            (?premium=1&channel=<id>). The list asks for the username and
+ *            password of a premium IPTV account, or ("Use an access code") a
+ *            watch code, shows the channel waiting meanwhile, and plays it the
+ *            moment the list is unlocked; at once on a device that is not asked
+ *            (an account kept there, a remembered code, a linked device).
+ * <id> is the channel's id in public.listchannels: the list finds the channel
+ * of its playlist with that name (js/listchannels.js).
  *
  * The last answer is kept in this browser (cineaura_topch), so a repeat visit
  * paints the row at once. A database that has not run sql/channel_views.sql
@@ -29,7 +33,6 @@
   const SAVED_KEY = "cineaura_topch";
   const SAVED_TTL = 7 * 86400000; // an older answer is not painted while the new one loads
   const MAX = 20; // cards in the row
-  const IPTV_TAB = "./dashboard.html#iptv"; // Dashboard > IPTV: the premium packages of a member
 
   const svg = (body, size = 14, fill = false) =>
     `<svg width="${size}" height="${size}" viewBox="0 0 24 24" ${fill ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"'} aria-hidden="true">${body}</svg>`;
@@ -151,12 +154,12 @@
     }
   }
 
-  // Where a card leads. A free channel plays on the list of the free channels
-  // (Listchannels.html opens it at once; a guest is asked to sign in there and
-  // comes back to it). A premium channel leads to Dashboard > IPTV, for
-  // everyone (the dashboard asks a guest to sign in, then shows that section).
+  // Where a card leads: the channel on the list of its kind. A free channel
+  // plays at once (a guest is asked to sign in there and comes back to it); a
+  // premium one once the premium list is unlocked with an IPTV account or a
+  // watch code (guests too), at once where the list is not asked.
   function hrefOf(item) {
-    return item.free ? `./Listchannels.html?free=1&channel=${encodeURIComponent(item.id)}` : IPTV_TAB;
+    return `./Listchannels.html?${item.free ? "free" : "premium"}=1&channel=${encodeURIComponent(item.id)}`;
   }
 
   // ---------- painting ----------

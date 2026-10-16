@@ -295,7 +295,7 @@
   }
 
   // Phones: the menu is a strip that scrolls sideways. Keep the open section in
-  // sight (dashboard.html#iptv from the home page, or a tap further along).
+  // sight (dashboard.html#iptv from the premium channel list, or a tap further along).
   function showActiveTab() {
     const strip = $("#dash-root .side-nav");
     const on = strip?.querySelector("button.active");
@@ -2865,7 +2865,7 @@
     const route = routeOf(location.hash);
     if (route) applyRoute(route);
     // signing in brings the member back here, to the section in the address
-    // (dashboard.html#iptv: the premium cards of the home page)
+    // (dashboard.html#iptv: "Find them in Dashboard → IPTV" of the premium channel list)
     const signin = `<a class="btn btn-lg btn-primary" href="./login.html?next=${encodeURIComponent(
       route ? `dashboard.html#${route.key}` : "dashboard.html"
     )}">${t("common.signin")}</a>`;
