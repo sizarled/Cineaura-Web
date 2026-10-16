@@ -46,6 +46,7 @@
     post: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>'),
     recommend: svg('<path d="M12 3l2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 16.9l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>'),
     prize: svg('<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 6h3v1a3 3 0 0 1-3 3M7 6H4v1a3 3 0 0 0 3 3"/>'),
+    iptv: svg('<rect x="2.5" y="6" width="19" height="13" rx="2.5"/><path d="M8 2.5l4 3.5 4-3.5"/>'),
     info: svg(BELL),
   };
 
@@ -307,6 +308,7 @@
     if (kind === "vote_up") return "up";
     if (kind === "vote_down") return "down";
     if (kind.startsWith("prize")) return "prize";
+    if (kind.startsWith("iptv")) return "iptv"; // a premium IPTV account given or renewed
     return ICON[kind] ? kind : "info";
   }
 

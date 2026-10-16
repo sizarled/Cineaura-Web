@@ -35,6 +35,13 @@
  * "Report channel" writes public.channel_reports (sql/channels.sql), which the
  * staff read in Panel > Reports > Channels. What the player saw (which routes
  * failed and why) travels with the report as error_detail.
+ *
+ * Programme guide (EPG): when the IPTV account of the package has a guide
+ * (CineAura.iptvEpgUrl), a live channel shows what is on now and next under its
+ * name, and the guide button (G) lists the next hours. server.py reads the
+ * XMLTV guide (/api/epg); a channel is found by its tvg-id (epg_id) or its name.
+ * CineAuraChannels.epgSource / epgLookup also give the channel cards their
+ * "now" line.
  */
 (() => {
   const C = window.CineAura;
@@ -79,6 +86,7 @@
     fsExit: svg('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>'),
     pip: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="11" width="7" height="6" rx="1" fill="currentColor" stroke="none"/>'),
     stats: svg('<path d="M3 12h4l3-8 4 16 3-8h4"/>'),
+    guide: svg('<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M7.5 13h9M7.5 16.5h5.5"/>'),
     gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/>', 20),
     down: svg('<path d="M12 4v13M6 12l6 6 6-6"/>', 14, ' stroke-width="2.6"'),
     flag: svg('<path d="M4 22V4"/><path d="M4 4h12l-2 4 2 4H4"/>', 16),
@@ -656,19 +664,41 @@
     },
   };
 
+  // ---------- the IPTV accounts of a package that this viewer may use ----------
+  const accountCache = new Map(); // package name -> Promise<rows>
+
+  function packageAccounts(pack) {
+    if (!accountCache.has(pack)) {
+      const session = getSession();
+      const staff = staffViewer(); // Panel > Reports > Test: every account of the package
+      const who = staff ? "" : session?.member_id ? `&${C.iptvVisibleFilter(session)}` : "&type=ilike.free";
+      const load = supabaseRequest(`/rest/v1/iptv?name=eq.${restValue(pack)}${who}&select=*`)
+        .then((res) => (res.ok && Array.isArray(res.data) ? res.data.filter((a) => staff || C.iptvVisibleTo(a, session)) : []))
+        .catch(() => []);
+      accountCache.set(pack, load);
+      load.then((rows) => {
+        if (!rows.length) accountCache.delete(pack); // look again next time
+      });
+    }
+    return accountCache.get(pack);
+  }
+
+  function staffViewer() {
+    try {
+      const panel = JSON.parse(sessionStorage.getItem("cineaura_panel") || localStorage.getItem("cineaura_panel") || "null");
+      return Boolean(panel && panel.token);
+    } catch {
+      return false;
+    }
+  }
+
   // ---------- stream links of channels imported before sql/channels.sql ----------
   const streamMaps = new Map(); // package name -> Promise<Map(channel name -> url)>
 
   async function loadStreamMap(pack, accounts) {
-    let rows = accounts;
-    if (!Array.isArray(rows)) {
-      const me = getSession()?.member_id || "";
-      const who = me ? `&or=(type.eq.free,owner_id.eq.${restValue(me)})` : "&type=eq.free";
-      const res = await supabaseRequest(`/rest/v1/iptv?name=eq.${restValue(pack)}${who}&select=*`);
-      rows = res.ok && Array.isArray(res.data) ? res.data : [];
-    }
-    const me = getSession()?.member_id || "";
-    const rank = (a) => (a.owner_id && a.owner_id === me ? 0 : String(a.type || "").toLowerCase() === "free" ? 1 : 2);
+    const rows = Array.isArray(accounts) ? accounts : await packageAccounts(pack);
+    const session = getSession();
+    const rank = (a) => (C.iptvOwnedBy(a, session) ? 0 : C.iptvIsFree(a) ? 1 : 2);
     const map = new Map();
     for (const account of [...rows].sort((a, b) => rank(a) - rank(b))) {
       const url = C.iptvM3uUrl(account);
@@ -703,8 +733,93 @@
     return found;
   }
 
+  // ---------- programme guide (EPG) ----------
+  // The guide of a package belongs to its IPTV account (CineAura.iptvEpgUrl: the
+  // link saved in Panel > IPTV, the url-tvg of the playlist, or the xmltv.php of
+  // an Xtream server). server.py reads the guide (/api/epg) and answers for a few
+  // channels at a time: by tvg-id (listchannels.epg_id), or else by name.
+  const EPG_HOURS = 12; // how far ahead the guide panel looks
+  const EPG_TTL = 5 * 60000;
+  const epgSources = new Map(); // package -> Promise<guide url | "">
+  const epgAnswers = new Map(); // guide + hours + channel -> { at, data }
+
+  function epgSource(pack, accounts) {
+    if (!pack) return Promise.resolve("");
+    if (!epgSources.has(pack)) {
+      const rows = Array.isArray(accounts) && accounts.length ? Promise.resolve(accounts) : packageAccounts(pack);
+      const load = rows
+        .then((list) => {
+          const session = getSession();
+          const rank = (a) => (C.iptvOwnedBy(a, session) ? 0 : C.iptvIsFree(a) ? 1 : 2);
+          return [...list].sort((a, b) => rank(a) - rank(b)).map((a) => C.iptvEpgUrl(a)).find(Boolean) || "";
+        })
+        .catch(() => "");
+      epgSources.set(pack, load);
+      load.then((url) => {
+        if (!url) setTimeout(() => epgSources.delete(pack), 60000); // a guide may be added meanwhile
+      });
+    }
+    return epgSources.get(pack);
+  }
+
+  const epgKey = (ch) => `${String(ch.epg_id || "").trim()}\n${String(ch.channel_name || "").trim()}`;
+
+  // -> Map(channel key -> { id, name, programmes: [[start, stop, title, desc], …] } | null),
+  //    or "loading" while the server is still reading the guide
+  async function epgLookup(url, channels, hours = EPG_HOURS) {
+    const out = new Map();
+    const want = [];
+    const at = Date.now();
+    for (const ch of channels) {
+      const key = epgKey(ch);
+      const hit = epgAnswers.get(`${url}\n${hours}\n${key}`);
+      const ended = hit?.data?.programmes?.[0] && hit.data.programmes[0][1] * 1000 <= at;
+      if (hit && at - hit.at < EPG_TTL && !ended) out.set(key, hit.data);
+      else if (!want.includes(key)) want.push(key);
+    }
+    for (let i = 0; i < want.length; i += 60) {
+      const part = want.slice(i, i + 60);
+      const q = new URLSearchParams({ url, hours: String(hours), lang: C.getLang ? C.getLang() : "" });
+      part.forEach((k) => q.append("c", k));
+      const res = await fetch(`/api/epg?${q}`, { cache: "no-store" });
+      if (res.status === 202) return "loading";
+      if (!res.ok) throw new Error(`epg ${res.status}`);
+      const body = await res.json();
+      part.forEach((k, j) => {
+        const data = (body.channels && body.channels[j]) || null;
+        epgAnswers.set(`${url}\n${hours}\n${k}`, { at: Date.now(), data });
+        out.set(k, data);
+      });
+    }
+    if (epgAnswers.size > 4000) [...epgAnswers.keys()].slice(0, 1500).forEach((k) => epgAnswers.delete(k));
+    return out;
+  }
+
+  // what is on now and next, from the programmes of one channel
+  function epgNow(data, at = Date.now()) {
+    const list = (data?.programmes || []).filter((p) => p[1] * 1000 > at);
+    const cur = list[0] && list[0][0] * 1000 <= at ? list[0] : null;
+    return { cur, next: cur ? list[1] || null : list[0] || null, list };
+  }
+
+  function clockText(sec, withDay = false) {
+    const d = new Date(sec * 1000);
+    const opts = { hour: "2-digit", minute: "2-digit", numberingSystem: "latn" };
+    const day = withDay && d.toDateString() !== new Date().toDateString();
+    try {
+      return new Intl.DateTimeFormat(C.getLocale ? C.getLocale() : undefined, day ? { ...opts, weekday: "short" } : opts).format(d);
+    } catch {
+      return d.toTimeString().slice(0, 5);
+    }
+  }
+
+  const epgShare = (p, at = Date.now()) => clamp((at / 1000 - p[0]) / Math.max(1, p[1] - p[0]), 0, 1);
+
   // ---------- dialog state ----------
   const S = {
+    epg: null, // { ch, url, data, loading, failed } of the channel on screen
+    epgRun: 0,
+    guideOpen: false,
     root: null,
     card: null,
     stage: null,
@@ -1165,6 +1280,11 @@
     }
     if (S.ticks % 2 === 0) glow();
     if (isVod()) paintTime();
+    if (S.ticks % 120 === 0 && S.epg && S.epg.data) {
+      const { cur, list } = epgNow(S.epg.data);
+      if ((!cur || list.length < 3) && Date.now() - (S.epg.at || 0) > 60000) loadGuide(S.epg.ch, true);
+      paintEpg();
+    }
   }
 
   // ---------- UI ----------
@@ -1263,6 +1383,7 @@
     checkReported(ch);
     mediaSession(ch);
     if (zapped) osd(ch);
+    if (!S.epg || S.epg.ch !== ch) loadGuide(ch);
   }
 
   // The channels around the current one: a strip under the picture (a list on phones).
@@ -1323,6 +1444,126 @@
       btn.classList.toggle("is-done", done);
       btn.innerHTML = done ? `${ICON.check}<span>${esc(t("chan.reported"))}</span>` : `${ICON.flag}<span>${esc(t("chan.report"))}</span>`;
     });
+  }
+
+  // ---------- the programme guide of the current channel ----------
+  async function loadGuide(ch, keep = false) {
+    const run = ++S.epgRun;
+    if (!keep) {
+      S.epg = null;
+      paintEpg();
+    }
+    if (!ch || rowType(ch) !== "live") return;
+    const url = await epgSource(String(ch.package_name || ""), S.opts.accounts);
+    if (run !== S.epgRun || !S.root || !url) return;
+    if (!keep) {
+      S.epg = { ch, url, data: null, loading: true, failed: false };
+      paintEpg();
+    }
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      let ans = null;
+      try {
+        ans = await epgLookup(url, [ch]);
+      } catch {
+        ans = null;
+      }
+      if (run !== S.epgRun || !S.root) return;
+      if (ans === "loading") {
+        // the server is still reading the guide (a big one takes a few seconds)
+        await new Promise((r) => setTimeout(r, 3000));
+        if (run !== S.epgRun || !S.root) return;
+        continue;
+      }
+      if (keep && !ans) return; // a refresh that failed: keep what is shown
+      S.epg = { ch, url, data: ans ? ans.get(epgKey(ch)) || null : null, loading: false, failed: !ans, at: Date.now() };
+      paintEpg();
+      return;
+    }
+    if (!keep) {
+      S.epg = { ch, url, data: null, loading: false, failed: true };
+      paintEpg();
+    }
+  }
+
+  function paintEpg() {
+    if (!S.root) return;
+    const line = $(".chp-epg");
+    const btn = $("[data-chp-guide]");
+    const e = S.epg;
+    btn.hidden = !e;
+    setLabel(btn, t("chan.epg.title"), "G");
+    btn.setAttribute("aria-expanded", String(Boolean(e) && S.guideOpen));
+    const { cur, next } = epgNow(e && e.data);
+    // times in <bdi>, never dir=ltr: in Arabic a range reads from the right (start on the right)
+    const nextHtml = next ? `<span class="chp-epg-next"><span class="chp-epg-tag">${esc(t("chan.epg.next"))}</span> <bdi>${esc(clockText(next[0], true))}</bdi> <bdi>${esc(next[2] || "")}</bdi></span>` : "";
+    if (cur) {
+      line.innerHTML = `
+        <span class="chp-epg-now"><span class="chp-epg-tag on">${esc(t("chan.epg.now"))}</span> <bdi class="chp-epg-title">${esc(cur[2] || "")}</bdi> <span class="chp-epg-time"><bdi>${esc(clockText(cur[0]))}</bdi>–<bdi>${esc(clockText(cur[1]))}</bdi></span></span>
+        <i class="chp-epg-bar" aria-hidden="true"><b style="width:${Math.round(epgShare(cur) * 100)}%"></b></i>${nextHtml}`;
+      line.title = `${cur[2] || ""}${cur[3] ? `\n${cur[3]}` : ""}`;
+    } else line.innerHTML = nextHtml;
+    line.hidden = !line.innerHTML;
+    paintGuidePanel();
+  }
+
+  // On a phone held upright the guide takes the place of the channel list under
+  // the picture (the picture is too small to hold it); elsewhere it opens on the picture.
+  function guideHost() {
+    const foot = $(".chp-foot");
+    return phone() && foot && getComputedStyle(foot).display !== "none" ? foot : S.stage;
+  }
+
+  function paintGuidePanel() {
+    const box = $(".chp-guide");
+    if (!box) return;
+    const e = S.epg;
+    const show = Boolean(e) && S.guideOpen;
+    box.hidden = !show;
+    S.card.classList.toggle("guide-open", show);
+    if (!show) {
+      box.innerHTML = "";
+      return;
+    }
+    const host = guideHost();
+    if (box.parentElement !== host) host.prepend(box);
+    const at = Date.now();
+    const { list } = epgNow(e.data, at);
+    let body;
+    if (e.loading) body = `<p class="chp-gmsg"><span class="chp-ring" aria-hidden="true"><i></i></span>${esc(t("chan.epg.loading"))}</p>`;
+    else if (e.failed) body = `<p class="chp-gmsg">${esc(t("chan.epg.fail"))}</p>`;
+    else if (!list.length) body = `<p class="chp-gmsg">${esc(t("chan.epg.none"))}</p>`;
+    else {
+      body = `<ol class="chp-glist">${list
+        .map((p) => {
+          const on = p[0] * 1000 <= at;
+          return `
+          <li class="${on ? "is-now" : ""}">
+            <span class="chp-gtime"><bdi>${esc(clockText(p[0], true))}</bdi></span>
+            <div class="chp-gtext">
+              <strong>${on ? `<span class="chp-epg-tag on">${esc(t("chan.epg.now"))}</span> ` : ""}<bdi>${esc(p[2] || "—")}</bdi></strong>
+              ${on ? `<i class="chp-epg-bar" aria-hidden="true"><b style="width:${Math.round(epgShare(p, at) * 100)}%"></b></i>` : ""}
+              ${p[3] ? `<p>${esc(p[3])}</p>` : ""}
+            </div>
+          </li>`;
+        })
+        .join("")}</ol>`;
+    }
+    const top = box.scrollTop;
+    box.innerHTML = `
+      <div class="chp-shead"><strong>${esc(t("chan.epg.title"))}</strong><button class="chp-icon chp-sclose" type="button" data-chp-guide aria-label="${esc(t("common.close"))}">${ICON.close}</button></div>
+      <p class="chp-gch"><bdi>${esc(e.ch.channel_name || "")}</bdi></p>
+      ${body}
+      ${list.length ? `<p class="chp-shint">${esc(t("chan.epg.tz"))}</p>` : ""}`;
+    box.scrollTop = top;
+  }
+
+  function toggleGuide(force) {
+    S.guideOpen = typeof force === "boolean" ? force : !S.guideOpen;
+    if (S.guideOpen && S.statsOpen) {
+      S.statsOpen = false; // one panel at a time: they share the picture
+      paintStatsPanel();
+    }
+    paintEpg();
   }
 
   function setLabel(btn, label, key) {
@@ -1658,6 +1899,10 @@
 
   function toggleStats(force) {
     S.statsOpen = typeof force === "boolean" ? force : !S.statsOpen;
+    if (S.statsOpen && S.guideOpen) {
+      S.guideOpen = false;
+      paintEpg();
+    }
     paintStatsPanel();
   }
 
@@ -1673,6 +1918,7 @@
           <div class="chp-titles">
             <h2 class="chp-title" id="chp-title"></h2>
             <p class="chp-sub"></p>
+            <p class="chp-epg" hidden></p>
           </div>
           <span class="chp-live off"></span>
           <button class="chp-x" type="button" data-chp-close aria-label="${label("common.close")}" title="${label("common.close")} (Esc)">${ICON.close}</button>
@@ -1688,6 +1934,7 @@
             <button class="chp-icon chp-stage-x" type="button" data-chp-close aria-label="${label("common.close")}">${ICON.close}</button>
           </div>
           <div class="chp-stats" dir="${isRtl() ? "rtl" : "ltr"}" role="group" aria-label="${label("chan.nfo.title")}" hidden></div>
+          <div class="chp-guide" dir="${isRtl() ? "rtl" : "ltr"}" role="region" aria-label="${label("chan.epg.title")}" hidden></div>
           <div class="chp-osd" aria-hidden="true"></div>
           <div class="chp-flash" aria-hidden="true"></div>
           <div class="chp-buffer" role="status" hidden><span class="chp-ring" aria-hidden="true"><i></i></span><b></b><span class="chp-btext"></span></div>
@@ -1708,6 +1955,7 @@
                 <span class="chp-time" hidden></span>
               </div>
               <div class="chp-group">
+                <button class="chp-icon" type="button" data-chp-guide aria-expanded="false" hidden>${ICON.guide}</button>
                 <button class="chp-icon" type="button" data-chp-stats aria-expanded="false">${ICON.stats}</button>
                 <div class="chp-qwrap">
                   <button class="chp-icon" type="button" data-chp-quality aria-haspopup="menu" aria-expanded="false" hidden>${ICON.gear}<b class="chp-qbadge"></b></button>
@@ -1858,6 +2106,7 @@
     if (hit("[data-chp-fs]")) return toggleFullscreen();
     if (hit("[data-chp-pip]")) return togglePip();
     if (hit("[data-chp-stats]")) return toggleStats();
+    if (hit("[data-chp-guide]")) return toggleGuide();
     if (hit("[data-chp-golive]")) {
       S.engine?.goLive();
       return paintLive();
@@ -1922,6 +2171,9 @@
       case "i":
         toggleStats();
         return true;
+      case "g":
+        if (S.epg) toggleGuide();
+        return true;
       case "p":
         if (!$("[data-chp-pip]").hidden) togglePip();
         return true;
@@ -1963,6 +2215,7 @@
       if (S.report) closeReport();
       else if (closeMenus()) $("[data-chp-quality]")?.focus();
       else if (S.statsOpen) toggleStats(false);
+      else if (S.guideOpen) toggleGuide(false);
       else if (document.fullscreenElement || document.webkitFullscreenElement) return; // the browser leaves full screen
       else close();
       return;
@@ -2002,6 +2255,10 @@
     if (S.root && !document.hidden) glow();
   }
 
+  function onResize() {
+    if (S.root && S.guideOpen) paintGuidePanel();
+  }
+
   function open(list, index = 0, opts = {}) {
     const rows = (Array.isArray(list) ? list : [list]).filter(Boolean);
     if (!rows.length) return;
@@ -2010,6 +2267,8 @@
     S.opts = opts || {};
     S.first = true;
     S.statsOpen = false;
+    S.guideOpen = false;
+    S.epg = null;
     S.lastFocus = document.activeElement;
     S.root = build();
     S.card = S.root.querySelector(".chp-card");
@@ -2021,6 +2280,7 @@
     document.addEventListener("fullscreenchange", onFullscreen);
     document.addEventListener("webkitfullscreenchange", onFullscreen);
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("resize", onResize);
     S.card.focus({ preventScroll: true });
     S.ticks = 0;
     S.ticker = setInterval(tick, TICK);
@@ -2031,6 +2291,8 @@
   function close(silent = false) {
     if (!S.root) return;
     S.run += 1;
+    S.epgRun += 1;
+    S.epg = null;
     if (document.fullscreenElement && S.root.contains(document.fullscreenElement) && document.exitFullscreen) document.exitFullscreen().catch(() => {});
     teardown();
     closeReport();
@@ -2046,6 +2308,7 @@
     document.removeEventListener("fullscreenchange", onFullscreen);
     document.removeEventListener("webkitfullscreenchange", onFullscreen);
     document.removeEventListener("visibilitychange", onVisibility);
+    window.removeEventListener("resize", onResize);
     if (S.lastFocus && typeof S.lastFocus.focus === "function" && document.contains(S.lastFocus)) {
       S.lastFocus.focus({ preventScroll: true });
     }
@@ -2212,5 +2475,10 @@
     warm,
     hintRoute,
     REASONS,
+    epgSource,
+    epgLookup,
+    epgKey,
+    epgNow,
+    clockText,
   };
 })();

@@ -1832,6 +1832,13 @@ body.is-logged-in .guest-only {
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 
+/* Signed-in members keep these settings in Dashboard > Settings: the header
+   button (and its burger-menu entry) is for guests only. */
+body.is-logged-in .settings-btn,
+body.is-logged-in .mobile-menu [data-open-settings] {
+  display: none !important;
+}
+
 .settings-btn:hover,
 .settings-btn[aria-expanded="true"] {
   border-color: var(--cyan);

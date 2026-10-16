@@ -1212,6 +1212,8 @@
     vote_down: "prof.notifVote",
     post: "prof.newPost",
     message: "prof.newMsg",
+    iptv: "notif.iptv",
+    iptv_renew: "notif.iptvRenew",
   };
 
   function noteTitle(n) {
@@ -1584,6 +1586,24 @@
     document.dispatchEvent(new CustomEvent("cineaura:geo", { detail: { country: currentCountry() } }));
   }
 
+  // The country of the content (watch providers, prices…): "" follows the IP.
+  // Guests pick it in Site Settings, members in Dashboard > Settings.
+  function setSiteCountry(cc) {
+    try {
+      if (/^[A-Z]{2}$/.test(cc || "")) localStorage.setItem(COUNTRY_KEY, cc);
+      else localStorage.removeItem(COUNTRY_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+    document.dispatchEvent(new CustomEvent("cineaura:geo", { detail: { country: currentCountry() } }));
+  }
+
+  function countryChoices() {
+    return COUNTRY_CODES.map((cc) => [cc, countryName(cc)])
+      .filter(([, n]) => n)
+      .sort((a, b) => a[1].localeCompare(b[1], getLocale()));
+  }
+
   function countryName(cc) {
     try {
       const n = new Intl.DisplayNames([getLocale()], { type: "region" }).of(cc);
@@ -1652,9 +1672,7 @@
 
     function fillCountries() {
       const cur = currentCountry();
-      const rows = COUNTRY_CODES.map((cc) => [cc, countryName(cc)])
-        .filter(([, n]) => n)
-        .sort((a, b) => a[1].localeCompare(b[1], getLocale()));
+      const rows = countryChoices();
       countrySel.innerHTML =
         `<option value="">${escapeHtml(t("set.countryNone"))}</option>` +
         rows.map(([cc, n]) => `<option value="${cc}">${escapeHtml(n)}</option>`).join("");
@@ -2043,6 +2061,154 @@
     return `${server}/get.php?username=${encodeURIComponent(a.xstream_user)}&password=${encodeURIComponent(a.xstream_password || "")}&type=m3u_plus&output=ts`;
   }
 
+  // Programme guide (XMLTV) of an account: the one saved with it (Panel > IPTV,
+  // or the url-tvg of an imported playlist); an Xtream account without one uses
+  // the provider's own xmltv.php.
+  function firstHttpUrl(value) {
+    return String(value || "").split(/[\s,]+/).map((u) => u.trim()).find((u) => /^https?:\/\/\S+$/i.test(u)) || "";
+  }
+
+  function iptvEpgUrl(a) {
+    const own = firstHttpUrl(a?.epg_url);
+    if (own) return own;
+    if (!a || iptvKind(a) !== "xtream") return "";
+    const server = iptvServer(a);
+    if (!server || !a.xstream_user) return "";
+    return `${server}/xmltv.php?username=${encodeURIComponent(a.xstream_user)}&password=${encodeURIComponent(a.xstream_password || "")}`;
+  }
+
+  // The guide announced by a playlist itself: #EXTM3U url-tvg="…" (or x-tvg-url / tvg-url).
+  function m3uHeaderEpg(text) {
+    const head = String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/, 8).find((l) => /^#EXTM3U/i.test(l.trim()));
+    if (!head) return "";
+    const attrs = {};
+    head.replace(/([\w-]+)=("([^"]*)"|'([^']*)'|(\S+))/g, (_, k, _v, a, b, c) => {
+      attrs[k.toLowerCase()] = a ?? b ?? c ?? "";
+      return "";
+    });
+    return firstHttpUrl(attrs["url-tvg"] || attrs["x-tvg-url"] || attrs["tvg-url"] || "");
+  }
+
+  // ---- premium accounts: who owns one, and until when ----
+  const iptvIsFree = (a) => String(a?.type || "").trim().toLowerCase() === "free";
+  const ownerKey = (v) => String(v || "").trim().replace(/^@/, "").toLowerCase();
+
+  // owner_id holds the member id (Panel > IPTV always writes it). A row typed by
+  // hand may hold the username, in another case, or with an @: all of them count.
+  function iptvOwnedBy(a, member) {
+    const key = ownerKey(a?.owner_id);
+    if (!key || !member) return false;
+    return key === ownerKey(member.member_id) || (Boolean(member.username) && key === ownerKey(member.username));
+  }
+
+  // PostgREST filter for "free packages + the premium ones of this member". It
+  // may return a little more than it should (ilike treats _ as a wildcard), so
+  // the rows are checked again with iptvOwnedBy.
+  function iptvVisibleFilter(member) {
+    const parts = ["type.ilike.free"];
+    const id = String(member?.member_id || "").trim();
+    const user = String(member?.username || "").trim().replace(/^@/, "");
+    if (id) parts.push(`owner_id.ilike.${restValue(id)}`);
+    if (/^[A-Za-z0-9._]{2,40}$/.test(user)) parts.push(`owner_id.ilike.${restValue(user)}`, `owner_id.ilike.${restValue("@" + user)}`);
+    return `or=(${parts.join(",")})`;
+  }
+
+  function iptvVisibleTo(a, member) {
+    return iptvIsFree(a) || iptvOwnedBy(a, member);
+  }
+
+  // "1 month", "3 months", "1 year", "7 days", "2 weeks" — and the same in the
+  // other site languages ("3 أشهر", "شهرين", "6 mois", "1 Jahr", …). Returns the
+  // end date, or null for "unlimited" and for anything it cannot read.
+  const DURATION_UNITS = [
+    ["day", /^(d|days?|jours?|j|tage?n?|tag|d[ií]as?|dag(en)?|giorn[oi]|يوم|ايام|أيام|يوما|يومًا)$/i],
+    ["week", /^(w|wks?|weeks?|semaines?|wochen?|semanas?|weken|settiman[ae]|اسبوع|أسبوع|اسابيع|أسابيع|اسبوعا|أسبوعًا)$/i],
+    ["month", /^(mo|mos|months?|mois|monate?n?|mes(es)?|maand(en)?|mes[ei]|شهر|اشهر|أشهر|شهور|شهرا|شهرًا)$/i],
+    ["year", /^(y|yrs?|years?|ans?|ann[ée]es?|jahre?n?|años?|anos?|jaar|jaren|ann[oi]|سنة|سنه|سنوات|سنين|عام|اعوام|أعوام|عاما|عامًا)$/i],
+  ];
+  const DUAL = [
+    ["day", /^(يومين|يومان)$/],
+    ["week", /^(اسبوعين|أسبوعين|اسبوعان|أسبوعان)$/],
+    ["month", /^(شهرين|شهران)$/],
+    ["year", /^(سنتين|سنتان|عامين|عامان)$/],
+  ];
+  const UNLIMITED = /^(unlimited|lifetime|forever|∞|غير\s*محدود[ةه]?|مدى\s*الحياة|illimit[ée]e?|unbegrenzt|ilimitad[oa]|onbeperkt|illimitat[oa]|sin\s*l[ií]mite|senza\s*limiti)$/i;
+
+  // -> { n, unit } | { unlimited: true } | null (unreadable)
+  function parseDuration(duration) {
+    const text = String(duration || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x660))
+      .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+    if (!text) return null;
+    if (UNLIMITED.test(text)) return { unlimited: true };
+    let n = 1;
+    let unitWord = text;
+    const m = /^(\d{1,4})\s*([^\d\s].*)?$/.exec(text);
+    if (m) {
+      if (!m[2]) return null; // a bare number: days? months? shown as typed
+      n = Number(m[1]);
+      unitWord = m[2].trim();
+    } else {
+      const dual = DUAL.find(([, re]) => re.test(text));
+      if (dual) {
+        n = 2;
+        unitWord = dual[0];
+      }
+    }
+    unitWord = unitWord.replace(/^(a|an|one|un|une|ein|eine|uno|una|een|واحد|واحدة)\s+/, "").replace(/\s+(واحد|واحدة)$/, "");
+    const unit = ["day", "week", "month", "year"].includes(unitWord) ? unitWord : DURATION_UNITS.find(([, re]) => re.test(unitWord))?.[0];
+    return unit && n ? { n, unit } : null;
+  }
+
+  function iptvExpiry(from, duration) {
+    const start = new Date(from);
+    const d = parseDuration(duration);
+    if (Number.isNaN(start.getTime()) || !d || d.unlimited) return null;
+    const end = new Date(start.getTime());
+    if (d.unit === "day" || d.unit === "week") {
+      end.setDate(end.getDate() + d.n * (d.unit === "week" ? 7 : 1));
+      return end;
+    }
+    // 31 January + 1 month = 28 (or 29) February, not 3 March
+    const day = end.getDate();
+    end.setDate(1);
+    end.setMonth(end.getMonth() + d.n * (d.unit === "year" ? 12 : 1));
+    end.setDate(Math.min(day, new Date(end.getFullYear(), end.getMonth() + 1, 0).getDate()));
+    return end;
+  }
+
+  // "3 months" in the language of the page ("3 أشهر", "3 mois", …); text it
+  // cannot read is shown as it was typed.
+  function durationLabel(duration) {
+    const d = parseDuration(duration);
+    if (!d) return String(duration || "").trim() || t("common.unlimited");
+    if (d.unlimited) return t("common.unlimited");
+    try {
+      return new Intl.NumberFormat(getLocale(), { style: "unit", unit: d.unit, unitDisplay: "long", numberingSystem: "latn" }).format(d.n);
+    } catch {
+      return `${d.n} ${d.unit}${d.n === 1 ? "" : "s"}`;
+    }
+  }
+
+  // { start, exp, left, share, open }: exp null = no end date known; open = none
+  // by design ("unlimited", or no duration at all). expires_at wins; older rows
+  // count their duration from when they were given (or created).
+  function iptvTiming(a, now = Date.now()) {
+    const start = Date.parse(a?.assigned_at || a?.created_at || "");
+    let exp = Date.parse(a?.expires_at || "");
+    if (!Number.isFinite(exp) && Number.isFinite(start)) exp = iptvExpiry(start, a?.duration)?.getTime() ?? NaN;
+    if (!Number.isFinite(exp)) {
+      const d = parseDuration(a?.duration);
+      const open = !String(a?.duration || "").trim() || Boolean(d?.unlimited) || Boolean(d && !Number.isFinite(start));
+      return { start: Number.isFinite(start) ? start : null, exp: null, left: Infinity, share: 1, open };
+    }
+    const total = Number.isFinite(start) && exp > start ? exp - start : 0;
+    const left = exp - now;
+    return { start: Number.isFinite(start) ? start : null, exp, left, share: left <= 0 ? 0 : total ? Math.min(1, left / total) : 1, open: false };
+  }
+
   function fileSlug(name) {
     return String(name || "iptv").trim().replace(/[^\w\u0600-\u06FF.-]+/g, "_").replace(/^_+|_+$/g, "") || "iptv";
   }
@@ -2071,7 +2237,8 @@
 
   // M3U playlist -> public.listchannels rows (Panel > IPTV import, channel player).
   // "Animation;Kids;Religious" puts the channel once inside each of those groups.
-  // stream_url is the URL line under #EXTINF: the link the channel player opens.
+  // stream_url is the URL line under #EXTINF: the link the channel player opens;
+  // epg_id is its tvg-id, the key of the channel in the programme guide.
   function parseM3U(text) {
     const out = [];
     let cur = null;
@@ -2082,7 +2249,7 @@
         const attrs = {};
         const stripped = line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ""; });
         const name = stripped.slice(stripped.indexOf(",") + 1).trim() || attrs["tvg-name"] || "";
-        cur = { name, group: (attrs["group-title"] || "").trim() || "General", logo: attrs["tvg-logo"] || "" };
+        cur = { name, group: (attrs["group-title"] || "").trim() || "General", logo: attrs["tvg-logo"] || "", epg: (attrs["tvg-id"] || "").trim() };
       } else if (/^#EXTGRP:/i.test(line) && cur) {
         cur.group = line.slice(8).trim() || cur.group;
       } else if (!line.startsWith("#")) {
@@ -2098,6 +2265,7 @@
               logo_url: /^https?:\/\//i.test(cur.logo) ? cur.logo : "",
               channel_type: type,
               stream_url: stream,
+              epg_id: cur.epg.slice(0, 200),
             });
           });
         }
@@ -2107,11 +2275,21 @@
     return out;
   }
 
+  // The guide of the account goes into the playlist header, where IPTV apps
+  // (TiviMate, IPTV Smarters, VLC, …) look for it.
+  function withEpgHeader(text, epg) {
+    if (!epg || m3uHeaderEpg(text)) return text;
+    const body = String(text).replace(/^\uFEFF/, "");
+    const tag = `url-tvg="${epg.replace(/"/g, "%22")}" x-tvg-url="${epg.replace(/"/g, "%22")}"`;
+    if (/^#EXTM3U/i.test(body)) return body.replace(/^#EXTM3U[^\r\n]*/i, (line) => `${line.trimEnd()} ${tag}`);
+    return `#EXTM3U ${tag}\n${body}`;
+  }
+
   async function iptvDownloadM3u(a) {
     const url = iptvM3uUrl(a);
     if (!url) return toast(t("dash.iptvDlFail"));
     try {
-      const text = await fetchPlaylistText(url);
+      const text = withEpgHeader(await fetchPlaylistText(url), iptvEpgUrl(a));
       if (!/#EXTM3U|#EXTINF/i.test(text)) throw new Error("not an m3u");
       saveTextFile(`${fileSlug(a.name)}.m3u`, text, "audio/x-mpegurl");
       toast(t("dash.iptvDlOk"));
@@ -2131,7 +2309,7 @@
       `Username: ${a.xstream_user || ""}`,
       `Password: ${a.xstream_password || ""}`,
       `M3U: ${iptvM3uUrl(a)}`,
-      `EPG: ${server}/xmltv.php?${q}`,
+      `EPG: ${iptvEpgUrl(a) || `${server}/xmltv.php?${q}`}`,
       `Duration: ${a.duration || "unlimited"}`,
       "",
     ].join("\r\n");
@@ -2152,8 +2330,9 @@
         </div>
       </div>`;
     };
-    if (iptvKind(a) === "m3u") return row("M3U", a.m3u_url);
-    return row(t("panel.iptv.server"), iptvServer(a)) + row(t("panel.iptv.user"), a.xstream_user) + row(t("panel.iptv.pass"), a.xstream_password, true) + row("M3U", iptvM3uUrl(a));
+    const epg = row(t("iptv.epg"), iptvEpgUrl(a));
+    if (iptvKind(a) === "m3u") return row("M3U", a.m3u_url) + epg;
+    return row(t("panel.iptv.server"), iptvServer(a)) + row(t("panel.iptv.user"), a.xstream_user) + row(t("panel.iptv.pass"), a.xstream_password, true) + row("M3U", iptvM3uUrl(a)) + epg;
   }
 
   function iptvActionsHtml(a) {
@@ -2914,9 +3093,24 @@
     manualCountry,
     currentCountry,
     countryName,
+    countryChoices,
+    setSiteCountry,
+    membership,
+    adFreeFlag,
+    setAdFreeFlag,
     fetchProviderOffers,
     iptvKind,
     iptvM3uUrl,
+    iptvEpgUrl,
+    m3uHeaderEpg,
+    iptvIsFree,
+    iptvOwnedBy,
+    iptvVisibleFilter,
+    iptvVisibleTo,
+    iptvExpiry,
+    iptvTiming,
+    parseDuration,
+    durationLabel,
     fetchPlaylistText,
     parseM3U,
     iptvDetailRows,

@@ -845,3 +845,76 @@ html:not([data-theme="day"]) .ov-st.disabled { color: #f7b928; }
   .ov-points .stat span { font-size: 12.5px; }
   .ov-code { font-size: 20px; }
 }
+
+/* ---------- Premium IPTV accounts (Panel > IPTV gives them to a member) ----------
+   Dashboard > Overview shows them in a block of their own (hidden when the
+   member has none) and Dashboard > IPTV lists them above the free packages,
+   with how long they stay valid. The same badges serve Panel > IPTV. */
+.ov-iptv-card { border-top-color: var(--cyan); }
+.ov-iptv-card.is-expired { border-top-color: var(--line); }
+
+.ov-iptv-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.ov-iptv-ic {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(135deg, #01b4e4, #6c4cf0);
+}
+
+.ov-iptv-card .ipx-badges { margin-top: -4px; }
+
+.ov-iptv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.ov-iptv-actions .btn { margin-top: 0; }
+
+.ipx-group {
+  margin: 26px 0 0;
+  font-size: 18px;
+}
+
+.ipx-group + .ipx-grid { margin-top: 12px; }
+
+.ipx-card.ipx-premium { border-color: rgba(1, 180, 228, 0.35); box-shadow: inset 0 3px 0 var(--cyan); }
+.ipx-card.ipx-premium.is-ended { border-color: var(--line); box-shadow: none; }
+.ipx-card .ov-left { padding: 10px 12px; border-radius: 8px; background: var(--surface); }
+
+.ipx-badge.epg { background: rgba(108, 76, 240, 0.16); color: #6c4cf0; }
+html:not([data-theme="day"]) .ipx-badge.epg { color: #a996ff; }
+.ipx-badge.new { background: var(--cyan); color: #fff; }
+.ipx-badge.off { background: rgba(250, 56, 62, 0.14); color: var(--red); }
+
+/* Panel > IPTV */
+.ipx-valid { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
+.ipx-hint { margin: 0; font-size: 12.5px; }
+.ipx-flabel { font-size: 13px; font-weight: 600; }
+.ipx-who:empty { display: none; }
+.ipx-who { display: flex; align-items: center; gap: 6px; color: var(--green); font-weight: 600; }
+.ipx-who svg { flex: 0 0 auto; }
+.ipx-who.bad { color: var(--red); }
+
+/* Dashboard > Settings > Appearance: country of the content + watch without ads */
+.set-site {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.set-site select { max-width: 420px; }
+.set-site .sset-link { justify-self: start; }

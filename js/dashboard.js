@@ -414,6 +414,17 @@
       </div>
       <p class="muted">${t("dash.expiresOn", { date: escapeHtml(String(m.membership_expires_at||"—").slice(0,10)) })}</p>
 
+      <section class="ov-block" id="ov-iptv" aria-labelledby="ov-iptv-h" hidden>
+        <div class="ov-head">
+          <div>
+            <h2 id="ov-iptv-h">${t("dash.iptv.mine")}</h2>
+            <p class="muted">${t("dash.ov.iptvLead")}</p>
+          </div>
+          <button class="btn btn-sm btn-ghost" type="button" data-section="iptv">${t("dash.ov.iptvAll")}</button>
+        </div>
+        <div class="ov-codes" id="ov-iptv-list"></div>
+      </section>
+
       <section class="ov-block" aria-labelledby="ov-points-h">
         <div class="ov-head">
           <h2 id="ov-points-h">${t("points.title")}</h2>
@@ -443,9 +454,10 @@
       </section>`;
 
     const memberId = m.member_id;
-    const [mp, codesRes] = await Promise.all([
+    const [mp, codesRes, iptvRows] = await Promise.all([
       C.memberPoints(memberId, state.profile || {}).catch(() => null),
       supabaseRequest(`/rest/v1/codes?owner=eq.${restValue(memberId)}&select=*&order=created_at.desc`).catch(() => ({ ok: false })),
+      loadMyIptv().catch(() => null),
     ]);
     if (!main.isConnected || state.section !== "overview") return; // the member moved on
 
@@ -467,13 +479,20 @@
     if (lead && codes) {
       lead.textContent = t("dash.ov.codesLead", { n: codes.length, max: plan.maxCodes, plan: tr(m.membership_type || "Free") });
     }
+    // premium IPTV accounts given in Panel > IPTV (the block stays hidden without one)
+    const iptvBox = main.querySelector("#ov-iptv");
     const paint = () => {
       const box = main.querySelector("#ov-codes");
       if (box) box.innerHTML = overviewCodesHtml(codes);
+      const premium = myPremium(iptvRows);
+      if (iptvBox) {
+        iptvBox.hidden = !premium.length;
+        iptvBox.querySelector("#ov-iptv-list").innerHTML = overviewIptvHtml(premium);
+      }
     };
     paint();
     // the time left counts down while the overview stays open
-    if (codes && codes.length) {
+    if ((codes && codes.length) || myPremium(iptvRows).length) {
       overviewTimer = setInterval(() => {
         if (!main.isConnected) {
           clearInterval(overviewTimer);
@@ -482,6 +501,27 @@
         paint();
       }, 60000);
     }
+  }
+
+  const TV_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="13" rx="2.5"/><path d="M8 2.5l4 3.5 4-3.5"/></svg>';
+
+  function overviewIptvHtml(list) {
+    return list.map(({ p, tm }) => {
+      const st = tm.left <= 0 ? "expired" : "active";
+      return `
+        <article class="ov-code-card ov-iptv-card is-${st}">
+          <div class="ov-code-top">
+            <span class="ov-iptv-name"><span class="ov-iptv-ic">${TV_ICON}</span><bdi>${escapeHtml(p.name)}</bdi></span>
+            <span class="ov-st ${st}">${t(`dash.ov.st.${st}`)}</span>
+          </div>
+          <div class="ipx-badges">${iptvBadgesHtml(p, tm, false)}</div>
+          ${iptvValidityHtml(tm, p)}
+          <div class="ov-iptv-actions">
+            <a class="btn btn-sm btn-primary" href="./Listchannels.html?package=${encodeURIComponent(p.name)}">${t("dash.ov.watch")}</a>
+            <button class="btn btn-sm btn-ghost" type="button" data-section="iptv">${t("dash.ov.iptvDetails")}</button>
+          </div>
+        </article>`;
+    }).join("");
   }
 
   // Codes saved before the age tiers existed carry no limit.
@@ -1447,37 +1487,94 @@
     };
   }
 
+  // Free packages (every member) + the premium accounts given to this member in
+  // Panel > IPTV. owner_id normally holds the member id; a row typed by hand may
+  // hold the username instead: both count (CineAura.iptvOwnedBy).
+  async function loadMyIptv() {
+    const m = state.member;
+    const res = await supabaseRequest(`/rest/v1/iptv?${C.iptvVisibleFilter(m)}&select=*&order=id.desc`);
+    if (!res.ok || !Array.isArray(res.data)) return null;
+    return res.data.filter((p) => C.iptvVisibleTo(p, m));
+  }
+
+  const IPTV_NEW_MS = 7 * 86400000; // "New" badge on a premium account given this week
+
+  // premium accounts of the member: still running first (soonest to end on top), ended ones last
+  function myPremium(rows) {
+    const now = Date.now();
+    return (rows || [])
+      .filter((p) => !C.iptvIsFree(p) && C.iptvOwnedBy(p, state.member))
+      .map((p) => ({ p, tm: C.iptvTiming(p, now) }))
+      .sort((a, b) => (a.tm.left <= 0) - (b.tm.left <= 0) || a.tm.left - b.tm.left || (b.tm.start || 0) - (a.tm.start || 0));
+  }
+
+  // "12 days left" + bar + "Valid until …", the same look as the codes of the overview
+  function iptvValidityHtml(tm, p) {
+    let left;
+    let until = "";
+    if (tm.exp === null) left = tm.open ? t("dash.ov.noExpiry") : `${t("common.duration")}: ${C.durationLabel(p?.duration)}`; // a duration typed in a way that cannot be counted
+    else if (tm.left <= 0) {
+      left = t("dash.ov.expired");
+      until = t("dash.ov.expiredOn", { date: whenText(tm.exp) });
+    } else {
+      left = t("dash.ov.left", { time: timeLeftText(tm.left) });
+      until = t("dash.ov.expiresOn", { date: whenText(tm.exp) });
+    }
+    const since = tm.start ? t("dash.iptv.since", { date: whenText(tm.start) }) : "";
+    const tone = tm.left <= 0 ? "off" : tm.share < 0.15 ? "low" : tm.share < 0.5 ? "mid" : "";
+    return `
+      <div class="ov-left">
+        <span class="ov-label">${t("dash.ov.validity")}</span>
+        <b>${escapeHtml(left)}</b>
+        ${tm.exp !== null || tm.open ? `<div class="ov-bar ${tone}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(tm.share * 100)}" aria-label="${escapeHtml(t("dash.ov.validity"))}"><i style="width:${Math.max(tm.share > 0 ? 3 : 0, Math.round(tm.share * 100))}%"></i></div>` : ""}
+        ${until || since ? `<small>${escapeHtml([until, since].filter(Boolean).join(" · "))}</small>` : ""}
+      </div>`;
+  }
+
+  function iptvBadgesHtml(p, tm, showEnded = true) {
+    const free = C.iptvIsFree(p);
+    const ended = showEnded && !free && tm && tm.left <= 0;
+    const fresh = !free && tm?.start && tm.left > 0 && Date.now() - tm.start < IPTV_NEW_MS;
+    return `
+      <span class="ipx-badge ${free ? "free" : "paid"}">${free ? t("panel.iptv.free") : t("dash.iptv.premium")}</span>
+      <span class="ipx-badge">${C.iptvKind(p) === "m3u" ? "M3U" : "Xtream"}</span>
+      ${free ? `<span class="ipx-badge">${t("common.duration")}: ${escapeHtml(C.durationLabel(p.duration))}</span>` : ""}
+      ${C.iptvEpgUrl(p) ? `<span class="ipx-badge epg">${t("iptv.epg")}</span>` : ""}
+      ${fresh ? `<span class="ipx-badge new">${t("dash.iptv.new")}</span>` : ""}
+      ${ended ? `<span class="ipx-badge off">${t("dash.ov.st.expired")}</span>` : ""}`;
+  }
+
   async function viewIptv(main) {
-    const me = state.member.member_id;
-    const res = await supabaseRequest(`/rest/v1/iptv?or=(type.eq.free,owner_id.eq.${restValue(me)})&select=*&order=id.desc`);
-    const rows = res.ok && Array.isArray(res.data) ? res.data : [];
-    main.innerHTML = `
-      <p class="eyebrow">${t("dash.liveTv")}</p>
-      <h1>${t("dash.iptvPacks")}</h1>
-      <p class="muted">${t("dash.iptvLead")}</p>
-      <div class="ipx-grid" id="ipx-grid">${
-        rows.length ? rows.map((p) => {
-          const free = String(p.type).toLowerCase() === "free";
-          const kind = C.iptvKind(p) === "m3u" ? "M3U" : "Xtream";
-          return `
-          <article class="ipx-card">
+    const rows = (await loadMyIptv()) || [];
+    const premium = myPremium(rows);
+    const free = rows.filter((p) => C.iptvIsFree(p));
+    const card = (p, tm = null) => `
+          <article class="ipx-card${tm ? " ipx-premium" : ""}${tm && tm.left <= 0 ? " is-ended" : ""}" id="ipx-${escapeHtml(p.id)}">
             <header class="ipx-head">
               <h3>${escapeHtml(p.name)}</h3>
-              <div class="ipx-badges">
-                <span class="ipx-badge ${free ? "free" : "paid"}">${free ? t("panel.iptv.free") : t("panel.iptv.paid")}</span>
-                <span class="ipx-badge">${kind}</span>
-                <span class="ipx-badge">${t("common.duration")}: ${escapeHtml(p.duration || t("common.unlimited"))}</span>
-              </div>
+              <div class="ipx-badges">${iptvBadgesHtml(p, tm)}</div>
             </header>
+            ${tm ? iptvValidityHtml(tm, p) : ""}
             <div class="ipx-rows">${C.iptvDetailRows(p)}</div>
             <footer class="ipx-actions">
               ${C.iptvActionsHtml(p)}
               <a class="btn btn-sm btn-primary" href="./Listchannels.html?package=${encodeURIComponent(p.name)}">${t("common.channels")}</a>
             </footer>
           </article>`;
-        }).join("") : `<p class="empty">${t("dash.noIptv")}</p>`
-      }</div>`;
-    C.bindIptvActions($("#ipx-grid"), (id) => rows.find((x) => String(x.id) === id));
+    main.innerHTML = `
+      <p class="eyebrow">${t("dash.liveTv")}</p>
+      <h1>${t("dash.iptvPacks")}</h1>
+      <p class="muted">${t("dash.iptvLead")}</p>
+      <div id="ipx-wrap">
+        ${premium.length ? `
+        <h2 class="ipx-group">${t("dash.iptv.mine")}</h2>
+        <div class="ipx-grid" id="ipx-premium">${premium.map(({ p, tm }) => card(p, tm)).join("")}</div>
+        <h2 class="ipx-group">${t("dash.iptv.freeTitle")}</h2>` : ""}
+        <div class="ipx-grid" id="ipx-grid">${
+          free.length ? free.map((p) => card(p)).join("") : `<p class="empty">${t(premium.length ? "dash.iptv.noFree" : "dash.noIptv")}</p>`
+        }</div>
+      </div>`;
+    C.bindIptvActions($("#ipx-wrap"), (id) => rows.find((x) => String(x.id) === id));
   }
 
   async function viewViews(main) {
@@ -1994,6 +2091,61 @@
     main.innerHTML = `<p class="eyebrow">${t("dash.visited")}</p><h1>${t("dash.history")}</h1>${block(t("common.movies"), movies, "movie")}${block(t("common.series"), series, "tv")}`;
   }
 
+  // Country of the content and "Watch without ads": for guests these sit in the
+  // Site Settings dialog of the header, which members do not see (css/style.css).
+  function wireSiteSettings(main) {
+    const sel = main.querySelector("#s-site-country");
+    const hint = main.querySelector("#s-geo-hint");
+    const box = main.querySelector("#s-adfree");
+    const boxState = main.querySelector("#s-adfree-state");
+    if (!sel || !box) return;
+    let detecting = false;
+    const syncCountry = () => {
+      sel.innerHTML = `<option value="">${escapeHtml(t("set.countryNone"))}</option>` + C.countryChoices().map(([cc, n]) => `<option value="${cc}">${escapeHtml(n)}</option>`).join("");
+      sel.value = C.currentCountry();
+      hint.textContent = detecting ? t("set.detecting") : C.manualCountry() ? t("set.countryManual") : C.currentCountry() ? t("set.countryAuto") : t("set.countryFail");
+    };
+    syncCountry();
+    sel.onchange = () => {
+      C.setSiteCountry(sel.value);
+      syncCountry();
+    };
+    main.querySelector("#s-redetect").onclick = async () => {
+      if (detecting) return;
+      detecting = true;
+      C.setSiteCountry("");
+      syncCountry();
+      const cc = await C.detectGeo(true).catch(() => "");
+      detecting = false;
+      if (!cc) toast(t("set.countryFail"));
+      C.setSiteCountry("");
+      if (sel.isConnected) syncCountry();
+    };
+    C.membership().then((ms) => {
+      if (!box.isConnected) return;
+      if (ms?.premium) {
+        box.disabled = false;
+        box.checked = C.adFreeFlag();
+        boxState.textContent = "";
+      } else {
+        box.disabled = true;
+        box.checked = false;
+        boxState.innerHTML = `${escapeHtml(t("set.adfreeLocked"))} <a href="./#plans">${escapeHtml(t("set.seePlans"))}</a>`;
+      }
+    });
+    box.onchange = async () => {
+      const on = box.checked;
+      // the plan is checked again: the switch only works for an active premium member
+      if (on && !(await C.membership()).premium) {
+        box.checked = false;
+        return;
+      }
+      C.setAdFreeFlag(on);
+      if (on) window.CineAuraAds?.hide?.();
+      toast(t(on ? "set.adfreeOn" : "set.adfreeOff"));
+    };
+  }
+
   async function viewSettings(main) {
     const m = state.member;
     const p = state.profile || {};
@@ -2036,6 +2188,25 @@
               <option value="it">${t("lang.it")}</option>
             </select>
           </div>
+          <div class="set-site stack">
+            <label class="sset-lbl" for="s-site-country">${t("set.country")}</label>
+            <select id="s-site-country"></select>
+            <p class="sset-hint" id="s-geo-hint" aria-live="polite"></p>
+            <button class="sset-link" id="s-redetect" type="button">${t("set.detect")}</button>
+          </div>
+          <div class="set-site">
+            <div class="sset-switch-line">
+              <div class="sset-switch-text">
+                <span class="sset-lbl" id="s-adfree-lbl">${t("set.adfree")}</span>
+                <p class="sset-hint">${t("set.adfreeP")}</p>
+                <p class="sset-hint sset-state" id="s-adfree-state"></p>
+              </div>
+              <label class="sset-switch">
+                <input type="checkbox" id="s-adfree" role="switch" aria-labelledby="s-adfree-lbl" disabled />
+                <span class="sset-track" aria-hidden="true"></span>
+              </label>
+            </div>
+          </div>
         </div>
         <div class="follow-pane stack" data-dpane="set2">
           <p class="muted">${t("dash.membershipLine", { plan: escapeHtml(tr(m.membership_type||"Free")), left: t("common.daysLeft", { n: left }) })}<a href="./activate.html">${t("common.upgrade")}</a></p>
@@ -2051,6 +2222,7 @@
     $("#s-lang").value = getLang();
     $("#s-theme").onchange = () => saveAppearancePreference("theme", $("#s-theme").value);
     $("#s-lang").onchange = () => saveAppearancePreference("language", $("#s-lang").value);
+    wireSiteSettings(main);
     $("#copy-rec").onclick = async () => {
       if (!m.recovery_code) return toast(t("dash.noRec"));
       await navigator.clipboard.writeText(m.recovery_code);

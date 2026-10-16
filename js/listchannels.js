@@ -17,9 +17,13 @@
  * accounts allow a single connection at a time.
  *
  * Who may play: free packages play for every signed-in member, a premium
- * package for the member it is assigned to (the same rule as Dashboard > IPTV),
- * and the staff always. &channel=<id> opens a channel at once, and the
- * browser's Back button closes the player.
+ * package for the member it is assigned to (the same rule as Dashboard > IPTV:
+ * owner_id holds the member id, or the username on a row typed by hand), and
+ * the staff always. &channel=<id> opens a channel at once, and the browser's
+ * Back button closes the player.
+ *
+ * When the package has a programme guide (EPG), every live channel card that
+ * comes near the screen shows what is on now, with how far it has got.
  */
 (() => {
   const C = window.CineAura;
@@ -134,14 +138,14 @@
   }
 
   async function loadAccess() {
-    const me = getSession()?.member_id || "";
+    const session = getSession();
     if (staffSession()) return "ok";
-    if (!me) return "signin";
+    if (!session?.member_id) return "signin";
     const res = await supabaseRequest(`/rest/v1/iptv?name=eq.${restValue(pack)}&select=id,type,owner_id`);
     const accounts = res.ok && Array.isArray(res.data) ? res.data : [];
     if (!accounts.length) return "ok"; // not registered in Panel > IPTV: nothing to check against
-    const mine = accounts.some((a) => String(a.type || "").toLowerCase() === "free" || (a.owner_id && a.owner_id === me));
-    return mine ? "ok" : "locked";
+    // free, or a premium account given to this member (by member id or username)
+    return accounts.some((a) => C.iptvVisibleTo(a, session)) ? "ok" : "locked";
   }
 
   // ---------- check results (this browser) ----------
@@ -498,11 +502,116 @@
     if (!state.sectioned && !state.group) sub.push(groupLabel(ch._group));
     if (state.type === "all" || !sub.length) sub.push(player().typeLabel(ch));
     return `
-      <a class="ch-card${locked ? " locked" : ""}${i === state.playing ? " is-playing" : ""}" href="${href}" data-ch="${i}" data-name="${escapeHtml(ch._name)}" title="${escapeHtml(ch.channel_name)}" aria-label="${escapeHtml(cardLabel(ch, st, running))}">
+      <a class="ch-card${locked ? " locked" : ""}${i === state.playing ? " is-playing" : ""}" href="${href}" data-ch="${i}"${isLive(ch) ? ' data-live="1"' : ""} data-name="${escapeHtml(ch._name)}" title="${escapeHtml(ch.channel_name)}" aria-label="${escapeHtml(cardLabel(ch, st, running))}">
         <span class="ch-thumb">${player().logoHtml(ch, "ch-logo")}<span class="ch-dot" data-st="${running ? "run" : st.state}" title="${escapeHtml(statusText(st, running))}"></span></span>
-        <span class="ch-info"><strong>${escapeHtml(ch.channel_name)}</strong><small>${escapeHtml(sub.join(" · "))}</small></span>
+        <span class="ch-info"><strong>${escapeHtml(ch.channel_name)}</strong><small>${escapeHtml(sub.join(" · "))}</small>${nowHtml(ch)}</span>
         <span class="ch-play" aria-hidden="true">${locked ? ICON.lock : ICON.play}</span>
       </a>`;
+  }
+
+  // ---------- what is on now: the programme guide (EPG) of the package ----------
+  // Live channel cards that come near the screen ask the guide what is on now,
+  // 60 channels at a time (js/channel-player.js reads it through /api/epg).
+  const onNow = { url: null, pending: new Set(), timer: 0, tries: 0, watch: null, tick: 0 };
+  const isLive = (ch) => !["movie", "series"].includes(String(ch.channel_type || "live").toLowerCase());
+
+  function nowHtml(ch) {
+    const cur = ch._epg ? player().epgNow(ch._epg).cur : null;
+    if (!cur) return "";
+    const share = Math.max(0, Math.min(1, (Date.now() / 1000 - cur[0]) / Math.max(1, cur[1] - cur[0])));
+    const when = `${player().clockText(cur[0])}–${player().clockText(cur[1])}`;
+    return `<span class="ch-now" title="${escapeHtml(`${t("chan.epg.now")}: ${cur[2]} (${when})`)}"><i style="--p:${Math.round(share * 100)}%"></i><bdi>${escapeHtml(cur[2] || "")}</bdi></span>`;
+  }
+
+  function paintNow(i) {
+    const row = state.rows[i];
+    if (!row) return;
+    (state.byKey.get(row._ck) || [i]).forEach((j) => {
+      const info = document.querySelector(`#chl-groups .ch-card[data-ch="${j}"] .ch-info`);
+      if (!info) return;
+      const r = state.rows[j];
+      if (r !== row) r._epg = row._epg;
+      info.querySelector(".ch-now")?.remove();
+      const html = nowHtml(r);
+      if (html) info.insertAdjacentHTML("beforeend", html);
+    });
+  }
+
+  function watchNow() {
+    if (onNow.url === "" || state.access !== "ok" || !("IntersectionObserver" in window) || !player()?.epgLookup) return;
+    if (!onNow.watch) {
+      onNow.watch = new IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting) return;
+          onNow.watch.unobserve(en.target);
+          const i = Number(en.target.dataset.ch);
+          if (Number.isInteger(i) && !state.rows[i]?._epgAt) onNow.pending.add(i);
+        });
+        askNow();
+      }, { rootMargin: "300px 0px" });
+      // every minute: move on to the next programme where one has ended
+      onNow.tick = setInterval(() => {
+        document.querySelectorAll("#chl-groups .ch-card[data-now]").forEach((card) => {
+          const i = Number(card.dataset.ch);
+          const row = state.rows[i];
+          if (!row || !row._epgAt) return;
+          const { cur } = player().epgNow(row._epg);
+          const shown = card.querySelector(".ch-now bdi")?.textContent || "";
+          if ((cur && cur[2] !== shown) || (!cur && shown)) paintNow(i);
+          if (row._epg && (!cur || player().epgNow(row._epg).list.length < 2) && Date.now() - row._epgAt > 60000) {
+            row._epgAt = 0;
+            onNow.pending.add(i);
+          }
+        });
+        askNow();
+      }, 60000);
+    }
+    document.querySelectorAll('#chl-groups .ch-card[data-live="1"]:not([data-now])').forEach((card) => {
+      card.dataset.now = "1";
+      onNow.watch.observe(card);
+    });
+  }
+
+  function askNow(delay = 250) {
+    if (onNow.timer || !onNow.pending.size) return;
+    onNow.timer = setTimeout(fetchNow, delay);
+  }
+
+  async function fetchNow() {
+    onNow.timer = 0;
+    if (onNow.url === null) onNow.url = await player().epgSource(pack).catch(() => "");
+    if (!onNow.url) {
+      onNow.pending.clear();
+      onNow.watch?.disconnect();
+      return;
+    }
+    const ids = [...onNow.pending].slice(0, 60);
+    ids.forEach((i) => onNow.pending.delete(i));
+    const rows = ids.map((i) => state.rows[i]).filter(Boolean);
+    let answer = null;
+    try {
+      answer = await player().epgLookup(onNow.url, rows, 0);
+    } catch {
+      answer = null;
+    }
+    if (answer === "loading") {
+      // the server is still reading the guide: ask again in a moment
+      ids.forEach((i) => onNow.pending.add(i));
+      onNow.tries += 1;
+      if (onNow.tries < 40) askNow(3000);
+      return;
+    }
+    onNow.tries = 0;
+    if (answer) {
+      ids.forEach((i) => {
+        const row = state.rows[i];
+        if (!row) return;
+        row._epg = answer.get(player().epgKey(row)) || null;
+        row._epgAt = Date.now();
+        paintNow(i);
+      });
+    }
+    askNow();
   }
 
   function paintDot(i) {
@@ -569,6 +678,7 @@
     }
     state.shown = end;
     paintMore();
+    watchNow();
   }
 
   function paintMore() {

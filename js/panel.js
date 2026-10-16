@@ -30,6 +30,7 @@
     staffRows: [],
     section: ALL_SECTIONS.includes(requestedSection) ? requestedSection : "accounts",
     members: [],
+    extraMembers: [], // looked up one by one (Panel > IPTV): not among the newest 400
     profiles: {},
     sanctions: {},
   };
@@ -1397,46 +1398,240 @@
     return r2.text();
   }
 
-  async function importChannels(pkg, source, replace) {
+  // Columns added by sql/iptv.sql and sql/channels.sql. A database that has not
+  // run them yet keeps working: the write goes again without the column, and the
+  // panel says which file to run.
+  const OPTIONAL_COLS = { iptv: ["epg_url", "assigned_at", "expires_at"], listchannels: ["stream_url", "epg_id"] };
+  const missingCols = new Set();
+
+  function missingColumn(res) {
+    const raw = JSON.stringify(res?.data || {});
+    if (!/PGRST204|42703|schema cache|does not exist/i.test(raw)) return "";
+    const m = /'([a-z_]+)' column/i.exec(raw) || /column "?(?:[a-z_]+\.)?([a-z_]+)"? (?:of relation \S+ )?does not exist/i.exec(raw);
+    return m ? m[1] : "";
+  }
+
+  async function writeTolerant(path, method, body, optional) {
+    const many = Array.isArray(body);
+    const payload = many ? body.map((r) => ({ ...r })) : { ...body };
+    const strip = (col) => (many ? payload.forEach((r) => delete r[col]) : delete payload[col]);
+    optional.filter((c) => missingCols.has(c)).forEach(strip);
+    for (let i = 0; i <= optional.length; i += 1) {
+      const res = await supabaseRequest(path, { method, body: JSON.stringify(payload) });
+      if (res.ok) return res;
+      const col = missingColumn(res);
+      if (!col || !optional.includes(col) || missingCols.has(col)) return res;
+      missingCols.add(col);
+      strip(col);
+    }
+    return { ok: false, data: null };
+  }
+
+  // A playlist names its programme guide in its first line (#EXTM3U url-tvg="…"):
+  // keep it with the account when the account has none yet.
+  async function saveHeaderEpg(account, text) {
+    const epg = window.CineAura.m3uHeaderEpg(text);
+    if (!epg || !account?.id || String(account.epg_url || "").trim() || missingCols.has("epg_url")) return "";
+    const r = await writeTolerant(`/rest/v1/iptv?id=eq.${encodeURIComponent(account.id)}`, "PATCH", { epg_url: epg }, OPTIONAL_COLS.iptv);
+    if (!r.ok || missingCols.has("epg_url")) return "";
+    account.epg_url = epg;
+    return epg;
+  }
+
+  async function importChannels(pkg, source, replace, account = null) {
     let text;
     try { text = await readM3uText(source); } catch { toast(t("panel.iptv.impFail")); return 0; }
-    let rows = window.CineAura.parseM3U(text).slice(0, 20000).map((r) => ({ package_name: pkg, ...r }));
+    const rows = window.CineAura.parseM3U(text).slice(0, 20000).map((r) => ({ package_name: pkg, ...r }));
     if (!rows.length) { toast(t("panel.iptv.impEmpty")); return 0; }
     if (replace) await supabaseRequest(`/rest/v1/listchannels?package_name=eq.${encodeURIComponent(pkg)}`, { method: "DELETE" });
-    let noStreamColumn = false;
     for (let i = 0; i < rows.length; i += 500) {
-      let r = await supabaseRequest("/rest/v1/listchannels", { method: "POST", body: JSON.stringify(rows.slice(i, i + 500)) });
-      // A database without sql/channels.sql has no stream_url column: keep the
-      // import working without the links, and say how to get them.
-      if (!r.ok && !noStreamColumn && /PGRST204|stream_url|schema cache/i.test(JSON.stringify(r.data || {}))) {
-        noStreamColumn = true;
-        rows = rows.map(({ stream_url, ...rest }) => rest);
-        r = await supabaseRequest("/rest/v1/listchannels", { method: "POST", body: JSON.stringify(rows.slice(i, i + 500)) });
-      }
+      // without sql/channels.sql the channels come in without their links / guide ids
+      const r = await writeTolerant("/rest/v1/listchannels", "POST", rows.slice(i, i + 500), OPTIONAL_COLS.listchannels);
       if (!r.ok) { toast(t("panel.actFail")); return i; }
     }
-    toast(t(noStreamColumn ? "panel.iptv.noStreamCol" : "panel.iptv.imported", { n: rows.length }));
+    const epg = await saveHeaderEpg(account, text).catch(() => "");
+    const key = missingCols.has("stream_url") ? "panel.iptv.noStreamCol" : missingCols.has("epg_id") ? "panel.iptv.noEpgCol" : epg ? "panel.iptv.importedEpg" : "panel.iptv.imported";
+    toast(t(key, { n: rows.length }));
     return rows.length;
+  }
+
+  // ---------- IPTV: who gets a premium account ----------
+  // The member directory holds the newest 400 members, loaded when the panel
+  // opened. Anyone else (an older member, or one who signed up since) is looked
+  // up in the database by member ID or username.
+  const ID_RE = /^id\d{1,20}$/i;
+  const memberKey = (v) => String(v || "").trim().replace(/^@/, "").toLowerCase();
+
+  function knownMember(value) {
+    const q = memberKey(value);
+    if (!q) return null;
+    const same = (m) => memberKey(m.member_id) === q || memberKey(m.username) === q;
+    return state.members.find(same) || state.extraMembers.find(same) || null;
+  }
+
+  function rememberMembers(list) {
+    list.forEach((m) => {
+      if (m?.member_id && !knownMember(m.member_id)) state.extraMembers.push(m);
+    });
+  }
+
+  async function resolveMember(value) {
+    const raw = String(value || "").trim().replace(/^@/, "");
+    if (!raw) return null;
+    const local = knownMember(raw);
+    if (local) return local;
+    const q = raw.toLowerCase();
+    const filters = [];
+    if (ID_RE.test(raw)) filters.push(`member_id=eq.${encodeURIComponent(`ID${raw.slice(2)}`)}`);
+    // ilike ignores case; it also treats "_" as a wildcard, so the name is checked exactly below
+    if (/^[A-Za-z0-9._]{2,40}$/.test(raw)) filters.push(`username=ilike.${encodeURIComponent(raw)}`);
+    for (const filter of filters) {
+      const res = await supabaseRequest(`/rest/v1/members?${filter}&select=member_id,full_name,username,status&limit=5`);
+      const hit = (res.ok && Array.isArray(res.data) ? res.data : []).find((m) => memberKey(m.member_id) === q || memberKey(m.username) === q);
+      if (hit) {
+        rememberMembers([hit]);
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  // owners of premium accounts who are not in the directory: fetch their names once
+  // (owner_id is a member id; a row typed by hand may hold a username instead)
+  async function loadOwners(rows) {
+    const owners = [...new Set(rows.map((r) => String(r.owner_id || "").trim().replace(/^@/, "")).filter((v) => v && !knownMember(v)))];
+    const ids = owners.filter((v) => ID_RE.test(v));
+    const names = owners.filter((v) => !ID_RE.test(v) && /^[A-Za-z0-9._]{2,40}$/.test(v));
+    const select = "select=member_id,full_name,username,status";
+    for (let i = 0; i < ids.length; i += 80) {
+      const part = ids.slice(i, i + 80).map((v) => encodeURIComponent(`"${v}"`)).join(",");
+      const res = await supabaseRequest(`/rest/v1/members?member_id=in.(${part})&${select}`);
+      if (res.ok && Array.isArray(res.data)) rememberMembers(res.data);
+    }
+    // usernames in any case (ilike); knownMember compares them exactly afterwards
+    for (let i = 0; i < names.length; i += 30) {
+      const part = names.slice(i, i + 30).map((v) => `username.ilike.${encodeURIComponent(`"${v}"`)}`).join(",");
+      const res = await supabaseRequest(`/rest/v1/members?or=(${part})&${select}&limit=90`);
+      if (res.ok && Array.isArray(res.data)) rememberMembers(res.data);
+    }
+  }
+
+  // The member hears of it in their notifications (bell + Notifications page),
+  // which open Dashboard > IPTV. The title is shown in the member's language
+  // (CineAura.noteTitle); the stored one is for anything else that reads the row.
+  async function notifyIptvOwner(member, account, renewed = false) {
+    if (!member?.member_id) return false;
+    const res = await supabaseRequest("/rest/v1/notifications", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        member_id: member.member_id,
+        kind: renewed ? "iptv_renew" : "iptv",
+        title: renewed ? "Your premium IPTV account was renewed" : "You received a premium IPTV account",
+        body: String(account?.name || "").slice(0, 200),
+        href: "./dashboard.html#iptv",
+        from_id: "",
+        from_username: "",
+      }),
+    }).catch(() => ({ ok: false }));
+    return Boolean(res.ok);
+  }
+
+  const memberLabel = (m) => (m.username ? `@${m.username} · ${m.member_id}` : m.member_id);
+  const DURATIONS = ["1 month", "3 months", "6 months", "12 months", "unlimited"];
+
+  // given now, valid for the account's duration ("1 month", "unlimited", …)
+  function assignment(duration) {
+    const now = new Date();
+    return { assigned_at: now.toISOString(), expires_at: window.CineAura.iptvExpiry(now, duration)?.toISOString() || null };
+  }
+
+  function validityText(r) {
+    const CA = window.CineAura;
+    if (CA.iptvIsFree(r) || !String(r.owner_id || "").trim()) return "";
+    const tm = CA.iptvTiming(r);
+    const parts = [];
+    if (tm.start) parts.push(t("panel.iptv.givenOn", { date: fmtWhen(tm.start) }));
+    if (tm.exp) parts.push(t(tm.left > 0 ? "panel.iptv.until" : "panel.iptv.endedOn", { date: fmtWhen(tm.exp) }));
+    return parts.join(" · ");
+  }
+
+  function bindMemberHint(input, out) {
+    let run = 0;
+    input.addEventListener("input", () => {
+      const mine = ++run;
+      const value = input.value.trim();
+      clearTimeout(out._t);
+      out.textContent = "";
+      out.classList.remove("bad");
+      if (!value) return;
+      out._t = setTimeout(async () => {
+        const m = await resolveMember(value).catch(() => null);
+        if (mine !== run) return;
+        const tick = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+        out.innerHTML = m ? `${tick}<bdi>${escapeHtml(`${m.full_name ? `${m.full_name} · ` : ""}${memberLabel(m)}`)}</bdi>` : escapeHtml(t("panel.iptv.noMember", { q: value }));
+        out.classList.toggle("bad", !m);
+      }, 350);
+    });
+  }
+
+  function editEpg(main, row) {
+    const CA = window.CineAura;
+    const m3u = CA.iptvKind(row) === "m3u";
+    const ov = overlay(`
+      <h2>${t("panel.iptv.epgTitle")}</h2>
+      <p class="muted">${escapeHtml(row.name)}</p>
+      <div class="stack">
+        <input id="ep-url" type="url" dir="ltr" inputmode="url" value="${escapeHtml(row.epg_url || "")}" placeholder="https://…/epg.xml.gz" />
+        <p class="muted ipx-hint">${t(m3u ? "panel.iptv.epgHintM" : "panel.iptv.epgHintX")}</p>
+        <div class="toolbar">
+          <button class="btn btn-sm btn-primary" id="ep-save" type="button">${t("common.save")}</button>
+          ${m3u ? `<button class="btn btn-sm btn-ghost" id="ep-find" type="button">${t("panel.iptv.epgFind")}</button>` : ""}
+          <button class="btn btn-sm btn-ghost" data-close type="button">${t("common.close")}</button>
+        </div>
+      </div>`);
+    const input = ov.querySelector("#ep-url");
+    input.focus();
+    ov.querySelector("#ep-find")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const epg = CA.m3uHeaderEpg(await readM3uText({ url: row.m3u_url }));
+        if (epg) input.value = epg;
+        toast(t(epg ? "panel.iptv.epgFound" : "panel.iptv.epgNone"));
+      } catch {
+        toast(t("panel.iptv.impFail"));
+      }
+      btn.disabled = false;
+    });
+    ov.querySelector("#ep-save").onclick = async () => {
+      const value = input.value.trim();
+      if (value && !/^https?:\/\/\S+$/i.test(value)) return toast(t("panel.iptv.needEpg"));
+      const res = await writeTolerant(`/rest/v1/iptv?id=eq.${encodeURIComponent(row.id)}`, "PATCH", { epg_url: value }, OPTIONAL_COLS.iptv);
+      if (!res.ok) return toast(t("panel.actFail"));
+      if (missingCols.has("epg_url")) return toast(t("panel.iptv.noIptvCols"));
+      ov.remove();
+      toast(t(value ? "panel.iptv.epgSaved" : "panel.iptv.epgCleared"));
+      viewIptv(main);
+    };
   }
 
   async function viewIptv(main) {
     if (!state.members.length) await loadDirectory();
     const res = await supabaseRequest("/rest/v1/iptv?select=*&order=id.desc");
     const rows = res.ok && Array.isArray(res.data) ? res.data : [];
-    const isFree = (r) => String(r.type || "").toLowerCase() === "free";
+    await loadOwners(rows).catch(() => null);
+    const CA = window.CineAura;
+    const isFree = (r) => CA.iptvIsFree(r);
     const kindOf = (r) => r.kind || (r.xstream_user ? "xtream" : "m3u");
     const filter = state.iptvFilter || "all";
     const shown = rows.filter((r) => filter === "all" || (filter === "free") === isFree(r));
     const who = (id) => {
-      const m = state.members.find((x) => x.member_id === id);
-      return m ? `@${m.username} · ${id}` : id || "—";
-    };
-    const findMember = (v) => {
-      const q = String(v || "").trim().replace(/^@/, "").toLowerCase();
-      if (!q) return null;
-      return state.members.find((m) => String(m.member_id).toLowerCase() === q || String(m.username || "").toLowerCase() === q) || null;
+      const m = knownMember(id);
+      return m ? memberLabel(m) : id || "—";
     };
     const tab = (k, label) => `<button type="button" class="follow-tab${filter === k ? " active" : ""}" data-ipf="${k}">${label}</button>`;
+    const colsHint = missingCols.has("epg_url") || missingCols.has("assigned_at") || missingCols.has("expires_at") ? `<p class="muted ipx-hint">${t("panel.iptv.noIptvCols")}</p>` : "";
     main.innerHTML = `
       <p class="eyebrow">${t("panel.nav.iptv")}</p>
       <h1>${t("panel.iptv.title")}</h1>
@@ -1451,12 +1646,19 @@
           <div class="form-row"><input id="ip-user" dir="ltr" autocomplete="off" placeholder="${t("panel.iptv.user")}" /><input id="ip-pass" dir="ltr" autocomplete="off" placeholder="${t("panel.iptv.pass")}" /></div>
         </div>
         <div id="ip-m3" class="stack" style="display:none"><input id="ip-url" dir="ltr" placeholder="https://.../playlist.m3u" /></div>
+        <div class="stack ip-epg">
+          <label class="ipx-flabel" for="ip-epg">${t("iptv.epgLong")}</label>
+          <input id="ip-epg" type="url" dir="ltr" inputmode="url" placeholder="https://…/epg.xml.gz" />
+          <p class="muted ipx-hint" id="ip-epg-hint">${t("panel.iptv.epgHintX")}</p>
+        </div>
         <div class="form-row">
           <select id="ip-access"><option value="free">${t("panel.iptv.free")}</option><option value="premium">${t("panel.iptv.paid")}</option></select>
-          <input id="ip-dur" placeholder="${t("panel.iptv.duration")}" />
+          <input id="ip-dur" list="ip-durs" dir="auto" placeholder="${t("panel.iptv.duration")}" />
+          <datalist id="ip-durs">${DURATIONS.map((d) => `<option value="${d}">${escapeHtml(CA.durationLabel(d))}</option>`).join("")}</datalist>
         </div>
-        <div id="ip-own" style="display:none">
-          <input id="ip-member" list="ip-members" placeholder="${t("panel.iptv.memberPh")}" />
+        <div id="ip-own" class="stack" style="display:none">
+          <input id="ip-member" list="ip-members" dir="auto" autocomplete="off" placeholder="${t("panel.iptv.memberPh")}" />
+          <p class="muted ipx-hint ipx-who" id="ip-member-who" aria-live="polite"></p>
           <datalist id="ip-members">${state.members.map((m) => `<option value="${escapeHtml(m.member_id)}">@${escapeHtml(m.username || "")}</option>`).join("")}</datalist>
         </div>
         <div class="stack" style="border-top:1px solid var(--line);padding-top:12px">
@@ -1472,9 +1674,10 @@
         <button class="btn btn-sm btn-primary" id="ip-add" type="button">${t("panel.iptv.add")}</button>
       </div>
       <div class="tabs follow-tabs">${tab("all", t("panel.iptv.all"))}${tab("free", t("panel.iptv.free"))}${tab("paid", t("panel.iptv.paid"))}</div>
+      ${colsHint}
       <div class="ipx-grid" id="ip-list">${shown.map((r) => {
         const free = isFree(r);
-        const CA = window.CineAura;
+        const valid = validityText(r);
         return `
         <article class="ipx-card">
           <header class="ipx-head">
@@ -1482,17 +1685,20 @@
             <div class="ipx-badges">
               <span class="ipx-badge ${free ? "free" : "paid"}">${free ? t("panel.iptv.free") : t("panel.iptv.paid")}</span>
               <span class="ipx-badge">${CA.iptvKind(r) === "m3u" ? "M3U" : "Xtream"}</span>
-              <span class="ipx-badge">${t("common.duration")}: ${escapeHtml(r.duration || t("common.unlimited"))}</span>
+              <span class="ipx-badge">${t("common.duration")}: ${escapeHtml(CA.durationLabel(r.duration))}</span>
+              ${CA.iptvEpgUrl(r) ? `<span class="ipx-badge epg">${t("iptv.epg")}</span>` : ""}
               ${free ? "" : `<span class="ipx-badge">${t("panel.iptv.member")}: ${escapeHtml(who(r.owner_id))}</span>`}
             </div>
+            ${valid ? `<p class="ipx-valid">${escapeHtml(valid)}</p>` : ""}
           </header>
           <div class="ipx-rows">${CA.iptvDetailRows(r)}</div>
           <footer class="ipx-actions">
             ${CA.iptvActionsHtml(r)}
             <button class="btn btn-sm btn-ghost" data-imp="${r.id}" type="button">${t("panel.iptv.importBtn")}</button>
+            <button class="btn btn-sm btn-ghost" data-epg="${r.id}" type="button">${t("panel.iptv.epgBtn")}</button>
             <button class="btn btn-sm btn-danger" data-del="${r.id}" type="button">${t("common.remove")}</button>
           </footer>
-          ${free ? "" : `<div class="ipx-assign"><input data-asg-in="${r.id}" list="ip-members" placeholder="${t("panel.iptv.memberPh")}" /><button class="btn btn-sm btn-primary" data-asg="${r.id}" type="button">${t("panel.iptv.assign")}</button></div>`}
+          ${free ? "" : `<div class="ipx-assign"><input data-asg-in="${r.id}" list="ip-members" dir="auto" autocomplete="off" placeholder="${t("panel.iptv.memberPh")}" /><button class="btn btn-sm btn-primary" data-asg="${r.id}" type="button">${t("panel.iptv.assign")}</button></div>`}
         </article>`;
       }).join("") || `<p class="empty">${t("common.none")}</p>`}</div>`;
     window.CineAura.bindIptvActions($("#ip-list"), (id) => rows.find((x) => String(x.id) === id));
@@ -1500,6 +1706,7 @@
       const m3 = $("#ip-kind").value === "m3u";
       $("#ip-xt").style.display = m3 ? "none" : "";
       $("#ip-m3").style.display = m3 ? "" : "none";
+      $("#ip-epg-hint").textContent = t(m3 ? "panel.iptv.epgHintM" : "panel.iptv.epgHintX");
       $("#ip-own").style.display = $("#ip-access").value === "premium" ? "" : "none";
     };
     $("#ip-kind").onchange = sync;
@@ -1509,6 +1716,7 @@
       $("#ip-imp-url").style.display = v === "link" ? "" : "none";
       $("#ip-imp-file").style.display = v === "file" ? "" : "none";
     };
+    bindMemberHint($("#ip-member"), $("#ip-member-who"));
     $("#ip-add").onclick = async () => {
       const name = $("#ip-name").value.trim();
       const kind = $("#ip-kind").value;
@@ -1524,29 +1732,48 @@
         body.xstream_password = $("#ip-pass").value.trim();
         if (!/^https?:\/\//i.test(body.xstream_server) || !body.xstream_user || !body.xstream_password) return toast(t("panel.iptv.needXtream"));
       }
-      if (access === "premium") {
-        const m = findMember($("#ip-member").value);
-        if (!m) return toast(t("panel.iptv.needMember"));
-        body.owner_id = m.member_id;
+      body.epg_url = $("#ip-epg").value.trim();
+      if (body.epg_url && !/^https?:\/\/\S+$/i.test(body.epg_url)) return toast(t("panel.iptv.needEpg"));
+      const add = $("#ip-add");
+      add.disabled = true;
+      try {
+        let owner = null;
+        if (access === "premium") {
+          const typed = $("#ip-member").value.trim();
+          if (!typed) return toast(t("panel.iptv.needMember"));
+          owner = await resolveMember(typed);
+          if (!owner) return toast(t("panel.iptv.noMember", { q: typed }));
+          Object.assign(body, { owner_id: owner.member_id }, assignment(body.duration));
+        }
+        const ins = await writeTolerant("/rest/v1/iptv", "POST", body, OPTIONAL_COLS.iptv);
+        if (!ins.ok) return toast(t("panel.actFail"));
+        const saved = (Array.isArray(ins.data) ? ins.data[0] : ins.data) || null;
+        const notified = owner ? await notifyIptvOwner(owner, body) : false;
+        toast(owner ? t(notified ? "panel.iptv.addedFor" : "panel.iptv.addedNoNote", { who: memberLabel(owner) }) : t("panel.iptv.added"));
+        const mode = $("#ip-imp").value;
+        if (mode !== "none") {
+          let source = null;
+          if (mode === "file") source = { file: $("#ip-imp-file").files?.[0] };
+          else source = { url: $("#ip-imp-url").value.trim() || (kind === "m3u" ? body.m3u_url : "") };
+          if (source.file || source.url) await importChannels(name, source, true, saved);
+          else toast(t("panel.iptv.impFail"));
+        }
+        viewIptv(main);
+      } finally {
+        add.disabled = false;
       }
-      const ins = await supabaseRequest("/rest/v1/iptv", { method: "POST", body: JSON.stringify(body) });
-      if (!ins.ok) return toast(t("panel.actFail"));
-      toast(t("panel.iptv.added"));
-      const mode = $("#ip-imp").value;
-      if (mode !== "none") {
-        let source = null;
-        if (mode === "file") source = { file: $("#ip-imp-file").files?.[0] };
-        else source = { url: $("#ip-imp-url").value.trim() || (kind === "m3u" ? body.m3u_url : "") };
-        if (source.file || source.url) await importChannels(name, source, true);
-        else toast(t("panel.iptv.impFail"));
-      }
-      viewIptv(main);
     };
     main.onclick = async (e) => {
       const f = e.target.closest("[data-ipf]");
       const asg = e.target.closest("[data-asg]");
       const del = e.target.closest("[data-del]");
       if (f) { state.iptvFilter = f.dataset.ipf; viewIptv(main); return; }
+      const epgBtn = e.target.closest("[data-epg]");
+      if (epgBtn) {
+        const row = rows.find((x) => String(x.id) === epgBtn.dataset.epg);
+        if (row) editEpg(main, row);
+        return;
+      }
       const imp = e.target.closest("[data-imp]");
       if (imp) {
         const row = rows.find((x) => String(x.id) === imp.dataset.imp);
@@ -1569,19 +1796,37 @@
           if (!file && !url) return toast(t("panel.iptv.impFail"));
           const go = ov.querySelector("#im-go");
           go.disabled = true;
-          const n = await importChannels(row.name, file ? { file } : { url }, ov.querySelector("#im-rep").checked);
+          const hadEpg = Boolean(String(row.epg_url || "").trim());
+          const n = await importChannels(row.name, file ? { file } : { url }, ov.querySelector("#im-rep").checked, row);
           go.disabled = false;
-          if (n) ov.remove();
+          if (n) {
+            ov.remove();
+            if (!hadEpg && row.epg_url) viewIptv(main); // the playlist named its guide: show it on the card
+          }
         };
         return;
       }
       if (asg) {
-        const m = findMember(main.querySelector(`[data-asg-in="${asg.dataset.asg}"]`)?.value);
-        if (!m) return toast(t("panel.iptv.needMember"));
-        const r = await supabaseRequest(`/rest/v1/iptv?id=eq.${asg.dataset.asg}`, { method: "PATCH", body: JSON.stringify({ owner_id: m.member_id }) });
-        if (!r.ok) return toast(t("panel.actFail"));
-        toast(t("panel.iptv.assigned"));
-        viewIptv(main);
+        const row = rows.find((x) => String(x.id) === asg.dataset.asg);
+        const typed = String(main.querySelector(`[data-asg-in="${asg.dataset.asg}"]`)?.value || "").trim();
+        if (!row) return;
+        if (!typed) return toast(t("panel.iptv.needMember"));
+        asg.disabled = true;
+        try {
+          const m = await resolveMember(typed);
+          if (!m) return toast(t("panel.iptv.noMember", { q: typed }));
+          // giving it to its owner again starts a new period: a renewal
+          const renewed = CA.iptvOwnedBy(row, m);
+          const r = await writeTolerant(`/rest/v1/iptv?id=eq.${encodeURIComponent(row.id)}`, "PATCH", { owner_id: m.member_id, ...assignment(row.duration) }, OPTIONAL_COLS.iptv);
+          if (!r.ok) return toast(t("panel.actFail"));
+          const notified = await notifyIptvOwner(m, row, renewed);
+          const key = renewed ? (notified ? "panel.iptv.renewedFor" : "panel.iptv.renewedNoNote") : notified ? "panel.iptv.assignedFor" : "panel.iptv.assignedNoNote";
+          toast(t(key, { who: memberLabel(m) }));
+          viewIptv(main);
+        } finally {
+          asg.disabled = false;
+        }
+        return;
       }
       if (del) {
         await supabaseRequest(`/rest/v1/iptv?id=eq.${del.dataset.del}`, { method: "DELETE" });
