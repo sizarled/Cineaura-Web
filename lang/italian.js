@@ -2201,7 +2201,7 @@
  "Not linked": "Non collegato",
  "Linked {date}": "Collegato il {date}",
  "Remembered here: not asked again": "Memorizzato qui: non viene più richiesto",
- "Not remembered: asked for every title rated 70+": "Non memorizzato: richiesto per ogni titolo con 70+",
+ "Not remembered: asked for every title above 50% or rated 13+": "Non memorizzato: richiesto per ogni titolo sopra il 50% o classificato 13+",
  "Use on this device": "Usa su questo dispositivo",
  "Remember on this device": "Ricorda su questo dispositivo",
  "Unlink": "Scollega",

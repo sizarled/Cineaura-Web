@@ -2201,7 +2201,7 @@
  "Not linked": "Sin vincular",
  "Linked {date}": "Vinculado el {date}",
  "Remembered here: not asked again": "Guardado aquí: no se vuelve a pedir",
- "Not remembered: asked for every title rated 70+": "No guardado: se pide en cada título con 70+",
+ "Not remembered: asked for every title above 50% or rated 13+": "No guardado: se pide en cada título con más del 50 % o para mayores de 13 años",
  "Use on this device": "Usar en este dispositivo",
  "Remember on this device": "Recordar en este dispositivo",
  "Unlink": "Desvincular",

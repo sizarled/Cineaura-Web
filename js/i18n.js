@@ -2491,7 +2491,7 @@
     "dash.code.notLinked": "Not linked",
     "dash.code.linkedOn": "Linked {date}",
     "dash.code.remembered": "Remembered here: not asked again",
-    "dash.code.notRemembered": "Not remembered: asked for every title rated 70+",
+    "dash.code.notRemembered": "Not remembered: asked for every title above 50% or rated 13+",
     "dash.code.useHere": "Use on this device",
     "dash.code.rememberHere": "Remember on this device",
     "dash.code.unlink": "Unlink",

@@ -2201,7 +2201,7 @@
  "Not linked": "Not linked",
  "Linked {date}": "Linked {date}",
  "Remembered here: not asked again": "Remembered here: not asked again",
- "Not remembered: asked for every title rated 70+": "Not remembered: asked for every title rated 70+",
+ "Not remembered: asked for every title above 50% or rated 13+": "Not remembered: asked for every title above 50% or rated 13+",
  "Use on this device": "Use on this device",
  "Remember on this device": "Remember on this device",
  "Unlink": "Unlink",
