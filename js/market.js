@@ -9,8 +9,9 @@
  *   Market.html?q=…&type=…        a search: products | stores | categories (&sort=new|old&country=&kind=)
  *   Market.html?Categories=<id>    the products of a category, with a search box inside it
  *   Market.html?Store=<id>         a store
- *   Market.html?Product=<id>       a product (…&@username: the share link of a member, who earns 25%
- *                                  of the price of a sale made through it)
+ *   Market.html?Product=<id>       a product (…&@username: the share link of a member, who earns the
+ *                                  commission its seller chose, up to 25% of the price of a sale
+ *                                  made through it)
  *   Market.html#sales/requests …   the side menu of the member: points (+ add points), notifications,
  *                                  your sales (products, sale requests, sold, shipped, delivered,
  *                                  returned), your purchases (buy later, purchase requests, purchased,
@@ -560,6 +561,13 @@
     </div>`;
   }
 
+  // "Share", with the product's share commission when its seller pays one
+  function shareLabel(p, v) {
+    const pct = Number(p.commission) || 0;
+    if (!pct) return t("mkt.share");
+    return v.own ? `${t("mkt.share")} · ${t("mkt.commissionN", { pct })}` : t("mkt.shareEarnPct", { pct });
+  }
+
   function productHtml(d) {
     const p = d.product;
     const s = d.store;
@@ -613,7 +621,7 @@
           </div>
           <p class="muted mkt-pnote">${esc(request ? t("mkt.requestNote") : t("mkt.instantNote"))} ${esc(s.returns ? t("mkt.returnsDays", { n: s.return_days }) : t("mkt.s.returnsNo"))}</p>
           <div class="mkt-pacts">
-            <button class="btn btn-sm btn-ghost" type="button" data-share>${ICON.share}<span>${esc(t("mkt.share"))}</span></button>
+            <button class="btn btn-sm btn-ghost" type="button" data-share>${ICON.share}<span>${esc(shareLabel(p, v))}</span></button>
             ${v.own ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-ask>${ICON.chat}<span>${esc(t("mkt.ask"))}</span></button>`}
           </div>
           <a class="mkt-pstore" href="${esc(M.storeHref(s.id))}" data-nav>
@@ -717,7 +725,7 @@
       C.toast(t(r.data.saved ? "mkt.laterAdded" : "mkt.laterRemoved"));
       refreshMe();
     });
-    box.querySelector("[data-share]")?.addEventListener("click", () => M.openShare({ product: p }));
+    box.querySelector("[data-share]")?.addEventListener("click", () => M.openShare({ product: p, own: Boolean(v.own) }));
     box.querySelector("[data-ask]")?.addEventListener("click", () => {
       if (!signedIn()) return needSignin();
       M.openRequest({ store: s, product: p, kind: "question" });
@@ -819,6 +827,7 @@
           <div class="mkt-order-meta">
             <b dir="ltr">${esc(M.pt(p.price))}</b> · ${esc(t("mkt.leftN", { n: M.fmt(p.stock) }))} · ${esc(t(Number(p.sales) === 1 ? "mkt.salesOne" : "mkt.salesN", { n: M.fmt(p.sales) }))}
             · <span class="pro">+${esc(M.fmt(p.pros))}</span> / <span class="con">−${esc(M.fmt(p.cons))}</span>
+            · <span class="mkt-comm-${p.commission_on ? "on" : "off"}">${esc(p.commission_on ? t("mkt.commissionN", { pct: p.commission_pct }) : t("mkt.noCommission"))}</span>
             ${Number(p.open_orders) ? ` · <b>${esc(t("mkt.openOrders", { n: M.fmt(p.open_orders) }))}</b>` : ""}
           </div>
           <div class="mkt-order-meta">${esc((p.categories || []).join(" · "))}</div>
@@ -894,7 +903,12 @@
     if (o.status === "requested") notes.push(t(side === "sales" ? "mkt.o.requestSeller" : "mkt.o.requestBuyer"));
     if (o.status === "sold") notes.push(t(side === "sales" ? (o.kind === "digital" ? "mkt.o.soldDigital" : "mkt.o.soldSeller") : "mkt.o.soldBuyer"));
     if (["cancelled", "declined", "returned"].includes(o.status)) notes.push(t("mkt.o.refunded", { pts: M.pt(o.total) }));
-    if (o.via_link && side === "sales") notes.push(t("mkt.o.viaLink"));
+    if (o.via_link && side === "sales") {
+      // an order of the first version of the market (no percentage kept): CineAura paid the 25%
+      if (o.commission_pct == null) notes.push(t("mkt.o.viaLink"));
+      else if (Number(o.commission) > 0) notes.push(t("mkt.o.commission", { pct: o.commission_pct, pts: M.pt(o.commission), net: M.pt(o.seller_gets) }));
+      else notes.push(t("mkt.o.viaLinkFree"));
+    }
     return `
       <article class="mkt-order" data-order="${esc(o.id)}">
         <a class="mkt-order-img" href="${esc(M.productHref(o.product_id))}" data-nav>${o.image ? `<img src="${esc(o.image)}" alt="" loading="lazy" />` : ICON.bag}</a>

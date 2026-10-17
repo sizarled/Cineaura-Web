@@ -77,7 +77,7 @@
     "member", "blocked", "name", "description", "links", "logo", "cover", "scope", "country", "city", "sale_mode",
     "return_days", "title", "kind", "price", "shipping_cost", "stock", "categories", "images", "video", "limit",
     "not_found", "own", "closed", "qty", "address", "points", "state", "note", "window", "empty", "text", "body",
-    "product", "orders",
+    "product", "orders", "commission",
   ];
   M.errText = (data) => {
     const r = String(data?.reason || "");
@@ -404,7 +404,8 @@
   };
 
   // ---------------------------------------------------------------- share
-  M.openShare = ({ product }) => {
+  // own: the seller's own product (the seller pays the commission, never earns it)
+  M.openShare = ({ product, own = false }) => {
     const me = M.username();
     const link = M.absolute(M.productHref(product.id, me));
     const text = product.title;
@@ -417,13 +418,20 @@
       ["pinterest", "Pinterest", `https://pinterest.com/pin/create/button/?url=${enc(link)}&description=${enc(text)}`],
       ["email", t("mkt.email"), `mailto:?subject=${enc(text)}&body=${enc(link)}`],
     ];
-    const earn = Math.floor(Number(product.price || 0) * 0.25);
+    // the product's share commission, chosen by its seller (0: none)
+    const pct = Math.max(0, Math.min(25, Math.floor(Number(product.commission) || 0)));
+    const earn = M.commissionOf(product.price, pct);
+    let intro = "";
+    if (own) {
+      const text = pct ? t("mkt.f.commissionCalc", { pts: M.pt(earn), net: M.pt(Number(product.price || 0) - earn) }) : t("mkt.f.commissionNone");
+      intro = `<p class="muted mkt-share-none">${esc(text)}</p>`;
+    } else if (pct && me) intro = `<p class="mkt-share-earn">${ICON.coins}<span>${esc(t("mkt.shareEarn", { pts: M.pt(earn), usd: M.usd(earn) }))}</span></p>`;
+    else if (pct) intro = `<p class="muted">${esc(t("mkt.shareGuest", { pct }))} <a href="${esc(M.signinHref())}">${esc(t("nav.signin"))}</a></p>`;
+    else if (me) intro = `<p class="muted mkt-share-none">${esc(t("mkt.shareNone"))}</p>`;
     const wrap = M.modal(`
       ${head(t("mkt.shareTitle"))}
       <div class="mkt-share">
-        ${me
-          ? `<p class="mkt-share-earn">${ICON.coins}<span>${esc(t("mkt.shareEarn", { pts: M.pt(earn), usd: M.usd(earn) }))}</span></p>`
-          : `<p class="muted">${esc(t("mkt.shareGuest"))} <a href="${esc(M.signinHref())}">${esc(t("nav.signin"))}</a></p>`}
+        ${intro}
         <label class="mkt-field"><span>${esc(t("mkt.shareLink"))}</span>
           <span class="mkt-copy"><input type="text" readonly dir="ltr" value="${esc(link)}" data-share-link />
           <button class="btn btn-sm btn-primary" type="button" data-copy>${ICON.copy}<span>${esc(t("mkt.copy"))}</span></button></span></label>
@@ -431,7 +439,7 @@
           ${nets.map(([k, name, href]) => `<a class="mkt-net n-${k}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a>`).join("")}
           ${navigator.share ? `<button class="mkt-net n-more" type="button" data-native>${esc(t("mkt.shareMore"))}</button>` : ""}
         </div>
-        ${me ? `<p class="muted mkt-share-note">${esc(t("mkt.shareNote"))}</p>` : ""}
+        ${me && pct && !own ? `<p class="muted mkt-share-note">${esc(t("mkt.shareNote", { pct }))}</p>` : ""}
       </div>`, { cls: "mkt-modal-sm", label: t("mkt.shareTitle") });
     wrap.querySelector("[data-copy]").addEventListener("click", async () => {
       const input = wrap.querySelector("[data-share-link]");
@@ -449,6 +457,12 @@
   // ---------------------------------------------------------------- the product form
   const MAX_PICS = 8;
   const MAX_CATS = 5;
+  // The share commission of a product: chosen by its seller, 1 to 25% of the price, paid from
+  // the seller's points to the member whose link brought the sale (sql/market.sql).
+  const MAX_COMMISSION = 25;
+  const commissionOk = (v) => Number.isInteger(v) && v >= 1 && v <= MAX_COMMISSION;
+  // what the member who shared it receives for one piece
+  M.commissionOf = (price, pct) => (commissionOk(Number(pct)) ? Math.floor((Number(price) || 0) * Number(pct) / 100) : 0);
 
   function chipsHtml(list) {
     return list
@@ -482,6 +496,9 @@
     let cats = (Array.isArray(p.categories) ? p.categories : []).map((c) => (typeof c === "string" ? c : c?.name)).filter(Boolean).slice(0, MAX_CATS);
     const kind = p.kind === "digital" ? "digital" : "physical";
     const ships = store ? store.shipping !== false : true;
+    // off for a new product; the percentage chosen before is kept while it is off
+    const cOn = typeof p.commission_on === "boolean" ? p.commission_on : Number(p.commission) > 0;
+    const cPct = commissionOk(Number(p.commission_pct)) ? Number(p.commission_pct) : commissionOk(Number(p.commission)) ? Number(p.commission) : 10;
     const wrap = M.modal(`
       ${head(t(editing ? "mkt.editProduct" : "mkt.addProduct"))}
       <form class="mkt-form" data-pform novalidate>
@@ -503,6 +520,13 @@
         </div>
         <p class="muted mkt-f-hint" data-price-hint></p>
         ${!ships ? `<p class="muted mkt-f-hint">${esc(t("mkt.f.noShipHint"))}</p>` : ""}
+        <fieldset class="mkt-field mkt-seg"><legend>${esc(t("mkt.f.commission"))}</legend>
+          <label><input type="radio" name="commission_on" value="1" ${cOn ? "checked" : ""} /><span>${esc(t("mkt.f.commissionOn"))}</span></label>
+          <label><input type="radio" name="commission_on" value="0" ${cOn ? "" : "checked"} /><span>${esc(t("mkt.f.commissionOff"))}</span></label>
+        </fieldset>
+        <label class="mkt-field mkt-f-pct" data-commission ${cOn ? "" : "hidden"}><span>${esc(t("mkt.f.commissionPct"))} *</span>
+          <input name="commission_pct" type="number" min="1" max="${MAX_COMMISSION}" step="1" inputmode="numeric" value="${esc(cPct)}" /></label>
+        <p class="muted mkt-f-hint" data-commission-hint></p>
         <div class="mkt-field">
           <span id="mkt-cats-label">${esc(t("mkt.f.categories"))} *</span>
           <div class="mkt-chips-in" data-cats>
@@ -572,14 +596,33 @@
     });
     drawCats();
     catIn.dispatchEvent(new Event("input"));
+    const commissionHint = form.querySelector("[data-commission-hint]");
+    const commissionIsOn = () => form.commission_on.value === "1";
+    // the price in dollars, and what the commission takes from one piece
     const showPrice = () => {
       const v = Number(form.price.value) || 0;
-      priceHint.textContent = v > 0 ? t("mkt.f.priceHint", { usd: M.usd(v), pts: M.pt(Math.floor(v * 0.25)) }) : "";
+      priceHint.textContent = v > 0 ? t("mkt.f.priceUsd", { usd: M.usd(v) }) : "";
+      const on = commissionIsOn();
+      form.querySelector("[data-commission]").hidden = !on;
+      if (!on) {
+        commissionHint.textContent = t("mkt.f.commissionNone");
+        return;
+      }
+      const pct = Number(form.commission_pct.value);
+      const cut = M.commissionOf(v, pct);
+      commissionHint.textContent = commissionOk(pct) && v > 0
+        ? `${t("mkt.f.commissionHint")} ${t("mkt.f.commissionCalc", { pts: M.pt(cut), net: M.pt(v - cut) })}`
+        : t("mkt.f.commissionHint");
     };
     form.price.addEventListener("input", showPrice);
+    form.commission_pct.addEventListener("input", showPrice);
     showPrice();
     form.addEventListener("change", (e) => {
       if (e.target.name === "kind") form.querySelector("[data-ship-cost]").hidden = form.kind.value === "digital";
+      if (e.target.name === "commission_on") {
+        showPrice();
+        if (commissionIsOn()) form.commission_pct.focus();
+      }
     });
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -595,6 +638,8 @@
         categories: cats.slice(),
         images: pics.urls(),
         video_url: form.video_url.value.trim(),
+        commission_on: commissionIsOn(),
+        commission_pct: form.commission_pct.value.trim(),
       };
       if (editing) d.id = p.id;
       const bad =
@@ -602,10 +647,12 @@
         (!(Number(d.price) >= 1) && "price") ||
         (!(Number(d.stock) >= 0) || d.stock === "" ? "stock" : "") ||
         (!cats.length && "categories") ||
-        (d.video_url && !/^https?:\/\/\S+$/i.test(d.video_url) && "video");
+        (d.video_url && !/^https?:\/\/\S+$/i.test(d.video_url) && "video") ||
+        (d.commission_on && !(d.commission_pct !== "" && commissionOk(Number(d.commission_pct))) && "commission");
       if (bad) {
         err.textContent = M.errText({ reason: bad });
-        form.querySelector(`[name="${bad === "categories" ? "kind" : bad === "video" ? "video_url" : bad}"]`)?.focus?.();
+        const field = { categories: "kind", video: "video_url", commission: "commission_pct" }[bad] || bad;
+        form.querySelector(`[name="${field}"]`)?.focus?.();
         if (bad === "categories") catIn.focus();
         return;
       }

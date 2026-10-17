@@ -3729,9 +3729,9 @@
     { key: "comments", per: 100, src: "points.src.comments", rate: "points.rate.comments" },
     // stored by the server: profiles.code_points (sql/point_codes.sql), counted in code_count
     { key: "codes", per: 1, src: "points.src.codes", rate: "points.rate.codes" },
-    // the market (sql/market.sql): profiles.market_points for the sales of the member's store
-    // (counted in market_sales) and market_ref_points, 25% of the sales made through their
-    // share links (counted in market_refs)
+    // the market (sql/market.sql): profiles.market_points for the sales of the member's store,
+    // less the share commissions they pay (counted in market_sales), and market_ref_points, the
+    // commissions of the sales made through their share links (counted in market_refs)
     { key: "market", per: 1, src: "points.src.market", rate: "points.rate.market" },
     { key: "marketRefs", per: 1, src: "points.src.marketRefs", rate: "points.rate.marketRefs" },
   ];

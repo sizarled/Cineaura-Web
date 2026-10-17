@@ -41,10 +41,13 @@
 --     when the order is delivered and its return period is over (at once when the store takes
 --     no returns). A cancelled, declined or returned order gives them back to the buyer
 --     (a point_spends row with a negative amount, mode 'market_refund').
---   * Sharing: Market.html?Product=<id>&@<username>. A sale made through that link gives the
---     member who shared it 25% of the price (pieces x price, shipping not included), added by
---     the site when the seller is paid — the seller still receives everything. Not for the
---     buyer or the seller themselves.
+--   * Sharing: Market.html?Product=<id>&@<username>. Every product has its share commission,
+--     chosen by the seller in the product form: off (the default), or on with 1 to 25%.
+--     A sale made through that link gives the member who shared it that part of the price
+--     (pieces x price, shipping not included), taken from what the seller receives when the
+--     order is paid. Not for the buyer or the seller themselves. The percentage of the day of
+--     the order is kept with the order (market_orders.commission_pct). Orders of the first
+--     version of this file (commission_pct empty) keep its rule: the site added 25%.
 --   * The points received (sales: profiles.market_points / market_sales; shares:
 --     market_ref_points / market_refs) are earned points like the others: they count for the
 --     level (_points() below).
@@ -65,7 +68,7 @@ alter table public.profiles add column if not exists market_ref_points bigint no
 alter table public.profiles add column if not exists market_refs integer not null default 0;
 comment on column public.profiles.market_points is 'Points received for the sales of the member''s store (Market.html, sql/market.sql).';
 comment on column public.profiles.market_sales is 'Sales of the member''s store already paid.';
-comment on column public.profiles.market_ref_points is 'Points received for sales made through the member''s share links (25% of the price).';
+comment on column public.profiles.market_ref_points is 'Points received for sales made through the member''s share links (the commission each seller chose, up to 25% of the price).';
 comment on column public.profiles.market_refs is 'Sales made through the member''s share links (paid).';
 
 create or replace function public._guard_market_points() returns trigger language plpgsql as $$
@@ -132,9 +135,12 @@ create table if not exists public.market_products (
   sales integer not null default 0,                   -- pieces sold (orders not cancelled / returned)
   pros integer not null default 0,                    -- good points written by buyers
   cons integer not null default 0,                    -- bad points
+  commission_on boolean not null default false,       -- the share commission (…?Product=<id>&@username), paid by the seller
+  commission_pct smallint not null default 10,        -- its percentage of the price (kept while it is off)
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint market_products_kind check (kind in ('physical', 'digital')),
+  constraint market_products_commission check (commission_pct between 1 and 25),
   constraint market_products_status check (status in ('active', 'hidden', 'deleted')),
   constraint market_products_price check (price between 1 and 10000000),
   constraint market_products_ship check (shipping_cost between 0 and 1000000),
@@ -172,7 +178,9 @@ create table if not exists public.market_orders (
   unit_price integer not null,
   shipping_cost integer not null default 0,
   total integer not null,                             -- unit_price x qty + shipping_cost
-  commission integer not null default 0,              -- 25% of unit_price x qty for the referrer
+  commission integer not null default 0,              -- commission_pct % of unit_price x qty for the referrer
+  commission_pct smallint,                            -- the product's share commission that day (0: none), paid by
+                                                      -- the seller; empty: an order of the first version (the site paid 25%)
   buyer_country text not null default '',
   address jsonb not null default '{}'::jsonb,         -- name, phone, city, line, note
   status text not null,
@@ -197,6 +205,22 @@ create index if not exists market_orders_buyer_idx on public.market_orders (buye
 create index if not exists market_orders_product_idx on public.market_orders (product_id, created_at desc);
 create index if not exists market_orders_country_idx on public.market_orders (buyer_country, created_at desc);
 create index if not exists market_orders_due_idx on public.market_orders (status, shipped_at, delivered_at) where settled_at is null;
+
+-- Added after the first version of this file (a database that already ran it gets them here):
+-- the share commission of each product, and its percentage kept with each order.
+alter table public.market_products add column if not exists commission_on boolean not null default false;
+alter table public.market_products add column if not exists commission_pct smallint not null default 10;
+alter table public.market_orders add column if not exists commission_pct smallint;
+do $$
+begin
+  alter table public.market_products add constraint market_products_commission check (commission_pct between 1 and 25);
+exception when duplicate_object then null;
+end $$;
+do $$
+begin
+  alter table public.market_orders add constraint market_orders_commission check (commission_pct between 0 and 25);
+exception when duplicate_object then null;
+end $$;
 
 create table if not exists public.market_reviews (
   order_id text primary key references public.market_orders(id) on delete cascade,
@@ -283,7 +307,7 @@ begin
   vids := floor(coalesce(pr.vp, '0')::numeric)::bigint;
   -- points codes (sql/point_codes.sql)
   codes := floor(coalesce(pr.cp, '0')::numeric)::bigint;
-  -- the market (sql/market.sql): sales of the member's store, and 25% of the sales made through their links
+  -- the market (sql/market.sql): sales of the member's store (less the share commissions they pay), and the commissions of the sales made through their share links
   mk := floor(coalesce(pr.mp, '0')::numeric)::bigint;
   mr := floor(coalesce(pr.mrp, '0')::numeric)::bigint;
   select count(*) into sh from public.post_events where kind = 'share' and network = 'referral' and member_id = p_member;
@@ -407,6 +431,7 @@ language sql stable security definer set search_path = public as $$
     'id', p.id, 'title', p.title, 'price', p.price, 'kind', p.kind, 'images', public._mkt_images(p.images, 5),
     'created_at', p.created_at, 'sales', p.sales, 'stock', p.stock, 'status', p.status, 'shipping_cost', p.shipping_cost,
     'pros', p.pros, 'cons', p.cons,
+    'commission', case when p.commission_on then p.commission_pct else 0 end,   -- % for a share link (0: none)
     'store', jsonb_build_object('id', s.id, 'name', s.name, 'logo', s.logo_url, 'country', s.country, 'is_open', s.is_open),
     'seller', jsonb_build_object('id', s.owner_id, 'username', coalesce(m.username, '')))
   from public.market_stores s left join public.members m on m.member_id = s.owner_id
@@ -484,12 +509,19 @@ begin
   end if;
 end $$;
 
+-- What the seller receives for an order: the total, less the share commission the seller
+-- pays (an order of the first version of this file, commission_pct empty: the site paid it).
+create or replace function public._mkt_seller_gets(o public.market_orders) returns int
+language sql immutable as $$
+  select o.total - case when o.referrer_id is not null and o.commission_pct is not null then greatest(o.commission, 0) else 0 end
+$$;
+
 -- Orders that are due: shipped for 14 days → received; delivered and past their return
 -- period → the seller is paid (and the member who shared the link). Called by the market
 -- functions below, and by market_settle() (pg_cron, optional).
 create or replace function public._mkt_settle(p_limit int default 200) returns int
 language plpgsql security definer set search_path = public as $$
-declare o public.market_orders; n int := 0;
+declare o public.market_orders; n int := 0; gets int;
 begin
   update public.market_orders
      set status = 'delivered', delivered_at = shipped_at + interval '14 days', auto_delivered = true, updated_at = now()
@@ -503,9 +535,10 @@ begin
      for update skip locked
   loop
     update public.market_orders set settled_at = now(), updated_at = now() where id = o.id;
-    perform public._mkt_credit(o.seller_id, o.total, false);
+    gets := public._mkt_seller_gets(o);
+    perform public._mkt_credit(o.seller_id, gets, false);
     perform public._mkt_notify(o.seller_id, 'market_paid', 'Points received for a sale',
-      '+' || o.total::text || ' PT · ' || o.title, './Market.html#sales/delivered', o.buyer_id);
+      '+' || gets::text || ' PT · ' || o.title, './Market.html#sales/delivered', o.buyer_id);
     if o.referrer_id is not null and o.commission > 0 then
       perform public._mkt_credit(o.referrer_id, o.commission, true);
       perform public._mkt_notify(o.referrer_id, 'market_commission', 'You earned points from a shared link',
@@ -544,6 +577,10 @@ language sql stable security definer set search_path = public as $$
     'status', o.status, 'tracking', o.tracking, 'reason', o.reason, 'return_days', o.return_days,
     'address', case when p_viewer in (o.seller_id, o.buyer_id) then o.address else '{}'::jsonb end,
     'via_link', o.referrer_id is not null,
+    -- the seller's side: the commission of the share link and what the seller receives
+    'commission', case when p_viewer = o.seller_id then o.commission end,
+    'commission_pct', case when p_viewer = o.seller_id then o.commission_pct end,
+    'seller_gets', case when p_viewer = o.seller_id then public._mkt_seller_gets(o) end,
     'created_at', o.created_at, 'accepted_at', o.accepted_at, 'shipped_at', o.shipped_at, 'delivered_at', o.delivered_at,
     'auto_delivered', o.auto_delivered, 'return_requested_at', o.return_requested_at, 'returned_at', o.returned_at,
     'closed_at', o.closed_at, 'settled_at', o.settled_at, 'updated_at', o.updated_at,
@@ -708,15 +745,16 @@ end $$;
 
 -- ------------------------------------------------------------------ 7. products
 -- Add (no id) or change a product. d = { id?, title, description, kind, price, shipping_cost, stock,
--- categories: ["…"], images?: ["https://…"], video_url }. The first product opens the store.
+-- categories: ["…"], images?: ["https://…"], video_url, commission_on?, commission_pct? (1 to 25) }.
+-- The first product opens the store.
 --   -> { ok: true, id, created, store_id } | { ok: false, reason: member | blocked | title | description |
---      kind | price | shipping_cost | stock | categories | images | video | limit | not_found }
+--      kind | price | shipping_cost | stock | categories | images | video | commission | limit | not_found }
 create or replace function public.market_product_save(p_member text, d jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; st public.market_stores; pr public.market_products; pid text; ttl text; descr text; knd text;
   v_price int; ship int; stk int; cats text[] := '{}'; c text; ckey text; cid text; imgs jsonb := '[]'::jsonb; x jsonb;
-  vid text; created boolean := false; keys text[] := '{}';
+  vid text; created boolean := false; keys text[] := '{}'; c_on boolean; c_raw text; c_pct int;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
@@ -756,6 +794,16 @@ begin
   end if;
   vid := btrim(coalesce(d->>'video_url', ''));
   if vid <> '' and (not public._image_url_ok(vid) or length(vid) > 500) then return jsonb_build_object('ok', false, 'reason', 'video'); end if;
+  -- the share commission: commission_on (absent: unchanged, off for a new product) and
+  -- commission_pct, 1 to 25 (absent: unchanged, 10 for a new product). While it is off, a
+  -- wrong percentage is not kept rather than refused (the field is hidden then).
+  c_on := case when d ? 'commission_on' then public._mkt_bool(d->>'commission_on', false) end;
+  c_raw := btrim(coalesce(d->>'commission_pct', ''));
+  c_pct := public._mkt_int(nullif(c_raw, ''));
+  if c_raw <> '' and (c_pct is null or c_pct < 1 or c_pct > 25) then
+    if coalesce(c_on, false) then return jsonb_build_object('ok', false, 'reason', 'commission'); end if;
+    c_pct := null;
+  end if;
 
   if pid is null then
     if (select count(*) from public.market_products where owner_id = m.member_id and created_at > now() - interval '1 day') >= 30
@@ -767,15 +815,17 @@ begin
       pid := 'PRD' || lpad(floor(random() * 1e10)::bigint::text, 10, '0');
       exit when not exists (select 1 from public.market_products where id = pid);
     end loop;
-    insert into public.market_products (id, store_id, owner_id, title, description, kind, price, shipping_cost, stock, images, video_url)
-    values (pid, st.id, m.member_id, ttl, descr, knd, v_price, ship, stk, imgs, vid);
+    insert into public.market_products (id, store_id, owner_id, title, description, kind, price, shipping_cost, stock, images, video_url,
+                                        commission_on, commission_pct)
+    values (pid, st.id, m.member_id, ttl, descr, knd, v_price, ship, stk, imgs, vid, coalesce(c_on, false), coalesce(c_pct, 10));
     created := true;
   else
     select * into pr from public.market_products where id = pid for update;
     if not found or pr.owner_id <> m.member_id or pr.status = 'deleted' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
     update public.market_products set
       title = ttl, description = descr, kind = knd, price = v_price, shipping_cost = ship, stock = stk,
-      images = case when d ? 'images' then imgs else images end, video_url = vid, updated_at = now()
+      images = case when d ? 'images' then imgs else images end, video_url = vid,
+      commission_on = coalesce(c_on, commission_on), commission_pct = coalesce(c_pct, commission_pct), updated_at = now()
     where id = pid;
     st.id := pr.store_id;
   end if;
@@ -898,6 +948,7 @@ begin
     'total', (select count(*) from public.market_products where owner_id = m.member_id and status <> 'deleted'),
     'items', coalesce((select jsonb_agg(public._mkt_card(p) || jsonb_build_object(
         'description', p.description, 'video_url', p.video_url, 'images', p.images, 'updated_at', p.updated_at,
+        'commission_on', p.commission_on, 'commission_pct', p.commission_pct,
         'categories', coalesce((select jsonb_agg(c.name order by c.name) from public.market_product_categories pc
                                   join public.market_categories c on c.id = pc.category_id where pc.product_id = p.id), '[]'::jsonb),
         'open_orders', (select count(*) from public.market_orders o where o.product_id = p.id and o.status in ('requested', 'sold', 'shipped', 'return_requested')))
@@ -1097,9 +1148,13 @@ begin
       'id', p.id, 'title', p.title, 'description', p.description, 'kind', p.kind, 'price', p.price,
       'shipping_cost', p.shipping_cost, 'stock', p.stock, 'sales', p.sales, 'images', p.images, 'video_url', p.video_url,
       'status', p.status, 'pros', p.pros, 'cons', p.cons, 'created_at', p.created_at, 'updated_at', p.updated_at,
+      'commission', case when p.commission_on then p.commission_pct else 0 end,
       'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.name)
                                 from public.market_product_categories pc join public.market_categories c on c.id = pc.category_id
-                               where pc.product_id = p.id), '[]'::jsonb)),
+                               where pc.product_id = p.id), '[]'::jsonb))
+      -- the seller's own page also gets the switch and the percentage kept while it is off (the form)
+      || case when me = st.owner_id then jsonb_build_object('commission_on', p.commission_on, 'commission_pct', p.commission_pct)
+              else '{}'::jsonb end,
     'store', public._mkt_store_card(st),
     'viewer', jsonb_build_object(
       'member', me <> '', 'own', me = st.owner_id, 'country', cc,
@@ -1164,7 +1219,7 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; p public.market_products; st public.market_stores; q int := coalesce(p_qty, 1); addr jsonb := '{}'::jsonb;
   a_name text; a_phone text; a_city text; a_line text; a_note text; ship_on boolean; v_total int; ref text; oid text; st_code text;
-  pts jsonb; need_addr boolean;
+  pts jsonb; need_addr boolean; c_pct int;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
@@ -1213,6 +1268,8 @@ begin
      and lower(btrim(coalesce(mm.status, ''))) = 'active'
      and mm.member_id not in (m.member_id, st.owner_id)
    limit 1;
+  -- the product's share commission today (the seller pays it when the order is paid)
+  c_pct := case when ref is not null and p.commission_on then p.commission_pct else 0 end;
 
   st_code := case when st.sale_mode = 'request' then 'requested' else 'sold' end;
   loop
@@ -1220,10 +1277,10 @@ begin
     exit when not exists (select 1 from public.market_orders where id = oid);
   end loop;
   insert into public.market_orders (id, product_id, store_id, seller_id, buyer_id, referrer_id, title, image, kind, qty, unit_price,
-                                    shipping_cost, total, commission, buyer_country, address, status, return_days, accepted_at)
+                                    shipping_cost, total, commission, commission_pct, buyer_country, address, status, return_days, accepted_at)
   values (oid, p.id, st.id, st.owner_id, m.member_id, ref, p.title, coalesce(p.images->>0, ''), p.kind, q, p.price,
           case when ship_on then p.shipping_cost else 0 end, v_total,
-          case when ref is null then 0 else floor(p.price * q * 0.25)::int end,
+          floor(p.price::numeric * q * c_pct / 100)::int, c_pct,
           upper(coalesce(m.country, '')), addr, st_code, case when st.returns then st.return_days else 0 end,
           case when st_code = 'sold' then now() end);
   update public.market_products set stock = stock - q, sales = sales + case when st_code = 'sold' then q else 0 end, updated_at = now() where id = p.id;
@@ -1529,7 +1586,7 @@ begin
     'public._mkt_store_card(public.market_stores)', 'public._mkt_notify(text, text, text, text, text, text)',
     'public._mkt_spend(text, int, text)', 'public._mkt_refund(public.market_orders)', 'public._mkt_credit(text, int, boolean)',
     'public._mkt_settle(int)', 'public.market_settle()', 'public._mkt_order_json(public.market_orders, text)',
-    'public._mkt_ensure_store(public.members)', 'public._guard_market_points()']
+    'public._mkt_seller_gets(public.market_orders)', 'public._mkt_ensure_store(public.members)', 'public._guard_market_points()']
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;

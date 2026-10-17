@@ -176,7 +176,7 @@ begin
   vids := floor(coalesce(pr.vp, '0')::numeric)::bigint;
   -- points codes (sql/point_codes.sql)
   codes := floor(coalesce(pr.cp, '0')::numeric)::bigint;
-  -- the market (sql/market.sql): sales of the member's store, and 25% of the sales made through their links
+  -- the market (sql/market.sql): sales of the member's store (less the share commissions they pay), and the commissions of the sales made through their share links
   mk := floor(coalesce(pr.mp, '0')::numeric)::bigint;
   mr := floor(coalesce(pr.mrp, '0')::numeric)::bigint;
   select count(*) into sh from public.post_events where kind = 'share' and network = 'referral' and member_id = p_member;
