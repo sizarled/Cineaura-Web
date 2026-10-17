@@ -231,6 +231,7 @@
 
 .tabs {
   display: flex;
+  flex-wrap: wrap; /* Activity, Content, Marketplace, Updates: a second row on a phone */
   gap: 8px;
   margin-bottom: 16px;
 }

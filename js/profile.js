@@ -561,7 +561,7 @@
         if (state.section !== "content" && /^#content/.test(location.hash)) {
           history.replaceState(history.state, "", `${location.pathname}${location.search}`);
         }
-        if (state.section !== "home" && pcFromHash()) replaceHash("");
+        if (state.section !== "home" && (pcFromHash() || mkFromHash())) replaceHash("");
         renderShell();
       }
     };
@@ -747,6 +747,7 @@
       <div class="tabs">
         <button class="btn btn-sm auth-allow ${state.homeTab==="activity"?"btn-primary":"btn-ghost"}" data-htab="activity" type="button">${t("prof.activity")}</button>
         <button class="btn btn-sm auth-allow ${state.homeTab==="content"?"btn-primary":"btn-ghost"}" data-htab="content" type="button">${t("prof.contentTab")}</button>
+        <button class="btn btn-sm auth-allow ${state.homeTab==="market"?"btn-primary":"btn-ghost"}" data-htab="market" type="button">${t("prof.marketTab")}</button>
         ${state.isOwner ? `<button class="btn btn-sm ${state.homeTab==="updates"?"btn-primary":"btn-ghost"}" data-htab="updates" type="button">${t("prof.updates")}</button>` : ""}
       </div>
       <div id="home-body"></div>`;
@@ -757,8 +758,10 @@
     main.querySelectorAll("[data-htab]").forEach((b) => {
       b.onclick = () => {
         state.homeTab = b.dataset.htab;
-        // #videos / #playlists / #playlist/… belong to the Content tab only
+        // #videos / #playlists / #playlist/… belong to the Content tab only, #market… to Market
         if (state.homeTab !== "content" && pcFromHash()) replaceHash("");
+        if (state.homeTab === "market") replaceHash(mkHash());
+        else if (mkFromHash()) replaceHash("");
         viewHome(main);
       };
     });
@@ -766,6 +769,7 @@
     main.querySelector("[data-people='following']").onclick = () => openPeople("following");
     if (state.homeTab === "updates") await drawUpdates();
     else if (state.homeTab === "content") await drawContent();
+    else if (state.homeTab === "market") await drawMarket();
     else await drawActivity();
     hydrateAvatars(main);
   }
@@ -1178,8 +1182,11 @@
     set("playlists", pc.lists ? pc.lists.length : null);
   }
 
-  function pcFailHtml(why) {
-    return `<li class="glass vs-none pc-none"><p>${escapeHtml(t(why === "setup" ? "vid.setup" : "vid.loadFail"))}</p></li>`;
+  // why: setup (the SQL of the videos is missing) | load; lists: the Playlists tab (its own
+  // message: the videos may work while the playlists need the newer sql/content.sql)
+  function pcFailHtml(why, lists = false) {
+    const key = why === "setup" ? (lists ? "prof.pc.plSetup" : "vid.setup") : "vid.loadFail";
+    return `<li class="glass vs-none pc-none"><p>${escapeHtml(t(key))}</p></li>`;
   }
 
   // Reading, so open to signed-out visitors too: the section is .auth-allow (the
@@ -1357,7 +1364,7 @@
     grid.removeAttribute("aria-busy");
     pcPaintCounts();
     if (pc.lfail) {
-      grid.innerHTML = pcFailHtml(pc.lfail);
+      grid.innerHTML = pcFailHtml(pc.lfail, true);
       return;
     }
     if (!pc.lists.length) {
@@ -1381,7 +1388,7 @@
     // a playlist opens on its owner's page only
     if (!p || p.owner_id !== state.hostMember?.member_id) {
       pane.innerHTML = `<div class="pc-plhead">${back}</div>
-        <div class="glass vs-none pc-none"><p><b>${escapeHtml(t(res.setup ? "vid.setup" : !res.ok ? "vid.loadFail" : "prof.pc.plGone"))}</b></p></div>`;
+        <div class="glass vs-none pc-none"><p><b>${escapeHtml(t(res.setup ? "prof.pc.plSetup" : !res.ok ? "vid.loadFail" : "prof.pc.plGone"))}</b></p></div>`;
       return;
     }
     const items = Array.isArray(res.data.items) ? res.data.items : [];
@@ -1590,6 +1597,152 @@
     }
   }
 
+  /* ---------- Market: what the member published in the market (sql/market.sql) ---------- */
+  // The Visit store button on top, then their recommendations, purchase lists and reviews that
+  // the viewer may see (public / exclusive / private, as for the videos). Their purchases stay
+  // private. Cards and dialogs: js/market-forms.js.
+  const MK_TABS = ["recs", "lists", "reviews"];
+  // #market | #market/recs | #market/lists | #market/reviews -> { tab }; null for any other hash
+  function mkFromHash(hash = location.hash) {
+    const m = /^#market(?:\/(recs|lists|reviews))?$/.exec(String(hash || ""));
+    return m ? { tab: m[1] || "recs" } : null;
+  }
+  function mkState() {
+    const host = state.hostMember?.member_id || "";
+    if (!state.mk || state.mk.host !== host) {
+      state.mk = { host, tab: "recs", items: [], total: 0, counts: null, store: undefined, seq: 0 };
+    }
+    return state.mk;
+  }
+  const mkHash = () => {
+    const tab = mkState().tab;
+    return `#market${tab && tab !== "recs" ? `/${tab}` : ""}`;
+  };
+  const mkWait = `<div class="loader" style="display:grid"><div class="spinner"></div></div>`;
+
+  async function drawMarket() {
+    const body = $("#home-body");
+    if (!body) return;
+    // the activity wall binds its click handler on #home-body
+    body.onclick = null;
+    const M = window.CineAuraMarket;
+    if (!M) {
+      body.innerHTML = `<p class="empty">${escapeHtml(t("mkt.setupText"))}</p>`;
+      return;
+    }
+    const mk = mkState();
+    body.innerHTML = `
+      <section class="pm auth-allow" aria-label="${escapeHtml(t("prof.marketTab"))}">
+        <div class="glass pm-store" id="pm-store">${mkWait}</div>
+        <div class="follow-tabs pm-tabs" role="tablist" aria-label="${escapeHtml(t("prof.mk.tabsLabel"))}">
+          ${MK_TABS.map((k) => `<button type="button" role="tab" class="follow-tab${mk.tab === k ? " active" : ""}" data-mk-tab="${k}" aria-selected="${mk.tab === k}">${escapeHtml(t(`prof.mk.${k}`))}<span class="follow-count" data-mk-count="${k}" hidden></span></button>`).join("")}
+        </div>
+        ${state.isOwner ? `<p class="muted pm-hint">${escapeHtml(t("prof.mk.hintMine"))} <a href="./Market.html">${escapeHtml(t("prof.mk.goMarket"))}</a></p>` : ""}
+        <div class="pm-list" id="pm-list" aria-live="polite"></div>
+        <div class="pm-more"><button class="btn btn-sm btn-ghost" type="button" data-mk-more hidden>${escapeHtml(t("vid.showMore"))}</button></div>
+      </section>`;
+    body.querySelectorAll("[data-mk-tab]").forEach((b) => {
+      b.onclick = () => {
+        if (mk.tab === b.dataset.mkTab) return;
+        mk.tab = b.dataset.mkTab;
+        replaceHash(mkHash());
+        mkShowTab();
+      };
+    });
+    body.querySelector("[data-mk-more]").onclick = () => mkLoad(true);
+    M.wireItems($("#pm-list"), { items: () => mkState().items, changed: () => mkLoad(false) });
+    await mkLoad(false);
+  }
+
+  function mkShowTab() {
+    const mk = mkState();
+    document.querySelectorAll("[data-mk-tab]").forEach((b) => {
+      const on = b.dataset.mkTab === mk.tab;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+    mkLoad(false);
+  }
+
+  async function mkLoad(more) {
+    const M = window.CineAuraMarket;
+    const mk = mkState();
+    const list = $("#pm-list");
+    if (!M || !list) return;
+    const seq = (mk.seq += 1);
+    const btn = document.querySelector("[data-mk-more]");
+    if (!more) list.innerHTML = mkWait;
+    if (btn) btn.disabled = true;
+    const res = await M.call("market_profile", {
+      p_owner: state.hostMember?.member_id || "",
+      p_member: M.memberId(),
+      p_tab: mk.tab,
+      p_limit: 24,
+      p_offset: more ? mk.items.length : 0,
+    });
+    if (seq !== mk.seq || !list.isConnected) return;
+    if (btn) btn.disabled = false;
+    if (!res.ok || !res.data?.ok) {
+      const text = res.setup ? t("mkt.setupText") : res.ok ? t("prof.mk.gone") : M.failText(res);
+      list.innerHTML = `<p class="empty">${escapeHtml(text)}</p>`;
+      if ($("#pm-store")) $("#pm-store").hidden = true;
+      if (btn) btn.hidden = true;
+      return;
+    }
+    const d = res.data;
+    mk.items = more ? mk.items.concat(d.items || []) : d.items || [];
+    mk.total = Number(d.total) || 0;
+    mk.counts = d.counts || null;
+    mk.store = d.store || null;
+    mkPaintStore();
+    MK_TABS.forEach((k) => {
+      const el = document.querySelector(`[data-mk-count="${k}"]`);
+      const n = mk.counts ? Number(mk.counts[k]) || 0 : null;
+      if (!el) return;
+      el.hidden = n == null;
+      el.textContent = n == null ? "" : String(n);
+    });
+    list.innerHTML = mk.items.length ? mk.items.map(M.itemHtml).join("") : mkEmptyHtml();
+    if (btn) btn.hidden = mk.items.length >= mk.total;
+    hydrateAvatars(list);
+  }
+
+  function mkEmptyHtml() {
+    const tab = mkState().tab;
+    const name = `<bdi>@${escapeHtml(state.hostMember?.username || "")}</bdi>`;
+    return `<div class="glass vs-none pc-none"><p>${state.isOwner ? escapeHtml(t(`prof.mk.none.${tab}Mine`)) : t(`prof.mk.none.${tab}`, { name })}</p></div>`;
+  }
+
+  // The member's store and its Visit store button (none: Open your store, for its owner).
+  function mkPaintStore() {
+    const M = window.CineAuraMarket;
+    const box = $("#pm-store");
+    if (!box || !M) return;
+    const s = mkState().store;
+    box.hidden = false;
+    if (s) {
+      const meta = [M.country(s.country), t(Number(s.products) === 1 ? "mkt.productsOne" : "mkt.productsN", { n: M.fmt(s.products) })].filter(Boolean).join(" · ");
+      box.innerHTML = `
+        <img class="pm-store-logo" src="${escapeHtml(s.logo || initialsAvatar(s.name || "CA"))}" alt="" />
+        <div class="pm-store-body">
+          <span class="eyebrow">${escapeHtml(t("prof.mk.store"))}</span>
+          <b><span dir="auto">${escapeHtml(s.name || "")}</span>${M.tierHtml(s.tier)}</b>
+          <small class="muted">${escapeHtml(meta)}</small>
+        </div>
+        <a class="btn btn-sm btn-primary pm-visit" href="${escapeHtml(M.storeHref(s.id))}">${M.ICON.store}<span>${escapeHtml(t("prof.mk.visit"))}</span></a>`;
+      return;
+    }
+    if (state.isOwner) {
+      box.innerHTML = `
+        <div class="pm-store-body"><b>${escapeHtml(t("prof.mk.noStoreMine"))}</b><small class="muted">${escapeHtml(t("prof.mk.noStoreMineHint"))}</small></div>
+        <a class="btn btn-sm btn-primary pm-visit" href="./Market.html#settings">${M.ICON.store}<span>${escapeHtml(t("mkt.openStore"))}</span></a>`;
+      return;
+    }
+    const name = `<bdi>@${escapeHtml(state.hostMember?.username || "")}</bdi>`;
+    box.innerHTML = `<div class="pm-store-body"><b>${t("prof.mk.noStore", { name })}</b></div>
+      <a class="btn btn-sm btn-ghost pm-visit" href="./Market.html">${M.ICON.bag}<span>${escapeHtml(t("prof.mk.goMarket"))}</span></a>`;
+  }
+
   async function drawUpdates() {
     const body = $("#home-body");
     if (!state.isOwner) {
@@ -1624,6 +1777,7 @@
           <label class="lang-chip"><input type="radio" name="up-ft" value="playlist" /> ${t("prof.updF.playlists")}</label>
           <label class="lang-chip"><input type="radio" name="up-ft" value="rec" /> ${t("prof.updF.recs")}</label>
           <label class="lang-chip"><input type="radio" name="up-ft" value="review" /> ${t("rev.reviews")}</label>
+          <label class="lang-chip"><input type="radio" name="up-ft" value="market" /> ${t("prof.updF.market")}</label>
         </div>
       </div>
       <div class="ad-spot" data-ad="banner"></div>
@@ -1665,6 +1819,28 @@
       feed.more = Boolean(res.data?.more);
     };
     const videosReady = loadVideos();
+    // What they published in the market (sql/market.sql): recommendations (and recommended again),
+    // purchase lists, reviews; newest first, a page at a time, joined by date too.
+    const MK = window.CineAuraMarket;
+    const mfeed = { items: [], more: false };
+    const loadMarket = async () => {
+      if (!MK) return;
+      const last = mfeed.items[mfeed.items.length - 1];
+      const res = await MK.call("market_feed", {
+        p_member: state.me.member.member_id,
+        p_limit: 20,
+        p_before: last ? last.at : null,
+        p_before_id: last ? last.feed_id : "",
+      });
+      if (!res.ok || res.data?.ok === false) {
+        mfeed.more = false;
+        return;
+      }
+      const seen = new Set(mfeed.items.map((x) => x.feed_id));
+      mfeed.items.push(...(Array.isArray(res.data?.items) ? res.data.items : []).filter((x) => !seen.has(x.feed_id)));
+      mfeed.more = Boolean(res.data?.more);
+    };
+    const marketReady = loadMarket();
     const upd = await supabaseRequest(
       `/rest/v1/updates?actor_id=in.(${ids.join(",")})&select=*&order=created_at.desc&limit=120`
     );
@@ -1730,9 +1906,10 @@
     }
     openPosts.forEach((p) => state.postCache.set(p.post_id, p));
     await videosReady;
+    await marketReady;
     await primeAvatars(
-      [...rows.map((r) => r.actor_id), ...feed.items.map((v) => v.owner_id)],
-      [...rows.map((r) => r.actor_username), ...feed.items.map((v) => v.owner)]
+      [...rows.map((r) => r.actor_id), ...feed.items.map((v) => v.owner_id), ...mfeed.items.map((x) => x.author?.id)],
+      [...rows.map((r) => r.actor_username), ...feed.items.map((v) => v.owner), ...mfeed.items.map((x) => x.author?.username)]
     );
     await enrichItemMap(openPosts, itemMap);
 
@@ -1806,18 +1983,25 @@
         return true;
       });
       const withVideos = V && (f === "all" || f === "video");
-      // While older videos are still to come, older posts wait with them (the feed stays in date order).
-      const oldest = feed.items.length ? timeOf(feed.items[feed.items.length - 1].publish_at) : 0;
-      const cutoff = withVideos && feed.more ? oldest : -Infinity;
+      // the market: all of it, or its recommendations / its reviews with the posts' ones
+      const withMarket = MK && ["all", "market", "rec", "review"].includes(f);
+      const marketList = !withMarket ? [] : mfeed.items.filter((x) => (f === "rec" ? x.type === "rec" : f === "review" ? x.type === "review" : true));
+      // While older videos or market updates are still to come, the older entries wait with them
+      // (the feed stays in date order).
+      const cuts = [];
+      if (withVideos && feed.more && feed.items.length) cuts.push(timeOf(feed.items[feed.items.length - 1].publish_at));
+      if (withMarket && mfeed.more && mfeed.items.length) cuts.push(timeOf(mfeed.items[mfeed.items.length - 1].at));
+      const cutoff = cuts.length ? Math.max(...cuts) : -Infinity;
       const list = [
-        ...postList.map((g) => ({ at: timeOf(g.actions[0]?.created_at), g })).filter((e) => e.at >= cutoff),
+        ...postList.map((g) => ({ at: timeOf(g.actions[0]?.created_at), g })),
         ...(withVideos ? feed.items.map((v) => ({ at: timeOf(v.publish_at), v })) : []),
-      ].sort((a, b) => b.at - a.at);
+        ...marketList.map((x) => ({ at: timeOf(x.at), m: x })),
+      ].filter((e) => e.at >= cutoff).sort((a, b) => b.at - a.at);
       const box = $("#upd-list");
       box.innerHTML = list.length
-        ? list.map((e) => (e.v ? videoHtml(e.v) : postEntryHtml(e.g))).join("")
+        ? list.map((e) => (e.m ? MK.itemHtml(e.m) : e.v ? videoHtml(e.v) : postEntryHtml(e.g))).join("")
         : `<p class="empty">${t("prof.noUpd")}</p>`;
-      if (withVideos && feed.more) {
+      if ((withVideos && feed.more) || (withMarket && mfeed.more)) {
         box.insertAdjacentHTML(
           "beforeend",
           `<div class="upd-more"><button class="btn btn-sm btn-ghost" type="button" data-upd-more>${t("vid.showMore")}</button></div>`
@@ -1846,13 +2030,18 @@
       const more = e.target.closest("[data-upd-more]");
       if (more) {
         more.disabled = true;
-        await loadVideos();
-        await primeAvatars(feed.items.map((v) => v.owner_id), feed.items.map((v) => v.owner));
+        await Promise.all([feed.more ? loadVideos() : null, mfeed.more ? loadMarket() : null]);
+        await primeAvatars(
+          [...feed.items.map((v) => v.owner_id), ...mfeed.items.map((x) => x.author?.id)],
+          [...feed.items.map((v) => v.owner), ...mfeed.items.map((x) => x.author?.username)]
+        );
         draw();
         return;
       }
+      if (e.target.closest("[data-mi]")) return; // the market cards (js/market-forms.js)
       onPostClick(e, () => drawUpdates());
     };
+    MK?.wireItems($("#upd-list"), { items: () => mfeed.items, changed: () => drawUpdates() });
     await drawPersonUpdates();
   }
 
@@ -4002,6 +4191,12 @@
       state.homeTab = "content";
       Object.assign(pcState(), pcWant);
     }
+    // Profile.html?@name#market (#market/recs | lists | reviews) opens the Market tab
+    const mkWant = mkFromHash();
+    if (mkWant && !postId) {
+      state.homeTab = "market";
+      mkState().tab = mkWant.tab;
+    }
     renderShell();
     // A "?post=" link lands on the post itself, once the wall has drawn it.
     if (postId) focusSharedPost(postId);
@@ -4012,6 +4207,20 @@
   // (#videos, #playlists, #playlist/CPL…) and "Your content" (#content…).
   function onHashChange() {
     if (!state.hostMember) return;
+    const mkWant = mkFromHash();
+    if (mkWant) {
+      const mk = mkState();
+      const changed = mk.tab !== mkWant.tab;
+      mk.tab = mkWant.tab;
+      if (state.section === "home" && state.homeTab === "market" && $("#pm-list")) {
+        if (changed) mkShowTab();
+        return;
+      }
+      state.section = "home";
+      state.homeTab = "market";
+      renderShell();
+      return;
+    }
     const want = pcFromHash();
     if (want) {
       Object.assign(pcState(), want);

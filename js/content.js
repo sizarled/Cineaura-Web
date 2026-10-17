@@ -496,7 +496,7 @@
         ${chips}
       </div>
       <div class="vw-bar">
-        <a class="vw-owner" href="${C.profileHref(owner.username)}">
+        <a class="vw-owner" href="${C.profileHref(owner.username)}#videos">
           <img src="${esc(owner.avatar_url || C.initialsAvatar(owner.display_name || owner.username || "CA"))}" alt="" data-avatar-for="${esc(owner.id || "")}" data-avatar-name="${esc(owner.username || "")}" />
           <span class="vw-owner-txt">
             <b>${esc(owner.display_name || `@${owner.username}`)}</b>

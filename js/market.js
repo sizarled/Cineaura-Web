@@ -11,7 +11,10 @@
  *   Market.html?Store=<id>         a store
  *   Market.html?Product=<id>       a product (…&@username: the share link of a member, who earns the
  *                                  commission its seller chose, up to 25% of the price of a sale
- *                                  made through it)
+ *                                  made through it — shared equally with the member who first
+ *                                  recommended it when that member recommended it again). Its page
+ *                                  also recommends it, adds it to a purchase list, reviews it.
+ *   Market.html?List=<id>          a purchase list (…&@username: who brings the sale of its products)
  *   Market.html#sales/requests …   the side menu of the member: points (+ add points), notifications,
  *                                  your sales (products, sale requests, sold, shipped, delivered,
  *                                  returned), your purchases (buy later, purchase requests, purchased,
@@ -63,6 +66,7 @@
     purchases: svgNav('<path d="M5 8h14l-1.2 11.2a2 2 0 0 1-2 1.8H8.2a2 2 0 0 1-2-1.8z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/>'),
     ratings: svgNav('<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>'),
     requests: svgNav('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 12.5h5"/>'),
+    published: svgNav('<path d="M7 10.5v9H4v-9z"/><path d="M7 10.5l3.6-6.3a1.9 1.9 0 0 1 3.4 1.3l-.5 3.5h5a2 2 0 0 1 2 2.3l-1.1 6.4a2 2 0 0 1-2 1.8H7"/>'),
     settings: svgNav('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
   };
 
@@ -103,6 +107,13 @@
       }
     }
   }
+  // the @username of the address (a purchase list page: who brings the sale of its products)
+  function refParam() {
+    for (const [k] of new URLSearchParams(location.search)) {
+      if (k.startsWith("@") && /^[^\s&=#?/<>"']{1,40}$/.test(k.slice(1).trim())) return k.slice(1).trim();
+    }
+    return "";
+  }
   function refFor(id) {
     const r = readRefs()[id];
     if (!r || Date.now() - Number(r.ts || 0) > REF_DAYS * 864e5) return "";
@@ -123,6 +134,8 @@
     }
     const product = (param("Product") || "").trim();
     if (product) return { view: "product", id: product };
+    const list = (param("List") || "").trim();
+    if (list) return { view: "list", id: list, ref: refParam() };
     const sort = SORTS.includes(param("sort")) ? param("sort") : "new";
     const cc = String(param("country") || "").toUpperCase();
     const filters = {
@@ -241,6 +254,7 @@
       ${me && me.ok === false ? `<p class="muted mkt-side-note">${esc(t(me.setup ? "mkt.setupText" : "mkt.err.member"))}</p>` : ""}
       <nav class="side-nav mkt-nav" aria-label="${esc(t("mkt.yourMarket"))}">
         ${items.map(([k, n]) => `<button type="button" data-panel="${k}" class="${active === k ? "active" : ""}" ${active === k ? 'aria-current="page"' : ""}>${NAV_ICON[k]}<span>${esc(t(`mkt.nav.${k}`))}</span>${badge(n)}</button>`).join("")}
+        <a class="mkt-nav-link" href="${esc(M.profileMarketHref(username))}">${NAV_ICON.published}<span>${esc(t("mkt.nav.published"))}</span></a>
       </nav>`;
     C.hydrateAvatars?.(side);
   }
@@ -579,14 +593,18 @@
     const pros = [];
     const cons = [];
     (d.reviews || []).forEach((r) => {
-      const who = r.buyer?.username || "";
-      (r.pros || []).forEach((x) => pros.push({ x, who, at: r.created_at }));
-      (r.cons || []).forEach((x) => cons.push({ x, who, at: r.created_at }));
+      const who = r.author?.username || "";
+      const it = { who, at: r.created_at, verified: Boolean(r.verified), vis: r.mine && r.visibility !== "public" ? r.visibility : "" };
+      (r.pros || []).forEach((x) => pros.push({ ...it, x }));
+      (r.cons || []).forEach((x) => cons.push({ ...it, x }));
     });
+    // a member who received the product: a verified purchase; your review not public: its audience
+    const tag = (it) =>
+      `${it.verified ? ` <span class="mkt-verified" title="${esc(t("mkt.rv.verified"))}">${ICON.verified}<span>${esc(t("mkt.rv.verifiedShort"))}</span></span>` : ""}${it.vis ? ` ${M.visBadge(it.vis)}` : ""}`;
     const col = (list, cls, icon, title, empty) => `
       <div class="mkt-pc-col ${cls}">
         <h3>${icon}<span>${esc(title)}</span><b>${esc(M.fmt(list.length))}</b></h3>
-        ${list.length ? `<ul>${list.map((it) => `<li><p dir="auto">${esc(it.x)}</p><small><a href="${esc(M.profileHref(it.who))}">@${esc(it.who)}</a> · ${esc(M.date(it.at))}</small></li>`).join("")}</ul>` : `<p class="muted">${esc(empty)}</p>`}
+        ${list.length ? `<ul>${list.map((it) => `<li><p dir="auto">${esc(it.x)}</p><small><a href="${esc(M.profileMarketHref(it.who, "reviews"))}">@${esc(it.who)}</a>${tag(it)} · ${esc(M.date(it.at))}</small></li>`).join("")}</ul>` : `<p class="muted">${esc(empty)}</p>`}
       </div>`;
     return `<div class="mkt-pc-cols">
       ${col(pros, "pro", ICON.up, t("mkt.pros"), t("mkt.noPros"))}
@@ -647,6 +665,7 @@
             <span class="${Number(p.stock) > 0 ? "" : "bad"}">${esc(Number(p.stock) > 0 ? t("mkt.leftN", { n: M.fmt(p.stock) }) : t("mkt.soldOut"))}</span>
             <span>${esc(t(p.kind === "digital" ? "mkt.kind.digital" : "mkt.kind.physical"))}</span>
           </div>
+          ${Number(d.recs) > 0 ? `<p class="mkt-recs-n">${ICON.thumb}<span>${esc(t(Number(d.recs) === 1 ? "mkt.rc.countOne" : "mkt.rc.countN", { n: M.fmt(d.recs) }))}</span></p>` : ""}
           <p class="mkt-ship ${ship.cls}">${ship.icon}<span>${esc(ship.text)}</span></p>
           ${p.kind !== "digital" && s.shipping ? `<p class="mkt-shipcost">${ICON.truck}<span>${esc(t("mkt.shippingCost"))}: <b dir="ltr">${Number(p.shipping_cost) ? esc(M.pt(p.shipping_cost)) : esc(t("mkt.free"))}</b></span></p>` : ""}
           <div class="mkt-buybox">
@@ -654,6 +673,11 @@
             ${v.own ? "" : `<button class="btn btn-lg btn-ghost" type="button" data-later aria-pressed="${v.saved ? "true" : "false"}">${ICON.clock}<span>${esc(t(v.saved ? "mkt.laterSaved" : "mkt.buyLater"))}</span></button>`}
           </div>
           <p class="muted mkt-pnote">${esc(request ? t("mkt.requestNote") : t("mkt.instantNote"))} ${esc(s.returns ? t("mkt.returnsDays", { n: s.return_days }) : t("mkt.s.returnsNo"))}</p>
+          <div class="mkt-pacts mkt-pacts-social">
+            ${p.status === "active" ? `<button class="btn btn-sm ${v.my_rec ? "btn-primary" : "btn-ghost"}" type="button" data-recommend aria-pressed="${v.my_rec ? "true" : "false"}">${ICON.thumb}<span>${esc(t(v.my_rec ? "mkt.rc.mine" : "mkt.rc.btn"))}</span></button>
+            <button class="btn btn-sm btn-ghost" type="button" data-addlist>${ICON.list}<span>${esc(t("mkt.ls.btn"))}</span></button>` : ""}
+            ${v.own ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-review>${ICON.star}<span>${esc(t(v.my_review ? "mkt.act.editReview" : "mkt.act.review"))}</span></button>`}
+          </div>
           <div class="mkt-pacts">
             <button class="btn btn-sm btn-ghost" type="button" data-share>${ICON.share}<span>${esc(shareLabel(p, v))}</span></button>
             ${v.own ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-ask>${ICON.chat}<span>${esc(t("mkt.ask"))}</span></button>`}
@@ -674,7 +698,7 @@
       <section class="glass mkt-sec mkt-reviews">
         <div class="mkt-sec-head">
           <h2>${esc(t("mkt.reviews"))}</h2>
-          ${v.review_order ? `<button class="btn btn-sm btn-primary" type="button" data-review>${esc(t(v.my_review ? "mkt.act.editReview" : "mkt.act.review"))}</button>` : ""}
+          ${v.own ? "" : `<button class="btn btn-sm btn-primary" type="button" data-review>${esc(t(v.my_review ? "mkt.act.editReview" : "mkt.act.review"))}</button>`}
         </div>
         <p class="muted">${esc(t("mkt.reviewsHint"))}</p>
         ${reviewsHtml(d)}
@@ -767,11 +791,110 @@
       if (!signedIn()) return needSignin();
       M.openRequest({ store: s, product: p, kind: "question" });
     });
-    box.querySelector("[data-review]")?.addEventListener("click", () =>
-      M.openReview({ order: { id: v.review_order, title: p.title }, review: v.my_review, onSaved: () => route() })
+    // any member but the seller reviews it (a buyer who received it: a verified purchase)
+    box.querySelectorAll("[data-review]").forEach((b) =>
+      b.addEventListener("click", () => {
+        if (!signedIn()) return needSignin();
+        M.openReview({ product: p, review: v.my_review, onSaved: () => route() });
+      })
     );
+    box.querySelector("[data-recommend]")?.addEventListener("click", () => {
+      if (!signedIn()) return needSignin();
+      M.openRecommend({ product: p, rec: v.my_rec, onSaved: () => route() });
+    });
+    box.querySelector("[data-addlist]")?.addEventListener("click", () => {
+      if (!signedIn()) return needSignin();
+      M.openListPicker({ product: p });
+    });
     box.querySelector("[data-edit-product]")?.addEventListener("click", () =>
       M.openProductForm({ product: { ...p, categories: p.categories }, store: s, onSaved: () => route() })
+    );
+  }
+
+  // ---------------------------------------------------------------- a purchase list
+  // Market.html?List=<id>&@ref: its products on sale; their links carry ref (else its author), who
+  // brings the sale. Its author changes it, takes products out; another member recommends it again.
+  async function drawList(r) {
+    const seq = ++state.seq;
+    const box = main();
+    box.innerHTML = loadingHtml();
+    const res = await M.call("market_list", { p_list: r.id, p_member: M.memberId() });
+    if (seq !== state.seq) return;
+    if (!res.ok) {
+      box.innerHTML = failHtml(res);
+      return;
+    }
+    if (!res.data?.ok) {
+      document.title = t("mkt.pageTitle");
+      box.innerHTML = `<div class="vs-none glass"><h2>${esc(t("mkt.ls.gone"))}</h2><p class="muted">${esc(t("mkt.ls.goneText"))}</p><p><a class="btn btn-sm btn-primary" href="./Market.html" data-nav>${esc(t("mkt.backToMarket"))}</a></p></div>`;
+      return;
+    }
+    const l = res.data.list;
+    const items = res.data.items || [];
+    const author = l.author?.username || "";
+    const ref = r.ref && r.ref.toLowerCase() !== M.username().toLowerCase() ? r.ref : author;
+    document.title = `${l.name} — ${t("mkt.pageTitle")}`;
+    const imgs = (Array.isArray(l.images) ? l.images : []).filter(Boolean).slice(0, 4);
+    box.innerHTML = `
+      <nav class="mkt-crumbs" aria-label="${esc(t("mkt.ls.eyebrow"))}">
+        <a href="./Market.html" data-nav>${esc(t("mkt.eyebrow"))}</a><span aria-hidden="true">›</span>
+        <a href="${esc(M.profileMarketHref(author, "lists"))}">@${esc(author)}</a><span aria-hidden="true">›</span>
+        <span>${esc(t("mkt.ls.eyebrow"))}</span>
+      </nav>
+      <section class="glass mkt-lhead">
+        <span class="mkt-cat-mosaic n${imgs.length}">${imgs.length ? imgs.map((src) => `<img src="${esc(src)}" alt="" />`).join("") : ICON.list}</span>
+        <div class="mkt-lhead-body">
+          <span class="eyebrow">${ICON.list}<span>${esc(t("mkt.ls.eyebrow"))}</span></span>
+          <h1 dir="auto">${esc(l.name)}</h1>
+          ${l.description ? `<p class="mkt-lhead-desc" dir="auto">${esc(l.description)}</p>` : ""}
+          <p class="mkt-lhead-meta">
+            <a class="mkt-lhead-author" href="${esc(M.profileMarketHref(author, "lists"))}">${C.avatarImg(l.author?.id, author, author)}<b>@${esc(author)}</b></a>
+            <span>${esc(t(Number(l.count) === 1 ? "mkt.productsOne" : "mkt.productsN", { n: M.fmt(l.count) }))}</span>
+            <span>${esc(t("mkt.ls.updated", { date: M.date(l.updated_at) }))}</span>
+            ${Number(l.shares) > 0 ? `<span>${ICON.repost}${esc(t(Number(l.shares) === 1 ? "mkt.rc.sharesOne" : "mkt.rc.sharesN", { n: M.fmt(l.shares) }))}</span>` : ""}
+            ${l.mine ? M.visBadge(l.visibility) : ""}
+          </p>
+          <div class="mkt-lhead-acts">
+            ${l.can_share ? `<button class="btn btn-sm btn-primary" type="button" data-l-reshare>${ICON.repost}<span>${esc(t("mkt.rs.btn"))}</span></button>` : ""}
+            ${l.my_share ? `<span class="mkt-mi-done">${ICON.check}<span>${esc(t("mkt.rs.done"))}</span></span>` : ""}
+            ${l.mine ? `<button class="btn btn-sm btn-ghost" type="button" data-l-edit>${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>` : ""}
+            ${l.mine || l.my_share ? `<button class="btn btn-sm btn-ghost" type="button" data-l-copy>${ICON.link}<span>${esc(t("mkt.copyLink"))}</span></button>` : ""}
+          </div>
+        </div>
+      </section>
+      <section class="mkt-sec">
+        ${items.length ? `<div class="mkt-grid">${items.map((p) => M.cardHtml(p, { ref, remove: l.mine })).join("")}</div>`
+          : `<div class="vs-none glass"><p class="muted">${esc(t(l.mine ? "mkt.ls.emptyMine" : "mkt.ls.empty"))}</p></div>`}
+      </section>`;
+    C.hydrateAvatars?.(box);
+    box.querySelector("[data-l-reshare]")?.addEventListener("click", () => {
+      if (!signedIn()) return (location.href = M.signinHref());
+      M.openReshare({ kind: "list", item: l, onSaved: () => route() });
+    });
+    box.querySelector("[data-l-edit]")?.addEventListener("click", () =>
+      M.openListForm({ list: l, onSaved: (d) => (d ? route() : go(M.profileMarketHref(M.username(), "lists"))) })
+    );
+    box.querySelector("[data-l-copy]")?.addEventListener("click", async () => {
+      const href = M.absolute(M.listHref(l.id, M.username()));
+      try {
+        await navigator.clipboard.writeText(href);
+        C.toast(t("mkt.copied"));
+      } catch {
+        window.prompt(t("mkt.shareLink"), href);
+      }
+    });
+    box.querySelectorAll("[data-card-remove]").forEach((b) =>
+      b.addEventListener("click", async (e) => {
+        e.preventDefault();
+        b.disabled = true;
+        const res2 = await M.call("market_list_item", { p_member: M.memberId(), p_list: l.id, p_product: b.dataset.cardRemove, p_on: false });
+        if (!res2.ok || !res2.data?.ok) {
+          b.disabled = false;
+          return C.toast(M.failText(res2));
+        }
+        C.toast(t("mkt.ls.removed"));
+        route();
+      })
     );
   }
 
@@ -1057,7 +1180,11 @@
       return;
     }
     if (act === "review") {
-      M.openReview({ order: o, review: o.review, onSaved: () => { refreshMe(); route(); } });
+      M.openReview({
+        product: { id: o.product_id, title: o.title, images: o.image ? [o.image] : [], price: o.unit_price },
+        review: o.review,
+        onSaved: () => { refreshMe(); route(); },
+      });
       return;
     }
     if (act === "decline" || (act === "cancel" && side === "sales") || act === "return" || act === "return_refuse") {
@@ -1094,17 +1221,23 @@
   }
 
   // --- Your rating
+  // a review (sql: _mkt_review_json): given = yours (its seller, its audience); received = of
+  // your products (its author, a verified purchase or not)
   function reviewCardHtml(rv, side) {
-    const who = side === "given" ? rv.seller : rv.buyer;
+    const pr = rv.product || {};
+    const img = M.images(pr)[0];
+    const who = side === "given" ? rv.seller : rv.author;
     return `
-      <article class="mkt-order" data-review-card="${esc(rv.order_id)}">
-        <a class="mkt-order-img" href="${esc(M.productHref(rv.product_id))}" data-nav>${rv.image ? `<img src="${esc(rv.image)}" alt="" loading="lazy" />` : ICON.bag}</a>
+      <article class="mkt-order" data-review-card="${esc(rv.id)}">
+        <a class="mkt-order-img" href="${esc(M.productHref(pr.id || ""))}" data-nav>${img ? `<img src="${esc(img)}" alt="" loading="lazy" />` : ICON.bag}</a>
         <div class="mkt-order-body">
           <div class="mkt-order-top">
-            <a class="mkt-order-title" href="${esc(M.productHref(rv.product_id))}" data-nav dir="auto">${esc(rv.title)}</a>
+            <a class="mkt-order-title" href="${esc(M.productHref(pr.id || ""))}" data-nav dir="auto">${esc(pr.title || t("mkt.productGone"))}</a>
             <span class="muted">${esc(M.date(rv.updated_at || rv.created_at))}</span>
           </div>
-          <div class="mkt-order-meta">${esc(t(side === "given" ? "mkt.seller" : "mkt.buyer"))} <a href="${esc(M.profileHref(who?.username))}">@${esc(who?.username || "")}</a>${rv.store_name ? ` · ${esc(rv.store_name)}` : ""}</div>
+          <div class="mkt-order-meta">${esc(t(side === "given" ? "mkt.seller" : "mkt.rv.by"))} <a href="${esc(M.profileHref(who?.username))}">@${esc(who?.username || "")}</a>${pr.store?.name ? ` · ${esc(pr.store.name)}` : ""}
+            ${rv.verified ? `<span class="mkt-verified">${ICON.verified}<span>${esc(t("mkt.rv.verified"))}</span></span>` : ""}
+            ${side === "given" ? M.visBadge(rv.visibility) : ""}</div>
           <div class="mkt-pc-mini">
             <ul class="pro">${(rv.pros || []).map((x) => `<li dir="auto">${esc(x)}</li>`).join("") || `<li class="muted">${esc(t("mkt.noPros"))}</li>`}</ul>
             <ul class="con">${(rv.cons || []).map((x) => `<li dir="auto">${esc(x)}</li>`).join("") || `<li class="muted">${esc(t("mkt.noCons"))}</li>`}</ul>
@@ -1127,7 +1260,7 @@
       (list) => `<div class="mkt-orders">${list.map((x) => reviewCardHtml(x, side)).join("")}</div>`,
       {
         empty: t(side === "given" ? "mkt.empty.ratings.purchases" : "mkt.empty.ratings.sales"),
-        // the delivered orders that wait for a review come first
+        // the products you received and haven't reviewed come first
         before: () =>
           side === "given" && pending.length
             ? `<div class="mkt-pending"><h2>${esc(t("mkt.toReview"))}</h2><div class="mkt-orders">${pending.map((o) => orderHtml(o, "purchases")).join("")}</div></div>`
@@ -1143,8 +1276,8 @@
       }
       if (e.target.closest("[data-rv-edit]")) {
         const id = e.target.closest("[data-review-card]").dataset.reviewCard;
-        const rv = (items?.() || []).find((x) => x.order_id === id);
-        if (rv) M.openReview({ order: { id: rv.order_id, title: rv.title }, review: rv, onSaved: () => route() });
+        const rv = (items?.() || []).find((x) => String(x.id) === id);
+        if (rv) M.openReview({ product: rv.product || {}, review: rv, onSaved: () => route() });
       }
     };
   }
@@ -1272,6 +1405,8 @@
 
   // ---------------------------------------------------------------- routing
   function route() {
+    // a product reached inside the page (a purchase list's card: …&@ref) keeps who brings the sale too
+    captureRef();
     state.route = parseRoute();
     document.body.dataset.mktView = state.route.view;
     drawTools();
@@ -1279,6 +1414,7 @@
     const r = state.route;
     if (r.view === "panel") return drawPanel(r);
     if (r.view === "product") return drawProduct(r);
+    if (r.view === "list") return drawList(r);
     if (r.view === "category") return drawCategory(r);
     if (r.view === "store") return drawStore(r);
     if (r.view === "search") return drawSearch(r);

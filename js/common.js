@@ -2177,6 +2177,10 @@
     // the team suspended / restored a product, or a store (its link is Store settings)
     market_suspended: (n) => (String(n?.href || "").includes("#settings") ? "notif.mktSuspendedStore" : "notif.mktSuspendedProduct"),
     market_restored: (n) => (String(n?.href || "").includes("#settings") ? "notif.mktRestoredStore" : "notif.mktRestoredProduct"),
+    // somebody recommended again your recommendation / purchase list (its link: ?List=…); you got
+    // your equal share of the commission of a sale made through it
+    market_rerec: (n) => (String(n?.href || "").includes("List=") ? "notif.mktRerecList" : "notif.mktRerec"),
+    market_root_commission: "notif.mktRootCommission",
   };
 
   function noteTitle(n) {

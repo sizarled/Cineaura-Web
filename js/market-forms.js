@@ -12,6 +12,12 @@
  *   M.tierHtml(tier)                the tier of a store: N / K / M / B and the progress in it (K25%)
  *   M.openReport({ kind, id })      the Report button of a store / product (Panel > Reports > Market)
  *   M.openAddress({ order })        the buyer's delivery address of a sold physical order
+ *   M.audienceHtml / M.wireAudience / M.readAudience   public / exclusive / private (as the videos)
+ *   M.openRecommend({ product })    recommend a product (its page), M.openReshare({ kind, item }) again
+ *   M.openListPicker({ product })   add it to your purchase lists, M.openListForm({ list }) one list
+ *   M.openReview({ product })       your review of a product (any member but its seller)
+ *   M.itemHtml(item) / M.wireItems  the cards of a recommendation, a purchase list, a review (a
+ *                                   member's page > Market, Profile > Updates, a purchase list page)
  */
 (() => {
   "use strict";
@@ -52,6 +58,13 @@
     download: svg('<path d="M12 4v11"/><path d="M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19.5h14"/>', 16),
     home: svg('<path d="M4 10.5L12 4l8 6.5"/><path d="M6 9v10.5h12V9"/><path d="M10 19.5v-5h4v5"/>', 16),
     lock: svg('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>', 14),
+    star: svg('<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>', 14),
+    thumb: svg('<path d="M7 10.5v9H4v-9z"/><path d="M7 10.5l3.6-6.3a1.9 1.9 0 0 1 3.4 1.3l-.5 3.5h5a2 2 0 0 1 2 2.3l-1.1 6.4a2 2 0 0 1-2 1.8H7"/>', 16),
+    repost: svg('<path d="M17 3l3 3-3 3"/><path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H20"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H4"/>', 16),
+    list: svg('<path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.6" cy="6.5" r="1.1"/><circle cx="4.6" cy="12" r="1.1"/><circle cx="4.6" cy="17.5" r="1.1"/>', 16),
+    trash: svg('<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4.5h6V7"/>', 15),
+    check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>', 14, 2.4),
+    verified: svg('<path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M8.8 12.2l2.2 2.2 4.2-4.4"/>', 14),
   };
   M.ICON = ICON;
 
@@ -85,12 +98,16 @@
     "return_days", "title", "kind", "price", "shipping_cost", "stock", "categories", "images", "video", "limit",
     "not_found", "own", "closed", "qty", "address", "points", "state", "note", "window", "empty", "text", "body",
     "product", "orders", "commission", "download", "suspended", "reason", "already", "phone",
+    "people", "visibility", "private", "full",
   ];
   M.errText = (data) => {
     const r = String(data?.reason || "");
     if (r === "points") return t("mkt.err.points", { need: M.fmt(data.need), have: M.fmt(data.have) });
     if (r === "stock" && data?.stock != null) return t("mkt.err.stockLeft", { n: M.fmt(data.stock) });
     if (r === "city" && data?.city) return t("mkt.err.cityOnly", { city: data.city });
+    if (r === "people" && Array.isArray(data?.unknown) && data.unknown.length) {
+      return t("mkt.err.peopleUnknown", { names: data.unknown.map((n) => `@${n}`).join(", ") });
+    }
     return t(REASONS.includes(r) || r === "stock" || r === "city" ? `mkt.err.${r}` : "mkt.err.failed");
   };
   // A failed call (no answer, SQL missing…) or a refusal, as a sentence.
@@ -242,8 +259,11 @@
       </div>`;
   };
 
-  M.cardHtml = (p) => {
-    const href = M.productHref(p.id);
+  // opts.ref: the member who brings the sale (a purchase list page); opts.remove: a × button
+  // (your own purchase list). Also called as list.map(M.cardHtml): opts is then an index.
+  M.cardHtml = (p, opts) => {
+    const o = opts && typeof opts === "object" ? opts : {};
+    const href = M.productHref(p.id, o.ref || "");
     const badges = [
       p.kind === "digital" ? `<span class="mkt-badge b-digital">${esc(t("mkt.kind.digital"))}</span>` : "",
       Number(p.stock) <= 0 ? `<span class="mkt-badge b-out">${esc(t("mkt.soldOut"))}</span>` : "",
@@ -255,6 +275,7 @@
         <div class="mkt-card-media">
           ${M.slidesHtml(images(p), href, { label: p.title })}
           ${badges ? `<span class="mkt-badges">${badges}</span>` : ""}
+          ${o.remove ? `<button class="mkt-card-x" type="button" data-card-remove="${esc(p.id)}" title="${esc(t("mkt.ls.removeOne"))}" aria-label="${esc(t("mkt.ls.removeOne"))}">${ICON.close}</button>` : ""}
         </div>
         <div class="mkt-card-body">
           <a class="mkt-card-title" href="${esc(href)}" data-nav dir="auto">${esc(p.title)}</a>
@@ -1166,14 +1187,357 @@
     return wrap;
   };
 
+  // ---------------------------------------------------------------- audience (round 26)
+  // Who may see a recommendation, a purchase list or a review, as for the videos: public,
+  // exclusive (signed-in members, narrowed to followers / premium plans / countries) or private
+  // (the members listed by username or member ID).
+  const VIS = ["public", "exclusive", "private"];
+  const VIS_ICON = { public: ICON.globe, exclusive: ICON.star, private: ICON.lock };
+  M.visBadge = (vis) => {
+    const v = VIS.includes(vis) ? vis : "public";
+    return `<span class="mkt-vis v-${v}" title="${esc(t(`mkt.au.hint.${v}`))}">${VIS_ICON[v]}<span>${esc(t(`pm.vis.${v}`))}</span></span>`;
+  };
+  const ctyChip = (cc) =>
+    `<span class="mkt-chip-x" data-cc="${esc(cc)}">${esc(M.country(cc))}<button type="button" data-cc-x aria-label="${esc(t("pic.remove"))}">${ICON.close}</button></span>`;
+
+  // share: a recommendation or a purchase list (only the public ones can be recommended again)
+  M.audienceHtml = (aud = null, { share = false } = {}) => {
+    const a = { visibility: "public", followers: false, premium: false, countries: [], people: "", ...(aud || {}) };
+    const cty = (Array.isArray(a.countries) ? a.countries : String(a.countries || "").split(",")).map((c) => String(c).trim().toUpperCase()).filter((c) => /^[A-Z]{2}$/.test(c));
+    return `
+      <fieldset class="mkt-field mkt-aud" data-aud>
+        <legend>${esc(t("pm.visibility"))}</legend>
+        <div class="mkt-aud-opts">
+          ${VIS.map((v) => `<label class="mkt-aud-opt"><input type="radio" name="aud-vis" value="${v}" ${v === a.visibility ? "checked" : ""} />
+            <span><b>${VIS_ICON[v]}<span>${esc(t(`pm.vis.${v}`))}</span></b><small>${esc(t(`mkt.au.hint.${v}`))}</small></span></label>`).join("")}
+        </div>
+        <div class="mkt-aud-more" data-aud-excl ${a.visibility === "exclusive" ? "" : "hidden"}>
+          <p class="muted mkt-f-hint">${esc(t("mkt.au.exclWho"))}</p>
+          <div class="mkt-aud-checks">
+            <label class="lang-chip"><input type="checkbox" data-aud-fol ${a.followers ? "checked" : ""} /> ${esc(t("vid.f.exclFollowers"))}</label>
+            <label class="lang-chip"><input type="checkbox" data-aud-prem ${a.premium ? "checked" : ""} /> ${esc(t("vid.f.exclPremium"))}</label>
+          </div>
+          <label class="mkt-field"><span>${esc(t("vid.f.exclCountries"))}</span>
+            <select data-aud-cty><option value="">${esc(t("vid.f.exclAddCountry"))}</option>${C.countryChoices().map(([cc, n]) => `<option value="${cc}">${esc(n)}</option>`).join("")}</select></label>
+          <span class="mkt-chips" data-aud-chips>${cty.map(ctyChip).join("")}</span>
+          <p class="muted mkt-f-hint">${esc(t("vid.f.exclHint"))}</p>
+        </div>
+        <div class="mkt-aud-more" data-aud-priv ${a.visibility === "private" ? "" : "hidden"}>
+          <label class="mkt-field"><span>${esc(t("mkt.au.people"))} *</span>
+            <input type="text" data-aud-people maxlength="2000" dir="auto" autocomplete="off" placeholder="${esc(t("dash.peoplePh"))}" value="${esc(a.people || "")}" /></label>
+          <p class="muted mkt-f-hint">${esc(t("mkt.au.peopleHint"))}</p>
+        </div>
+        ${share ? `<p class="muted mkt-f-hint mkt-aud-share" data-aud-share ${a.visibility === "public" ? "hidden" : ""}>${ICON.repost}<span>${esc(t("mkt.au.notShared"))}</span></p>` : ""}
+      </fieldset>`;
+  };
+
+  M.wireAudience = (root) => {
+    const box = root.querySelector("[data-aud]");
+    if (!box) return;
+    const sync = () => {
+      const v = box.querySelector('input[name="aud-vis"]:checked')?.value || "public";
+      box.querySelector("[data-aud-excl]").hidden = v !== "exclusive";
+      box.querySelector("[data-aud-priv]").hidden = v !== "private";
+      const sh = box.querySelector("[data-aud-share]");
+      if (sh) sh.hidden = v === "public";
+    };
+    box.querySelectorAll('input[name="aud-vis"]').forEach((r) => r.addEventListener("change", () => {
+      sync();
+      if (r.checked && r.value === "private") box.querySelector("[data-aud-people]")?.focus();
+    }));
+    const chips = box.querySelector("[data-aud-chips]");
+    box.querySelector("[data-aud-cty]").addEventListener("change", (e) => {
+      const cc = e.target.value;
+      e.target.value = "";
+      if (!cc || chips.querySelector(`[data-cc="${cc}"]`) || chips.children.length >= 50) return;
+      chips.insertAdjacentHTML("beforeend", ctyChip(cc));
+    });
+    chips.addEventListener("click", (e) => {
+      if (e.target.closest("[data-cc-x]")) e.target.closest("[data-cc]").remove();
+    });
+    sync();
+  };
+
+  // -> { visibility, followers, premium, countries: [..], people } (what the market functions read)
+  M.readAudience = (root) => {
+    const box = root.querySelector("[data-aud]");
+    const visibility = box?.querySelector('input[name="aud-vis"]:checked')?.value || "public";
+    return {
+      visibility,
+      followers: Boolean(box?.querySelector("[data-aud-fol]")?.checked),
+      premium: Boolean(box?.querySelector("[data-aud-prem]")?.checked),
+      countries: [...(box?.querySelectorAll("[data-aud-chips] [data-cc]") || [])].map((c) => c.dataset.cc),
+      people: String(box?.querySelector("[data-aud-people]")?.value || "").trim(),
+    };
+  };
+  // the form's own check, before the call: a private one names somebody
+  const audienceProblem = (aud) => (aud.visibility === "private" && !aud.people ? t("mkt.err.people") : "");
+
+  // A refusal, in the words of the dialog it comes from (map: reason -> key), else the usual one.
+  const errIn = (res, map = {}) => {
+    const r = String(res?.data?.reason || "");
+    return res?.ok && res.data && res.data.ok === false && map[r] ? t(map[r]) : M.failText(res);
+  };
+
+  M.listHref = (id, ref = "") => `./Market.html?List=${encodeURIComponent(id)}${ref ? `&@${encodeURIComponent(ref)}` : ""}`;
+  // a member's page > Market (#market, #market/recs | lists | reviews)
+  M.profileMarketHref = (u, tab = "") => `${u ? M.profileHref(u) : "./Profile.html"}#market${tab ? `/${tab}` : ""}`;
+
+  const productLine = (p) => `
+    <div class="mkt-dlg-product">
+      <span class="mkt-mini-img">${M.images(p)[0] ? `<img src="${esc(M.images(p)[0])}" alt="" />` : ICON.bag}</span>
+      <span><b dir="auto">${esc(p.title || "")}</b>${p.price != null ? `<small dir="ltr">${esc(M.pt(p.price))}</small>` : ""}</span>
+    </div>`;
+
+  async function confirmDelete(text) {
+    return window.confirm(text);
+  }
+
+  // ---------------------------------------------------------------- recommendations
+  // Recommend a product (its page), or change / remove your recommendation of it.
+  M.openRecommend = ({ product, rec = null, onSaved = null }) => {
+    const p = product;
+    const pct = Math.max(0, Math.min(25, Math.floor(Number(p.commission) || 0)));
+    // yours recommends somebody else's again: the commission is shared with that member
+    const root = rec?.root?.author?.username || "";
+    const earn = !pct ? "" : root ? t("mkt.rs.split", { name: `@${root}` }) : t("mkt.rc.earn", { pct });
+    const wrap = M.modal(`
+      ${head(t(rec ? "mkt.rc.editTitle" : "mkt.rc.title"))}
+      <form class="mkt-form" data-rc novalidate>
+        ${productLine(p)}
+        ${root ? `<p class="muted mkt-f-hint">${ICON.repost}<span>${esc(t("mkt.rs.ofRec", { name: `@${root}` }))}</span></p>` : ""}
+        <label class="mkt-field"><span>${esc(t("mkt.rc.note"))}</span>
+          <textarea name="note" dir="auto" rows="4" maxlength="500" placeholder="${esc(t("mkt.rc.notePh"))}">${esc(rec?.note || "")}</textarea></label>
+        ${M.audienceHtml(rec?.audience || { visibility: rec?.visibility || "public" }, { share: true })}
+        ${earn ? `<p class="mkt-share-earn">${ICON.coins}<span>${esc(earn)}</span></p>` : ""}
+        <p class="mkt-form-err" data-err role="alert"></p>
+        <div class="mkt-form-acts">
+          ${rec ? `<button class="btn btn-ghost mkt-del" type="button" data-del>${ICON.trash}<span>${esc(t("common.delete"))}</span></button>` : ""}
+          <button class="btn btn-ghost" type="button" data-close>${esc(t("common.cancel"))}</button>
+          <button class="btn btn-primary" type="submit" data-save>${ICON.thumb}<span>${esc(t(rec ? "common.save" : "mkt.rc.publish"))}</span></button>
+        </div>
+      </form>`, { cls: "mkt-modal-sm mkt-modal-aud", label: t("mkt.rc.title") });
+    const form = wrap.querySelector("[data-rc]");
+    const err = form.querySelector("[data-err]");
+    M.wireAudience(form);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const aud = M.readAudience(form);
+      const problem = audienceProblem(aud);
+      if (problem) {
+        err.textContent = problem;
+        return;
+      }
+      const btn = form.querySelector("[data-save]");
+      btn.disabled = true;
+      const r = await M.call("market_rec_save", { p_member: M.memberId(), p_product: p.id, d: { note: form.note.value.trim(), ...aud } });
+      btn.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = errIn(r, { note: "mkt.rc.errNote", not_found: "mkt.rc.errGone" });
+        return;
+      }
+      wrap.close();
+      C.toast(t(r.data.created ? "mkt.rc.saved" : "mkt.rc.changed"));
+      onSaved?.(r.data);
+    });
+    form.querySelector("[data-del]")?.addEventListener("click", async () => {
+      if (!(await confirmDelete(t("mkt.rc.delAsk")))) return;
+      const r = await M.call("market_rec_delete", { p_member: M.memberId(), p_id: rec.id });
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = M.failText(r);
+        return;
+      }
+      wrap.close();
+      C.toast(t("mkt.rc.deleted"));
+      onSaved?.(null);
+    });
+  };
+
+  // Recommend again somebody else's public recommendation (item: its card) or public purchase list.
+  M.openReshare = ({ kind, item, onSaved = null }) => {
+    const isList = kind === "list";
+    // the member who started it shares the commission of a sale made through your link
+    const root = isList ? item.author?.username : item.root?.author?.username || item.author?.username;
+    const what = isList ? item.name : item.product?.title || "";
+    const wrap = M.modal(`
+      ${head(t("mkt.rs.title"))}
+      <form class="mkt-form" data-rs novalidate>
+        <p class="mkt-rs-what">${isList ? ICON.list : ICON.thumb}<span><b dir="auto">${esc(what)}</b><small>${esc(t(isList ? "mkt.rs.ofList" : "mkt.rs.ofRec", { name: `@${root || ""}` }))}</small></span></p>
+        <p class="mkt-share-earn">${ICON.coins}<span>${esc(t("mkt.rs.split", { name: `@${root || ""}` }))}</span></p>
+        <label class="mkt-field"><span>${esc(t("mkt.rc.note"))}</span>
+          <textarea name="note" dir="auto" rows="3" maxlength="500" placeholder="${esc(t("mkt.rc.notePh"))}"></textarea></label>
+        ${M.audienceHtml(null, { share: true })}
+        <p class="mkt-form-err" data-err role="alert"></p>
+        <div class="mkt-form-acts">
+          <button class="btn btn-ghost" type="button" data-close>${esc(t("common.cancel"))}</button>
+          <button class="btn btn-primary" type="submit" data-save>${ICON.repost}<span>${esc(t("mkt.rs.publish"))}</span></button>
+        </div>
+      </form>`, { cls: "mkt-modal-sm mkt-modal-aud", label: t("mkt.rs.title") });
+    const form = wrap.querySelector("[data-rs]");
+    const err = form.querySelector("[data-err]");
+    M.wireAudience(form);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const aud = M.readAudience(form);
+      const problem = audienceProblem(aud);
+      if (problem) {
+        err.textContent = problem;
+        return;
+      }
+      const btn = form.querySelector("[data-save]");
+      btn.disabled = true;
+      const r = await M.call("market_rec_share", {
+        p_member: M.memberId(),
+        p_kind: isList ? "list" : "rec",
+        p_id: item.id,
+        d: { note: form.note.value.trim(), ...aud },
+      });
+      btn.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = errIn(r, { own: "mkt.rs.errOwn", already: "mkt.rs.errAlready", private: "mkt.err.private", note: "mkt.rc.errNote" });
+        return;
+      }
+      wrap.close();
+      C.toast(t("mkt.rs.saved"));
+      onSaved?.(r.data);
+    });
+  };
+
+  // ---------------------------------------------------------------- purchase lists
+  // Create (list null) or change a purchase list; product: put it in the new list at once.
+  M.openListForm = ({ list = null, product = null, onSaved = null }) => {
+    const wrap = M.modal(`
+      ${head(t(list ? "mkt.ls.editTitle" : "mkt.ls.newTitle"))}
+      <form class="mkt-form" data-ls novalidate>
+        ${product ? productLine(product) : ""}
+        <label class="mkt-field"><span>${esc(t("mkt.ls.name"))} *</span>
+          <input type="text" name="name" dir="auto" maxlength="80" required value="${esc(list?.name || "")}" placeholder="${esc(t("mkt.ls.namePh"))}" /></label>
+        <label class="mkt-field"><span>${esc(t("mkt.ls.description"))}</span>
+          <textarea name="description" dir="auto" rows="3" maxlength="500" placeholder="${esc(t("mkt.ls.descriptionPh"))}">${esc(list?.description || "")}</textarea></label>
+        ${M.audienceHtml(list?.audience || { visibility: list?.visibility || "public" }, { share: true })}
+        <p class="mkt-form-err" data-err role="alert"></p>
+        <div class="mkt-form-acts">
+          ${list ? `<button class="btn btn-ghost mkt-del" type="button" data-del>${ICON.trash}<span>${esc(t("common.delete"))}</span></button>` : ""}
+          <button class="btn btn-ghost" type="button" data-close>${esc(t("common.cancel"))}</button>
+          <button class="btn btn-primary" type="submit" data-save>${esc(t(list ? "common.save" : "mkt.ls.create"))}</button>
+        </div>
+      </form>`, { cls: "mkt-modal-sm mkt-modal-aud", label: t("mkt.ls.newTitle") });
+    const form = wrap.querySelector("[data-ls]");
+    const err = form.querySelector("[data-err]");
+    M.wireAudience(form);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = form.name.value.replace(/\s+/g, " ").trim();
+      if (name.length < 2 || name.length > 80) {
+        err.textContent = t("mkt.ls.errName");
+        return;
+      }
+      const aud = M.readAudience(form);
+      const problem = audienceProblem(aud);
+      if (problem) {
+        err.textContent = problem;
+        return;
+      }
+      const btn = form.querySelector("[data-save]");
+      btn.disabled = true;
+      const r = await M.call("market_list_save", {
+        p_member: M.memberId(),
+        d: { id: list?.id || "", name, description: form.description.value.trim(), ...aud },
+      });
+      if (r.ok && r.data?.ok && product && r.data.created) {
+        await M.call("market_list_item", { p_member: M.memberId(), p_list: r.data.id, p_product: product.id, p_on: true });
+      }
+      btn.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = errIn(r, { name: "mkt.ls.errName", description: "mkt.ls.errDescription", limit: "mkt.ls.errLimit" });
+        return;
+      }
+      wrap.close();
+      C.toast(t(r.data.created ? (product ? "mkt.ls.createdWith" : "mkt.ls.created") : "mkt.ls.saved"));
+      onSaved?.(r.data);
+    });
+    form.querySelector("[data-del]")?.addEventListener("click", async () => {
+      if (!(await confirmDelete(t("mkt.ls.delAsk", { name: list.name })))) return;
+      const r = await M.call("market_list_delete", { p_member: M.memberId(), p_list: list.id });
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = M.failText(r);
+        return;
+      }
+      wrap.close();
+      C.toast(t("mkt.ls.deleted"));
+      onSaved?.(null);
+    });
+  };
+
+  // "Add to a purchase list" (a product page): your lists, ticked when the product is in them.
+  M.openListPicker = ({ product, onChanged = null }) => {
+    const wrap = M.modal(`
+      ${head(t("mkt.ls.pickTitle"))}
+      <div class="mkt-form mkt-lpick" data-lpick>
+        ${productLine(product)}
+        <div class="mkt-lpick-list" data-lpick-list aria-live="polite"><div class="mkt-loading"><span class="mkt-spin" aria-hidden="true"></span><span>${esc(t("common.loading"))}</span></div></div>
+        <p class="mkt-form-err" data-err role="alert"></p>
+        <div class="mkt-form-acts">
+          <button class="btn btn-ghost" type="button" data-lpick-new>${ICON.plus}<span>${esc(t("mkt.ls.new"))}</span></button>
+          <button class="btn btn-primary" type="button" data-close>${esc(t("mkt.ls.done"))}</button>
+        </div>
+      </div>`, { cls: "mkt-modal-sm", label: t("mkt.ls.pickTitle") });
+    const box = wrap.querySelector("[data-lpick-list]");
+    const err = wrap.querySelector("[data-err]");
+    const paint = (items) => {
+      box.innerHTML = items.length
+        ? items.map((l) => `
+          <label class="mkt-lpick-row">
+            <input type="checkbox" data-lpick-id="${esc(l.id)}" ${l.has ? "checked" : ""} />
+            <span class="mkt-lpick-name"><b dir="auto">${esc(l.name)}</b><small>${esc(t(Number(l.count) === 1 ? "mkt.productsOne" : "mkt.productsN", { n: M.fmt(l.count) }))}</small></span>
+            ${M.visBadge(l.visibility)}
+          </label>`).join("")
+        : `<p class="muted">${esc(t("mkt.ls.none"))}</p>`;
+    };
+    const load = async () => {
+      const r = await M.call("market_lists_mine", { p_member: M.memberId(), p_product: product.id });
+      if (!wrap.isConnected) return;
+      if (!r.ok || !r.data?.ok) {
+        box.innerHTML = `<p class="muted">${esc(M.failText(r))}</p>`;
+        return;
+      }
+      paint(r.data.items || []);
+    };
+    box.addEventListener("change", async (e) => {
+      const cb = e.target.closest("[data-lpick-id]");
+      if (!cb) return;
+      cb.disabled = true;
+      err.textContent = "";
+      const r = await M.call("market_list_item", { p_member: M.memberId(), p_list: cb.dataset.lpickId, p_product: product.id, p_on: cb.checked });
+      cb.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        cb.checked = !cb.checked;
+        err.textContent = errIn(r, { full: "mkt.err.full", product: "mkt.ls.errProduct" });
+        return;
+      }
+      const small = cb.closest(".mkt-lpick-row").querySelector("small");
+      small.textContent = t(Number(r.data.count) === 1 ? "mkt.productsOne" : "mkt.productsN", { n: M.fmt(r.data.count) });
+      C.toast(t(cb.checked ? "mkt.ls.added" : "mkt.ls.removed"));
+      onChanged?.();
+    });
+    wrap.querySelector("[data-lpick-new]").addEventListener("click", () =>
+      M.openListForm({ product, onSaved: () => M.openListPicker({ product, onChanged }) })
+    );
+    load();
+    return wrap;
+  };
+
   // ---------------------------------------------------------------- review
-  // The good points and the bad points of a delivered order, one per line.
-  M.openReview = ({ order, review = null, onSaved = null }) => {
+  // Your review of a product: the good points and the bad points, one per line, and who may read
+  // it. Any member but its seller; a member who received it writes a verified purchase.
+  // (order: an order of the product, from the purchases)
+  M.openReview = ({ product = null, order = null, review = null, onSaved = null }) => {
+    const p = product || { id: order?.product_id, title: order?.title, images: order?.image ? [order.image] : [] };
     const lines = (a) => (Array.isArray(a) ? a.join("\n") : "");
     const wrap = M.modal(`
       ${head(t(review ? "mkt.rv.edit" : "mkt.rv.title"))}
       <form class="mkt-form" data-rv novalidate>
-        <p class="muted">${esc(order.title || "")}</p>
+        ${productLine(p)}
         <div class="mkt-form-2">
           <label class="mkt-field mkt-rv-pros"><span>${ICON.up} ${esc(t("mkt.pros"))}</span>
             <textarea name="pros" dir="auto" rows="6" placeholder="${esc(t("mkt.rv.prosPh"))}">${esc(lines(review?.pros))}</textarea></label>
@@ -1181,14 +1545,18 @@
             <textarea name="cons" dir="auto" rows="6" placeholder="${esc(t("mkt.rv.consPh"))}">${esc(lines(review?.cons))}</textarea></label>
         </div>
         <p class="muted mkt-f-hint">${esc(t("mkt.rv.hint"))}</p>
+        ${M.audienceHtml(review?.audience || { visibility: review?.visibility || "public" })}
+        <p class="muted mkt-f-hint">${ICON.verified}<span>${esc(t("mkt.rv.verifiedHint"))}</span></p>
         <p class="mkt-form-err" data-err role="alert"></p>
         <div class="mkt-form-acts">
+          ${review ? `<button class="btn btn-ghost mkt-del" type="button" data-del>${ICON.trash}<span>${esc(t("common.delete"))}</span></button>` : ""}
           <button class="btn btn-ghost" type="button" data-close>${esc(t("common.cancel"))}</button>
           <button class="btn btn-primary" type="submit" data-save>${esc(t("mkt.rv.publish"))}</button>
         </div>
-      </form>`, { cls: "mkt-modal-wide", label: t("mkt.rv.title") });
+      </form>`, { cls: "mkt-modal-wide mkt-modal-aud", label: t("mkt.rv.title") });
     const form = wrap.querySelector("[data-rv]");
     const err = form.querySelector("[data-err]");
+    M.wireAudience(form);
     const split = (v) => v.split(/\n+/).map((x) => x.replace(/^[\s•\-*–]+/, "").trim()).filter(Boolean);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -1202,17 +1570,186 @@
         err.textContent = t("mkt.err.text");
         return;
       }
+      const aud = M.readAudience(form);
+      const problem = audienceProblem(aud);
+      if (problem) {
+        err.textContent = problem;
+        return;
+      }
       const btn = form.querySelector("[data-save]");
       btn.disabled = true;
-      const r = await M.call("market_review_save", { p_member: M.memberId(), p_order: order.id || order.order_id, p_pros: pros, p_cons: cons });
+      const r = await M.call("market_review_save", { p_member: M.memberId(), p_product: p.id, p_pros: pros, p_cons: cons, p_audience: aud });
       btn.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = errIn(r, { own: "mkt.rv.errOwn" });
+        return;
+      }
+      wrap.close();
+      C.toast(t("mkt.rv.saved"));
+      onSaved?.(r.data);
+    });
+    form.querySelector("[data-del]")?.addEventListener("click", async () => {
+      if (!(await confirmDelete(t("mkt.rv.delAsk")))) return;
+      const r = await M.call("market_review_delete", { p_member: M.memberId(), p_product: p.id });
       if (!r.ok || !r.data?.ok) {
         err.textContent = M.failText(r);
         return;
       }
       wrap.close();
-      C.toast(t("mkt.rv.saved"));
-      onSaved?.();
+      C.toast(t("mkt.rv.deleted"));
+      onSaved?.(null);
+    });
+  };
+
+  // ---------------------------------------------------------------- the cards of what members publish
+  // A product inside a recommendation or a review (ref: who brings the sale, in its link).
+  M.productMiniHtml = (p, ref = "") => {
+    if (!p) return `<p class="muted mkt-mini-gone">${esc(t("mkt.productGone"))}</p>`;
+    const img = M.images(p)[0];
+    return `
+      <a class="mkt-mini" href="${esc(M.productHref(p.id, ref))}" data-nav>
+        <span class="mkt-mini-img">${img ? `<img src="${esc(img)}" alt="" loading="lazy" />` : ICON.bag}</span>
+        <span class="mkt-mini-body">
+          <b dir="auto">${esc(p.title)}</b>
+          <span class="mkt-price" dir="ltr">${esc(M.pt(p.price))}</span>
+          <small>${p.store?.name ? `<span dir="auto">${esc(p.store.name)}</span>` : ""}${p.seller?.username ? ` · <bdi>@${esc(p.seller.username)}</bdi>` : ""}</small>
+        </span>
+        ${Number(p.commission) > 0 ? `<span class="mkt-mini-pct" title="${esc(t("mkt.commissionN", { pct: p.commission }))}">${ICON.coins}<span dir="ltr">${esc(String(p.commission))}%</span></span>` : ""}
+      </a>`;
+  };
+
+  const whoLink = (u) => `<a href="${esc(M.profileMarketHref(u))}"><b><bdi>@${esc(u || "")}</bdi></b></a>`;
+  const itemHead = (item, line) => {
+    const u = item.author?.username || "";
+    return `
+      <header class="mkt-mi-head">
+        <a class="mkt-mi-av" href="${esc(M.profileMarketHref(u))}" tabindex="-1" aria-hidden="true">${C.avatarImg(item.author?.id, u, u)}</a>
+        <div class="mkt-mi-line">
+          <p>${line}</p>
+          <small class="muted"><time datetime="${esc(item.at || "")}">${esc(M.dateTime(item.at))}</time>${item.mine ? ` · ${M.visBadge(item.visibility)}` : ""}</small>
+        </div>
+      </header>`;
+  };
+  const sharesText = (n) => (Number(n) > 0 ? t(Number(n) === 1 ? "mkt.rc.sharesOne" : "mkt.rc.sharesN", { n: M.fmt(n) }) : "");
+
+  // A purchase list: up to 4 pictures, its name, how many products (ref: who brings the sale).
+  M.listBodyHtml = (l, ref = "") => {
+    const imgs = (Array.isArray(l.images) ? l.images : []).filter(Boolean).slice(0, 4);
+    return `
+      <a class="mkt-lcard" href="${esc(M.listHref(l.id, ref || l.author?.username || ""))}" data-nav>
+        <span class="mkt-cat-mosaic n${imgs.length}">${imgs.length ? imgs.map((src) => `<img src="${esc(src)}" alt="" loading="lazy" />`).join("") : ICON.list}</span>
+        <span class="mkt-lcard-body">
+          <span class="eyebrow">${esc(t("mkt.ls.eyebrow"))}</span>
+          <b dir="auto">${esc(l.name)}</b>
+          ${l.description ? `<span class="mkt-lcard-desc" dir="auto">${esc(l.description)}</span>` : ""}
+          <small class="muted">${esc(t(Number(l.count) === 1 ? "mkt.productsOne" : "mkt.productsN", { n: M.fmt(l.count) }))}</small>
+        </span>
+      </a>`;
+  };
+
+  // One card per thing published: { type: rec | list | review, … } (sql: _mkt_published_json).
+  M.itemHtml = (item) => {
+    if (!item) return "";
+    const key = `${item.type}:${item.id}`;
+    const u = item.author?.username || "";
+    let line = "";
+    let body = "";
+    const acts = [];
+    if (item.type === "rec") {
+      const root = item.root?.author?.username;
+      if (item.kind === "list") line = t("mkt.rc.lineList", { actor: whoLink(u), name: whoLink(root) });
+      else if (root) line = t("mkt.rc.lineAgain", { actor: whoLink(u), name: whoLink(root) });
+      else line = t("mkt.rc.line", { actor: whoLink(u) });
+      if (item.via?.author?.username) line += ` <span class="muted mkt-mi-via">${t("mkt.rc.via", { name: whoLink(item.via.author.username) })}</span>`;
+      body = `
+        ${item.note ? `<p class="mkt-mi-note" dir="auto">${esc(item.note)}</p>` : ""}
+        ${item.root?.note && item.kind === "product" ? `<blockquote class="mkt-mi-quote"><b><bdi>@${esc(root)}</bdi></b> <span dir="auto">${esc(item.root.note)}</span></blockquote>` : ""}
+        ${item.kind === "list" ? (item.list ? M.listBodyHtml(item.list, u) : `<p class="muted mkt-mini-gone">${esc(t("mkt.ls.gone"))}</p>`) : M.productMiniHtml(item.product, u)}`;
+      if (item.can_share) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="reshare">${ICON.repost}<span>${esc(t("mkt.rs.btn"))}</span></button>`);
+      else if (item.my_share) acts.push(`<span class="mkt-mi-done">${ICON.check}<span>${esc(t("mkt.rs.done"))}</span></span>`);
+      if (item.mine) {
+        if (item.kind === "product" && !item.root) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-rec">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
+        acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="copy">${ICON.link}<span>${esc(t("mkt.copyLink"))}</span></button>`);
+        acts.push(`<button class="btn btn-sm btn-ghost mkt-del" type="button" data-mi-act="delete-rec">${ICON.trash}<span>${esc(t("common.delete"))}</span></button>`);
+      }
+    } else if (item.type === "list") {
+      line = t("mkt.ls.line", { actor: whoLink(u) });
+      body = M.listBodyHtml(item, u);
+      if (item.can_share) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="reshare-list">${ICON.repost}<span>${esc(t("mkt.rs.btn"))}</span></button>`);
+      else if (item.my_share) acts.push(`<span class="mkt-mi-done">${ICON.check}<span>${esc(t("mkt.rs.done"))}</span></span>`);
+      if (item.mine) {
+        acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-list">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
+        acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="copy">${ICON.link}<span>${esc(t("mkt.copyLink"))}</span></button>`);
+      }
+    } else if (item.type === "review") {
+      line = t("mkt.rv.line", { actor: whoLink(u) });
+      if (item.verified) line += ` <span class="mkt-verified">${ICON.verified}<span>${esc(t("mkt.rv.verified"))}</span></span>`;
+      body = `
+        ${M.productMiniHtml(item.product)}
+        <div class="mkt-pc-mini">
+          <ul class="pro">${(item.pros || []).map((x) => `<li dir="auto">${esc(x)}</li>`).join("") || `<li class="muted">${esc(t("mkt.noPros"))}</li>`}</ul>
+          <ul class="con">${(item.cons || []).map((x) => `<li dir="auto">${esc(x)}</li>`).join("") || `<li class="muted">${esc(t("mkt.noCons"))}</li>`}</ul>
+        </div>`;
+      if (item.mine) {
+        acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-review">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
+        acts.push(`<button class="btn btn-sm btn-ghost mkt-del" type="button" data-mi-act="delete-review">${ICON.trash}<span>${esc(t("common.delete"))}</span></button>`);
+      }
+    }
+    const shares = item.type === "review" ? "" : sharesText(item.shares);
+    return `
+      <article class="glass mkt-mi mkt-mi-${esc(item.type)}" data-mi="${esc(key)}">
+        ${itemHead(item, line)}
+        <div class="mkt-mi-body">${body}</div>
+        ${acts.length || shares ? `<footer class="mkt-mi-acts">${acts.join("")}${shares ? `<span class="muted mkt-mi-shares">${ICON.repost}<span>${esc(shares)}</span></span>` : ""}</footer>` : ""}
+      </article>`;
+  };
+
+  // The buttons of the cards inside root. items(): the cards' data; changed(): draw them again.
+  M.wireItems = (root, { items, changed }) => {
+    if (!root || root.dataset.miWired) return;
+    root.dataset.miWired = "1";
+    root.addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-mi-act]");
+      if (!b) return;
+      const key = b.closest("[data-mi]")?.dataset.mi || "";
+      const item = (items() || []).find((x) => `${x.type}:${x.id}` === key);
+      if (!item) return;
+      const act = b.dataset.miAct;
+      if (!M.memberId()) {
+        location.href = M.signinHref(`${location.pathname.replace(/^\//, "")}${location.search}${location.hash}`);
+        return;
+      }
+      if (act === "reshare") return M.openReshare({ kind: "rec", item, onSaved: () => changed() });
+      if (act === "reshare-list") return M.openReshare({ kind: "list", item, onSaved: () => changed() });
+      if (act === "edit-rec") return M.openRecommend({ product: item.product || {}, rec: item, onSaved: () => changed() });
+      if (act === "edit-list") return M.openListForm({ list: item, onSaved: () => changed() });
+      if (act === "edit-review") return M.openReview({ product: item.product || {}, review: item, onSaved: () => changed() });
+      if (act === "copy") {
+        const me = M.username();
+        const href = item.type === "list" ? M.listHref(item.id, me)
+          : item.kind === "list" ? M.listHref(item.list?.id || "", me) : M.productHref(item.product?.id || "", me);
+        try {
+          await navigator.clipboard.writeText(M.absolute(href));
+          C.toast(t("mkt.copied"));
+        } catch {
+          window.prompt(t("mkt.shareLink"), M.absolute(href));
+        }
+        return;
+      }
+      if (act === "delete-rec") {
+        if (!(await confirmDelete(t("mkt.rc.delAsk")))) return;
+        const r = await M.call("market_rec_delete", { p_member: M.memberId(), p_id: item.id });
+        if (!r.ok || !r.data?.ok) return C.toast(M.failText(r));
+        C.toast(t("mkt.rc.deleted"));
+        return changed();
+      }
+      if (act === "delete-review") {
+        if (!(await confirmDelete(t("mkt.rv.delAsk")))) return;
+        const r = await M.call("market_review_delete", { p_member: M.memberId(), p_product: item.product?.id || "" });
+        if (!r.ok || !r.data?.ok) return C.toast(M.failText(r));
+        C.toast(t("mkt.rv.deleted"));
+        return changed();
+      }
     });
   };
 
