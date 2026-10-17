@@ -1383,6 +1383,81 @@ html:not([data-theme="day"]) .ipx-badge.epg { color: #a996ff; }
   .avf-body { width: 100%; }
 }
 
+/* ---------- Picture fields (js/common.js pictureFieldHtml): image links, or pictures picked
+   on the device and uploaded once the page has saved (sql/image_uploads.sql). Panel > Prizes
+   (prize and group pictures), Market.html (products, store logo and cover). ---------- */
+.pcf {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  text-align: start;
+  min-width: 0;
+}
+.pcf [hidden] { display: none !important; }
+.pcf-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pcf-label { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.pcf-count { font-size: 12px; color: var(--muted); font-weight: 600; }
+.pcf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.pcf-square .pcf-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 120px)); }
+.pcf-item {
+  position: relative;
+  margin: 0;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+}
+.pcf-square .pcf-item { aspect-ratio: 1; }
+.pcf-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pcf-item.is-broken img { opacity: 0.25; }
+.pcf-item.is-broken::after { content: "!"; position: absolute; inset: 0; display: grid; place-items: center; font-weight: 800; font-size: 22px; color: var(--red, #fa383e); }
+.pcf-item.is-file { border-style: dashed; border-color: var(--cyan); }
+.pcf-tag {
+  position: absolute;
+  inset-inline-start: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.62);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pcf-tools { position: absolute; top: 4px; inset-inline-end: 4px; display: flex; gap: 3px; }
+.pcf-tools button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.62);
+  cursor: pointer;
+}
+.pcf-tools button:hover { background: rgba(0, 0, 0, 0.85); }
+[dir="rtl"] .pcf-tools [data-pcf-left] svg, [dir="rtl"] .pcf-tools [data-pcf-right] svg { transform: scaleX(-1); }
+.pcf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.pcf-pick { display: inline-flex; align-items: center; gap: 8px; }
+.pcf-pick svg { flex: 0 0 auto; }
+.pcf-pick:disabled, .pcf-add:disabled { opacity: 0.6; cursor: not-allowed; }
+.pcf.busy .pcf-pick { cursor: progress; }
+.pcf-or { color: var(--muted); font-size: 13px; }
+.pcf-url { flex: 1 1 200px; min-width: 0; }
+.pcf-hint { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.pcf-status { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+.pcf-status:empty { display: none; }
+.pcf-status.ok { color: var(--green); }
+.pcf-status.bad { color: var(--red, #fa383e); }
+
 /* Dashboard > Settings > Account & security: the plan, "Upgrade" while it is Free */
 .set-plan {
   display: flex;

@@ -638,6 +638,8 @@ html[dir="rtl"] .auth-gate-note { text-align: right; }
    closer together, then they go into the burger menu, as on tablets. */
 html.nav-tight .header .nav { gap: 0; margin-inline: 4px; }
 html.nav-tight .header .nav a { padding: 8px 9px; font-size: 13px; }
+html.nav-tighter .header .nav { margin-inline: 2px; }
+html.nav-tighter .header .nav a { padding: 8px 6px; font-size: 12.5px; }
 html.nav-fold .header .nav { display: none; }
 html.nav-fold .header .hamburger { display: flex; flex: 0 0 auto; }
 html.nav-fold .header-inner .auth { margin-inline-start: auto; }

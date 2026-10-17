@@ -126,3 +126,8 @@ html[data-theme="day"] .pzc-err { color: #b03a2e; }
   .pzc-head { flex-wrap: wrap; }
   .pzc-head .pza-member-main { grid-template-columns: 40px minmax(0, 1fr); }
 }
+
+/* Panel > Prizes > groups: the picture of each group (sql/image_uploads.sql) */
+.pza-g-thumb { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; flex: none; background: var(--input-bg); border: 1px solid var(--line); }
+.pza-g-new { margin: 6px 0 12px; }
+.pza-g-new #pza-g-name { width: 100%; }

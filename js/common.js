@@ -922,6 +922,348 @@
     return { show, say };
   }
 
+  // ---------- Picture fields: image links, or pictures picked on the device ----------
+  // Prizes and prize groups (Panel > Prizes), products, store logos and covers (Market.html).
+  // Like the profile picture, a field takes an image link or a picture from the device; unlike
+  // it, what it shows may not exist yet (a new prize, a new product), so a picked picture waits
+  // in the field (made smaller, as a JPEG) and goes up only once the page has saved and knows
+  // the id: uploadPictures() names it after that id — <id>.jpg, and when there are several
+  // pictures <id>-1.jpg, <id>-2.jpg … — in the folder of the bucket IPTV the page gives
+  // (Prizes/Previews, Prizes/Grpoups, Market/Product, Market/Logo, Market/Cover). Storage takes
+  // the files only with an upload ticket the server writes for those exact names
+  // (sql/image_uploads.sql), and x-upsert replaces an older picture of the same name.
+  const PICTURE_BUCKET = "IPTV";
+  const PICTURE_MAX_BYTES = 15 * 1024 * 1024; // the file picked, before it is made smaller
+  const PICTURE_ERRORS = {
+    type: "pic.errType",
+    big: "pic.errBig",
+    decode: "pic.errDecode",
+    setup: "pic.errSetup",
+    network: "pic.errNetwork",
+    failed: "pic.errFailed",
+    ticket: "pic.errSetup",
+  };
+
+  // always a full link (https://…): it is saved with the prize / product / store
+  const picturePublicUrl = (path) => {
+    const url = `${SUPABASE_URL}/storage/v1/object/public/${PICTURE_BUCKET}/${String(path).split("/").map(encodeURIComponent).join("/")}`;
+    try {
+      return new URL(url, location.href).href;
+    } catch {
+      return url;
+    }
+  };
+
+  // The picture made smaller: at most maxSide pixels on its longest side (a centred square
+  // when square), as a JPEG on white.
+  async function fitPicture(file, { maxSide = 1600, square = false } = {}) {
+    const { img, url } = await loadImageFile(file);
+    try {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) throw new Error("decode");
+      const side = Math.min(w, h);
+      const sw = square ? side : w;
+      const sh = square ? side : h;
+      const scale = Math.min(1, maxSide / Math.max(sw, sh));
+      const ow = Math.max(1, Math.round(sw * scale));
+      const oh = Math.max(1, Math.round(sh * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = ow;
+      canvas.height = oh;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, ow, oh);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, square ? (w - side) / 2 : 0, square ? (h - side) / 2 : 0, sw, sh, 0, 0, ow, oh);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
+      if (!blob) throw new Error("decode");
+      return blob;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  // -> { ok: true } | { ok: false, reason: setup | network | big | failed }
+  async function storagePut(path, blob) {
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/storage/v1/object/${PICTURE_BUCKET}/${String(path).split("/").map(encodeURIComponent).join("/")}`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "image/jpeg",
+          "x-upsert": "true",
+          "cache-control": "max-age=86400",
+        },
+        body: blob,
+      });
+    } catch {
+      return { ok: false, reason: "network" };
+    }
+    if (res.ok) return { ok: true };
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      /* not JSON */
+    }
+    const message = String(body?.message || body?.error || "");
+    const status = Number(body?.statusCode) || res.status;
+    let reason = "failed";
+    if (status === 413 || /maximum allowed size|too large/i.test(message)) reason = "big";
+    else if ([401, 403, 404, 415].includes(status) || /row-level security|bucket not found|mime/i.test(message)) reason = "setup";
+    if (reason === "setup") {
+      console.warn(`[CineAura] Picture upload refused (${status} ${message}). Run sql/image_uploads.sql in the Supabase SQL editor; bucket ${PICTURE_BUCKET} must exist and accept image/jpeg.`);
+    }
+    return { ok: false, reason, status, message };
+  }
+
+  const PIC_ICONS = {
+    left: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
+    right: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
+    del: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  };
+
+  // The markup of a picture field. values: the image links it starts with. max: how many
+  // pictures (1 = one picture that a new one replaces). shape: "wide" | "square" previews.
+  function pictureFieldHtml({ id = "", label = "", hint = "", values = [], max = 1, shape = "wide", required = false } = {}) {
+    const list = (Array.isArray(values) ? values : [values]).map((v) => String(v || "").trim()).filter(Boolean).slice(0, max);
+    return `
+      <div class="pcf pcf-${shape === "square" ? "square" : "wide"}" data-pcf data-max="${Number(max) || 1}" data-values="${escapeHtml(JSON.stringify(list))}">
+        <div class="pcf-head">
+          <span class="pcf-label"${id ? ` id="${escapeHtml(id)}-label"` : ""}>${escapeHtml(label || t(max > 1 ? "pic.labelMany" : "pic.label"))}${required ? " *" : ""}</span>
+          ${max > 1 ? `<span class="pcf-count" data-pcf-count></span>` : ""}
+        </div>
+        <div class="pcf-grid" data-pcf-grid></div>
+        <div class="pcf-row">
+          <button class="btn btn-sm btn-primary pcf-pick" type="button" data-pcf-pick>${UPLOAD_ICON}<span>${escapeHtml(t("pic.upload"))}</span></button>
+          <input type="file" accept="image/*" hidden data-pcf-file ${max > 1 ? "multiple" : ""} />
+          <span class="pcf-or">${escapeHtml(t("avatar.or"))}</span>
+          <input class="pcf-url"${id ? ` id="${escapeHtml(id)}"` : ""} type="text" inputmode="url" autocomplete="off" spellcheck="false" dir="ltr" placeholder="${escapeHtml(t("pic.urlPh"))}" />
+          <button class="btn btn-sm btn-ghost pcf-add" type="button" data-pcf-add>${escapeHtml(t(max > 1 ? "pic.add" : "pic.use"))}</button>
+        </div>
+        <p class="pcf-hint">${escapeHtml(hint || t(max > 1 ? "pic.hintMany" : "pic.hint", { n: max }))}</p>
+        <p class="pcf-status" data-pcf-status role="status" aria-live="polite"></p>
+      </div>`;
+  }
+
+  // Wires a picture field. Returns { items, urls(), pending(), list(), set(urls), say(text, kind), box }.
+  // items: { kind: "url", url } | { kind: "file", blob, preview }
+  function wirePictureField(box, { maxSide = 1600, square = false, onChange = null } = {}) {
+    if (!box) return null;
+    if (box._pcf) return box._pcf;
+    const max = Math.max(1, Number(box.dataset.max) || 1);
+    const grid = box.querySelector("[data-pcf-grid]");
+    const pick = box.querySelector("[data-pcf-pick]");
+    const file = box.querySelector("[data-pcf-file]");
+    const urlIn = box.querySelector(".pcf-url");
+    const add = box.querySelector("[data-pcf-add]");
+    const status = box.querySelector("[data-pcf-status]");
+    const count = box.querySelector("[data-pcf-count]");
+    let initial = [];
+    try {
+      initial = JSON.parse(box.dataset.values || "[]");
+    } catch {
+      initial = [];
+    }
+    const ctrl = {
+      box,
+      items: initial.map((url) => ({ kind: "url", url })),
+      urls: () => ctrl.items.filter((i) => i.kind === "url").map((i) => i.url),
+      pending: () => ctrl.items.filter((i) => i.kind === "file").length,
+      list: () => ctrl.items.slice(),
+      set(urls) {
+        ctrl.items.forEach((i) => i.preview && URL.revokeObjectURL(i.preview));
+        ctrl.items = (urls || []).filter(Boolean).slice(0, max).map((url) => ({ kind: "url", url }));
+        draw();
+      },
+      say(text, kind = "") {
+        status.textContent = text || "";
+        status.className = `pcf-status${kind ? ` ${kind}` : ""}`;
+      },
+    };
+    const changed = () => {
+      draw();
+      if (typeof onChange === "function") onChange(ctrl);
+    };
+    function draw() {
+      grid.innerHTML = ctrl.items
+        .map((it, i) => {
+          const src = it.kind === "file" ? it.preview : it.url;
+          const tag = t(it.kind === "file" ? "pic.tagDevice" : "pic.tagLink");
+          return `
+            <figure class="pcf-item${it.kind === "file" ? " is-file" : ""}" data-i="${i}">
+              <img src="${escapeHtml(src)}" alt="" loading="lazy" />
+              <span class="pcf-tag">${escapeHtml(i === 0 && max > 1 ? `${t("pic.cover")} · ${tag}` : tag)}</span>
+              <span class="pcf-tools">
+                ${max > 1 && i > 0 ? `<button type="button" data-pcf-left aria-label="${escapeHtml(t("pic.moveLeft"))}" title="${escapeHtml(t("pic.moveLeft"))}">${PIC_ICONS.left}</button>` : ""}
+                ${max > 1 && i < ctrl.items.length - 1 ? `<button type="button" data-pcf-right aria-label="${escapeHtml(t("pic.moveRight"))}" title="${escapeHtml(t("pic.moveRight"))}">${PIC_ICONS.right}</button>` : ""}
+                <button type="button" data-pcf-del aria-label="${escapeHtml(t("pic.remove"))}" title="${escapeHtml(t("pic.remove"))}">${PIC_ICONS.del}</button>
+              </span>
+            </figure>`;
+        })
+        .join("");
+      grid.hidden = !ctrl.items.length;
+      grid.querySelectorAll("img").forEach((img) => {
+        img.addEventListener("error", () => img.closest(".pcf-item")?.classList.add("is-broken"), { once: true });
+      });
+      if (count) count.textContent = `${ctrl.items.length}/${max}`;
+      const full = max > 1 && ctrl.items.length >= max;
+      pick.disabled = full;
+      add.disabled = full;
+    }
+    function put(item) {
+      if (max === 1) {
+        ctrl.items.forEach((i) => i.preview && URL.revokeObjectURL(i.preview));
+        ctrl.items = [item];
+      } else if (ctrl.items.length < max) {
+        ctrl.items.push(item);
+      } else {
+        return false;
+      }
+      return true;
+    }
+    grid.addEventListener("click", (e) => {
+      const fig = e.target.closest(".pcf-item");
+      if (!fig) return;
+      const i = Number(fig.dataset.i);
+      if (e.target.closest("[data-pcf-del]")) {
+        const [gone] = ctrl.items.splice(i, 1);
+        if (gone?.preview) URL.revokeObjectURL(gone.preview);
+        changed();
+      } else if (e.target.closest("[data-pcf-left]") && i > 0) {
+        [ctrl.items[i - 1], ctrl.items[i]] = [ctrl.items[i], ctrl.items[i - 1]];
+        changed();
+      } else if (e.target.closest("[data-pcf-right]") && i < ctrl.items.length - 1) {
+        [ctrl.items[i + 1], ctrl.items[i]] = [ctrl.items[i], ctrl.items[i + 1]];
+        changed();
+      }
+    });
+    const addLink = () => {
+      const v = urlIn.value.trim();
+      if (!v) return;
+      if (!/^https?:\/\/[^\s<>"']+$/i.test(v)) {
+        ctrl.say(t("pic.badLink"), "bad");
+        return;
+      }
+      if (!put({ kind: "url", url: v })) {
+        ctrl.say(t("pic.full", { n: max }), "bad");
+        return;
+      }
+      urlIn.value = "";
+      ctrl.say("");
+      changed();
+    };
+    add.addEventListener("click", addLink);
+    urlIn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addLink();
+      }
+    });
+    pick.addEventListener("click", () => file.click());
+    file.addEventListener("change", async () => {
+      const chosen = [...(file.files || [])];
+      file.value = ""; // picking the same file again fires change again
+      if (!chosen.length) return;
+      box.classList.add("busy");
+      pick.disabled = true;
+      let bad = "";
+      try {
+        for (const f of chosen) {
+          if (max > 1 && ctrl.items.length >= max) {
+            bad = t("pic.full", { n: max });
+            break;
+          }
+          if (f.type && !/^image\//i.test(f.type)) {
+            bad = t(PICTURE_ERRORS.type);
+            continue;
+          }
+          if (f.size > PICTURE_MAX_BYTES) {
+            bad = t(PICTURE_ERRORS.big);
+            continue;
+          }
+          try {
+            const blob = await fitPicture(f, { maxSide, square });
+            put({ kind: "file", blob, preview: URL.createObjectURL(blob) });
+          } catch {
+            bad = t(PICTURE_ERRORS.decode);
+          }
+        }
+      } finally {
+        box.classList.remove("busy");
+        pick.disabled = false;
+      }
+      ctrl.say(bad || (ctrl.pending() ? t("pic.waiting") : ""), bad ? "bad" : "");
+      changed();
+    });
+    ctrl.redraw = draw;
+    draw();
+    box._pcf = ctrl;
+    return ctrl;
+  }
+
+  // Uploads the pictures picked in a field, named after `id`, into `folder`, after asking the
+  // server for their tickets (ticket(names) -> true | false). The pictures already stored under
+  // that id keep their names; the new ones take the first free names.
+  //   -> { ok, urls (every picture of the field, in order), failed (how many did not go up), reason }
+  async function uploadPictures(ctrl, { folder, id, ticket }) {
+    const items = ctrl?.list?.() || [];
+    const files = items.filter((i) => i.kind === "file");
+    if (!files.length) return { ok: true, urls: items.map((i) => i.url), failed: 0 };
+    const max = Math.max(1, Number(ctrl.box?.dataset?.max) || 1);
+    const prefix = `${picturePublicUrl(`${folder}/`)}`;
+    const used = new Set();
+    items.forEach((i) => {
+      if (i.kind !== "url" || !i.url.startsWith(prefix)) return;
+      const name = decodeURIComponent(i.url.slice(prefix.length).split("?")[0]).replace(/\.jpg$/i, "");
+      if (name === String(id) || name.startsWith(`${id}-`)) used.add(name);
+    });
+    const names = [];
+    if (max === 1 || (used.size === 0 && files.length === 1)) {
+      names.push(String(id));
+    } else {
+      for (let n = 1; names.length < files.length && n < 100; n += 1) {
+        const nm = `${id}-${n}`;
+        if (!used.has(nm)) names.push(nm);
+      }
+    }
+    let granted = false;
+    try {
+      granted = await ticket(names);
+    } catch {
+      granted = false;
+    }
+    if (!granted) return { ok: false, urls: ctrl.urls(), failed: files.length, reason: "ticket" };
+    const version = Date.now();
+    const done = new Map();
+    let failed = 0;
+    let reason = "";
+    for (let k = 0; k < files.length; k += 1) {
+      const path = `${folder}/${names[k]}.jpg`;
+      const res = await storagePut(path, files[k].blob);
+      if (res.ok) done.set(files[k], `${picturePublicUrl(path)}?v=${version}`);
+      else {
+        failed += 1;
+        reason = res.reason;
+      }
+    }
+    const urls = items.map((i) => (i.kind === "url" ? i.url : done.get(i) || "")).filter(Boolean);
+    // the field now shows the stored pictures; a picture that did not go up stays there, to try again
+    ctrl.items = items.map((i) => {
+      if (i.kind !== "file" || !done.has(i)) return i;
+      if (i.preview) URL.revokeObjectURL(i.preview);
+      return { kind: "url", url: done.get(i) };
+    });
+    ctrl.redraw?.();
+    return { ok: failed === 0, urls, failed, reason };
+  }
+
+  const pictureErrorText = (reason) => t(PICTURE_ERRORS[reason] || "pic.errFailed");
+
   // Staff (Super Admin / Admin / Moderator) rows, safe when sql/panel.sql is not installed yet.
   async function fetchStaff(columns = "id,role,member_id,username") {
     const pick = String(columns).split(",").map((c) => c.trim()).filter(Boolean);
@@ -1812,6 +2154,22 @@
     // videos (sql/content.sql): a followed member published one; somebody commented on yours
     content: "notif.newVideo",
     content_comment: "notif.videoComment",
+    // the market (sql/market.sql); the body is the product (and the reason, the points…)
+    market_order: "notif.mktOrder",
+    market_request: "notif.mktRequest",
+    market_accepted: "notif.mktAccepted",
+    market_declined: "notif.mktDeclined",
+    market_cancelled: "notif.mktCancelled",
+    market_shipped: "notif.mktShipped",
+    market_received: "notif.mktReceived",
+    market_return: "notif.mktReturn",
+    market_returned: "notif.mktReturned",
+    market_refused: "notif.mktRefused",
+    market_paid: "notif.mktPaid",
+    market_commission: "notif.mktCommission",
+    market_review: "notif.mktReview",
+    market_question: "notif.mktQuestion",
+    market_reply: "notif.mktReply",
   };
 
   function noteTitle(n) {
@@ -2510,7 +2868,7 @@
     const btn = inner.querySelector(".settings-btn");
     const over = () => inner.scrollWidth > inner.clientWidth + 1;
     btn?.classList.remove("compact");
-    root.classList.remove("nav-tight", "nav-fold");
+    root.classList.remove("nav-tight", "nav-tighter", "nav-fold");
     if (!over()) return;
     if (btn && btn.offsetParent) {
       btn.classList.add("compact");
@@ -2519,6 +2877,9 @@
     const nav = inner.querySelector("nav.nav");
     if (!nav || !nav.offsetParent) return; // the burger menu already holds the links
     root.classList.add("nav-tight");
+    if (!over()) return;
+    // still a little too wide (a long language, a signed-in header): closer still, before the burger
+    root.classList.add("nav-tighter");
     if (!over()) return;
     root.classList.add("nav-fold");
   }
@@ -3368,9 +3729,17 @@
     { key: "comments", per: 100, src: "points.src.comments", rate: "points.rate.comments" },
     // stored by the server: profiles.code_points (sql/point_codes.sql), counted in code_count
     { key: "codes", per: 1, src: "points.src.codes", rate: "points.rate.codes" },
+    // the market (sql/market.sql): profiles.market_points for the sales of the member's store
+    // (counted in market_sales) and market_ref_points, 25% of the sales made through their
+    // share links (counted in market_refs)
+    { key: "market", per: 1, src: "points.src.market", rate: "points.rate.market" },
+    { key: "marketRefs", per: 1, src: "points.src.marketRefs", rate: "points.rate.marketRefs" },
   ];
   // Columns of profiles that hold points the server credits (absent until their SQL file ran).
-  const STORED_POINT_COLUMNS = ["watch_points", "content_points", "content_units", "code_points", "code_count"];
+  const STORED_POINT_COLUMNS = [
+    "watch_points", "content_points", "content_units", "code_points", "code_count",
+    "market_points", "market_sales", "market_ref_points", "market_refs",
+  ];
 
   const WATCH_TIERS = [
     { tier: 1, minutes: 1, countries: ["US", "CA", "GB"] },
@@ -3453,6 +3822,8 @@
     const watchPoints = stored(profile.watch_points);
     const videoPoints = stored(profile.content_points);
     const codePoints = stored(profile.code_points);
+    const marketPoints = stored(profile.market_points);
+    const marketRefPoints = stored(profile.market_ref_points);
     const [shares, playlists, recommendations, comments, movieLinks, tvLinks, movieDl, tvDl] =
       await Promise.all([
         countRows(`/rest/v1/post_events?kind=eq.share&network=eq.referral&member_id=eq.${id}&select=id`),
@@ -3473,6 +3844,10 @@
       videoPoints: Number.isFinite(videoPoints) ? videoPoints : null,
       codes: Number(profile.code_count || 0),
       codePoints: Number.isFinite(codePoints) ? codePoints : null,
+      market: Number(profile.market_sales || 0),
+      marketPoints: Number.isFinite(marketPoints) ? marketPoints : null,
+      marketRefs: Number(profile.market_refs || 0),
+      marketRefPoints: Number.isFinite(marketRefPoints) ? marketRefPoints : null,
       shares,
       playlists,
       recommendations,
@@ -3486,7 +3861,13 @@
   // Watch minutes give the stored watch points (whole points) once sql/point_levels.sql
   // is in place, 1 point a minute before.
   function pointBreakdown(parts) {
-    const storedOf = { minutes: parts?.watchPoints, videos: parts?.videoPoints, codes: parts?.codePoints };
+    const storedOf = {
+      minutes: parts?.watchPoints,
+      videos: parts?.videoPoints,
+      codes: parts?.codePoints,
+      market: parts?.marketPoints,
+      marketRefs: parts?.marketRefPoints,
+    };
     return POINT_RATES.map((r) => {
       const count = Number(parts?.[r.key] || 0);
       let points;
@@ -3523,13 +3904,18 @@
     let prof = profile || {};
     // Callers that loaded only some columns: read the stored points (absent on a database
     // that never ran their SQL file — the minutes count then, as before, and the rest is 0).
-    if (memberId && STORED_POINT_COLUMNS.some((c) => !(c in prof))) {
+    // A caller with no profile at all (Market.html) gets the minutes and the spent points too.
+    const BASIC = ["points_spent", "private_minutes", "public_minutes"];
+    if (memberId && [...STORED_POINT_COLUMNS, ...BASIC].some((c) => !(c in prof))) {
       const res = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(memberId)}&select=*`).catch(() => null);
       const row = res?.ok && Array.isArray(res.data) ? res.data[0] : null;
       if (row) {
         const add = {};
         STORED_POINT_COLUMNS.forEach((c) => {
           if (c in row) add[c] = row[c];
+        });
+        BASIC.forEach((c) => {
+          if (!(c in prof) && c in row) add[c] = row[c];
         });
         prof = { ...prof, ...add };
       }
@@ -3574,7 +3960,8 @@
       `/rest/v1/point_spends?member_id=eq.${id}&select=prize_title,mode,amount,created_at&order=created_at.desc&limit=500`
     );
     const rows = res.ok && Array.isArray(res.data) ? res.data : [];
-    const logged = rows.reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
+    // market refunds are rows with a negative amount (sql/market.sql): they lower the total too
+    const logged = rows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
     return { rows, total, earlier: Math.max(0, total - logged) };
   }
 
@@ -4285,6 +4672,12 @@
     uploadAvatar,
     avatarPublicUrl,
     avatarFieldHtml,
+    pictureFieldHtml,
+    wirePictureField,
+    uploadPictures,
+    pictureErrorText,
+    picturePublicUrl,
+    fitPicture,
     wireAvatarField,
     planIsPremium,
     profilesByIds,

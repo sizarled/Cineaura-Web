@@ -102,6 +102,49 @@
     return wrap;
   }
 
+  // ------------------------------------------------------------------ pictures
+  // Prize pictures: image links, or pictures picked on the device, uploaded once the prize is
+  // saved to IPTV/Prizes/Previews/<prize id>.jpg (<id>-1.jpg, <id>-2.jpg … when there are
+  // several); group pictures to IPTV/Prizes/Grpoups/<group id>.jpg (sql/image_uploads.sql).
+  const PRIZE_PICS = 12;
+  const PRIZE_FOLDER = "Prizes/Previews";
+  const GROUP_FOLDER = "Prizes/Grpoups";
+  function prizeImages(p) {
+    const list = String(p?.images || "").split(/[\r\n]+/).map((x) => x.trim()).filter(Boolean);
+    if (!list.length && String(p?.prize_image || "").trim()) list.push(String(p.prize_image).trim());
+    return [...new Set(list)].slice(0, PRIZE_PICS);
+  }
+  const picsOf = (root) => C.wirePictureField(root.querySelector("[data-pcf]"), { maxSide: 1600 });
+
+  // Uploads the pictures picked for a prize (or a group) and saves the final list.
+  // -> "" when everything went up, else the message to show
+  async function storePictures(ctrl, kind, id) {
+    if (!ctrl || !ctrl.pending()) return "";
+    ctrl.say(t("pic.uploading"));
+    const up = await C.uploadPictures(ctrl, {
+      folder: kind === "group" ? GROUP_FOLDER : PRIZE_FOLDER,
+      id: String(id),
+      ticket: async (names) => {
+        const r = await admin("prize_admin_upload", { p_kind: kind, p_id: Number(id), p_names: names });
+        return Boolean(r?.ok);
+      },
+    });
+    const r = kind === "group"
+      ? await admin("prize_admin_group_image", { p_id: Number(id), p_thumb: up.urls[0] || "" })
+      : await admin("prize_admin_images", { p_id: Number(id), p_images: up.urls });
+    if (!r?.ok) {
+      ctrl.say(t("pic.errSave"), "bad");
+      return t("pic.errSave");
+    }
+    if (!up.ok) {
+      const msg = up.reason === "ticket" ? t("pic.errSetup") : `${t("pic.someFailed", { n: up.failed })} ${C.pictureErrorText(up.reason)}`;
+      ctrl.say(msg, "bad");
+      return msg;
+    }
+    ctrl.say(t("pic.uploaded"), "ok");
+    return "";
+  }
+
   // ------------------------------------------------------------------ form pieces
   const chipsHtml = (name, selected = []) => {
     const sel = R.list(selected).map(R.lc);
@@ -217,7 +260,12 @@
       <div class="stack pza-form" data-form>
         <input data-f="title" placeholder="${t("pza.title")} *" value="${esc(p.title || "")}" />
         <textarea data-f="description" placeholder="${t("pza.description")} *">${esc(p.description || "")}</textarea>
-        <textarea data-f="images" placeholder="${t("pza.images")}">${esc(String(p.images || "").trim())}</textarea>
+        ${C.pictureFieldHtml({
+          label: t("pza.picturesLabel"),
+          hint: t("pza.picturesHint"),
+          values: prizeImages(p),
+          max: PRIZE_PICS,
+        })}
         <input data-f="video" placeholder="${t("pza.video")}" value="${esc(p.video_url || "")}" />
         <input data-f="categories" list="pza-cats" placeholder="${t("pza.categories")} *" value="${esc(cats.join(", "))}" />
         <datalist id="pza-cats">${S.groups.map((g) => `<option value="${esc(g.name)}"></option>`).join("")}</datalist>
@@ -329,6 +377,7 @@
   }
 
   function wireForm(root) {
+    picsOf(root);
     root.addEventListener("change", (e) => {
       const on = e.target.closest("[data-mode-on]");
       if (on) root.querySelector(`[data-mode="${on.dataset.modeOn}"]`).hidden = !on.checked;
@@ -462,7 +511,7 @@
     return {
       data: {
         title, description, categories, start, end, dates, modes, conds, codes,
-        images: f("images").split(/[\r\n]+/).map((x) => x.trim()).filter(Boolean),
+        images: picsOf(root).urls(),
         video: f("video"),
       },
     };
@@ -525,11 +574,17 @@
     $("#pza-save").onclick = async (e) => {
       const r = readForm(root);
       if (r.error) return toast(r.error);
-      e.target.disabled = true;
+      const btn = e.currentTarget;
+      btn.disabled = true;
       const res = await createPrize(r.data);
-      e.target.disabled = false;
-      if (res.error) return toast(res.error);
-      toast(t("panel.prizeAdded"));
+      if (res.error) {
+        btn.disabled = false;
+        return toast(res.error);
+      }
+      // the pictures picked on the device go up now that the prize has its id
+      const picErr = await storePictures(picsOf(root), "prize", res.id);
+      btn.disabled = false;
+      toast(picErr ? `${t("panel.prizeAdded")} ${picErr}` : t("panel.prizeAdded"));
       await load();
       S.tab = "manage";
       draw();
@@ -579,21 +634,26 @@
       </details>`;
 
     const groupsBox = `
-      <details class="pza-details"><summary>${t("panel.pz.groupsTitle")} (${S.groups.length})</summary>
-        <div class="form-row">
+      <details class="pza-details" ${S.groupsOpen ? "open" : ""} data-groups><summary>${t("panel.pz.groupsTitle")} (${S.groups.length})</summary>
+        <div class="stack pza-g-new" data-g-new>
           <input id="pza-g-name" placeholder="${t("panel.pz.groupName")}" />
-          <input id="pza-g-thumb" placeholder="${t("panel.pz.groupThumb")}" />
-          <button class="btn btn-sm btn-primary" id="pza-g-add" type="button">${t("panel.pz.addGroup")}</button>
+          ${C.pictureFieldHtml({ label: t("pza.groupPicture"), hint: t("pza.groupPictureHint"), max: 1 })}
+          <div><button class="btn btn-sm btn-primary" id="pza-g-add" type="button">${t("panel.pz.addGroup")}</button></div>
         </div>
         ${S.groups.map((g) => `
           <div class="form-row pza-grow">
+            <img class="pza-g-thumb" src="${esc(String(g.thumb || "").trim() || C.initialsAvatar(g.name))}" alt="" loading="lazy" />
             <span style="flex:1">${esc(g.name)} <span class="muted">· ID ${g.id}${g.visible === false ? ` · ${t("panel.pz.hidden")}` : ""}</span></span>
+            <button class="btn btn-sm btn-ghost" data-g-pic="${g.id}" type="button">${t("pza.groupPictureBtn")}</button>
             <button class="btn btn-sm btn-ghost" data-g-toggle="${g.id}" data-vis="${g.visible === false ? 0 : 1}" type="button">${g.visible === false ? t("panel.pz.show") : t("panel.pz.hide")}</button>
             <button class="btn btn-sm btn-danger" data-g-del="${g.id}" type="button">${t("common.delete")}</button>
           </div>`).join("")}
       </details>`;
 
     shell(`${cards || `<p class="empty">${t("dash.noPrizes")}</p>`}${limitsGrid}${groupsBox}`);
+    const groupsEl = $("[data-groups]", S.main);
+    groupsEl?.addEventListener("toggle", () => (S.groupsOpen = groupsEl.open));
+    const newGroupPics = groupsEl ? picsOf($("[data-g-new]", groupsEl)) : null;
 
     S.main.onclick = async (e) => {
       const b = (sel) => e.target.closest(sel);
@@ -638,12 +698,31 @@
       if (b("#pza-g-add")) {
         const name = $("#pza-g-name").value.trim();
         if (!name) return toast(t("panel.pz.needGroupName"));
-        const r = await admin("prize_admin_group", { p_op: "add", p_id: null, p_name: name, p_thumb: $("#pza-g-thumb").value.trim(), p_visible: true });
-        if (!r.ok) return toast(serverError(r.error));
-        toast(t("panel.pz.groupAdded"));
+        const addBtn = b("#pza-g-add");
+        addBtn.disabled = true;
+        const r = await admin("prize_admin_group", { p_op: "add", p_id: null, p_name: name, p_thumb: newGroupPics?.urls()[0] || "", p_visible: true });
+        if (!r.ok) {
+          addBtn.disabled = false;
+          return toast(serverError(r.error));
+        }
+        let picErr = "";
+        if (newGroupPics?.pending()) {
+          // the id of the new group names its picture (an older prize_secure.sql answers without it)
+          let gid = Number(r.id) || 0;
+          if (!gid) {
+            await load();
+            gid = Math.max(0, ...S.groups.filter((g) => g.name === name).map((g) => Number(g.id) || 0));
+          }
+          picErr = gid ? await storePictures(newGroupPics, "group", gid) : t("pic.errSave");
+        }
+        addBtn.disabled = false;
+        toast(picErr ? `${t("panel.pz.groupAdded")} ${picErr}` : t("panel.pz.groupAdded"));
+        S.groupsOpen = true;
         await load();
         return draw();
       }
+      const gp = b("[data-g-pic]");
+      if (gp) return openGroupPicture(Number(gp.dataset.gPic));
       const tog = b("[data-g-toggle]");
       if (tog) {
         const r = await admin("prize_admin_group", { p_op: "visible", p_id: Number(tog.dataset.gToggle), p_name: null, p_thumb: null, p_visible: tog.dataset.vis === "0" });
@@ -659,6 +738,35 @@
         await load();
         draw();
       }
+    };
+  }
+
+  // A group's picture: an image link, or a picture from the device (Prizes/Grpoups/<id>.jpg).
+  function openGroupPicture(id) {
+    const g = S.groups.find((x) => Number(x.id) === Number(id));
+    if (!g) return;
+    const wrap = modal(`
+      <div class="form-row"><h2 style="flex:1">${t("pza.groupPicture")} · ${esc(g.name)}</h2>
+        <button class="btn btn-sm btn-ghost" data-close type="button">${t("common.close")}</button></div>
+      <div data-g-pic-box>${C.pictureFieldHtml({ label: t("pza.groupPicture"), hint: t("pza.groupPictureHint"), values: [String(g.thumb || "").trim()].filter(Boolean), max: 1 })}</div>
+      <button class="btn btn-lg btn-primary" id="pza-g-pic-save" type="button">${t("common.save")}</button>`);
+    const ctrl = picsOf($("[data-g-pic-box]", wrap));
+    $("#pza-g-pic-save", wrap).onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      let err = "";
+      if (ctrl.pending()) err = await storePictures(ctrl, "group", g.id);
+      else {
+        const r = await admin("prize_admin_group_image", { p_id: Number(g.id), p_thumb: ctrl.urls()[0] || "" });
+        if (!r?.ok) err = r?.error === "image" ? t("pic.badLink") : serverError(r?.error);
+      }
+      btn.disabled = false;
+      if (err) return toast(err);
+      wrap.remove();
+      toast(t("pza.saved"));
+      S.groupsOpen = true;
+      await load();
+      draw();
     };
   }
 
@@ -684,10 +792,21 @@
     $("#pza-update", wrap).onclick = async (e) => {
       const r = readForm(root);
       if (r.error) return toast(r.error);
-      e.target.disabled = true;
+      const btn = e.currentTarget;
+      btn.disabled = true;
       const res = await updatePrize(id, r.data);
-      e.target.disabled = false;
-      if (res.error) return toast(res.error);
+      if (res.error) {
+        btn.disabled = false;
+        return toast(res.error);
+      }
+      const picErr = await storePictures(picsOf(root), "prize", id);
+      btn.disabled = false;
+      if (picErr) {
+        // the prize is saved; the field keeps the pictures that did not go up, to try again
+        toast(`${t("pza.saved")} ${picErr}`);
+        await load();
+        return;
+      }
       wrap.remove();
       toast(t("pza.saved"));
       await load();
