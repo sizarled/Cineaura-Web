@@ -1340,6 +1340,11 @@ html:not([data-theme="day"]) .ipx-badge.epg { color: #a996ff; }
 .set-site select { max-width: 420px; }
 .set-site .sset-link { justify-self: start; }
 
+/* Settings > Profile: the delivery address of the Market (dashboard.html#address) */
+.dash-addr[hidden], .dash-addr [hidden] { display: none !important; }
+.dash-addr h2.sset-lbl { margin: 0 0 2px; font-size: 15px; }
+.dash-addr-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
 /* Profile picture: upload a photo or paste an image link
    (Dashboard > Settings > Profile, the profile page's Settings, activation) */
 .avf {

@@ -616,3 +616,140 @@ a.mkt-slide-empty { cursor: pointer; }
   .mkt-card-title { font-size: 13.5px; }
   .mkt-price { font-size: 15px; }
 }
+
+/* ------------------------------------------------------------------ round 25
+   the tier of a store (N K M B + progress), Report, the team's suspensions, the delivery
+   address after the sale, the download link of a digital product */
+.mkt-tier {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  vertical-align: middle;
+  color: var(--tier, #9bb0c2);
+  background: color-mix(in srgb, var(--tier, #9bb0c2) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tier, #9bb0c2) 40%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+.mkt-tier b { font-weight: 800; }
+.mkt-tier span { font-weight: 600; opacity: 0.92; margin-inline-start: 1px; }
+.mkt-tier.t-N { --tier: #8fa3b5; }
+.mkt-tier.t-K { --tier: #01b4e4; }
+.mkt-tier.t-M { --tier: #9b84ff; }
+.mkt-tier.t-B { --tier: #e9a300; }
+.mkt-tier.big { font-size: 14px; padding: 2px 10px; }
+.mkt-tier.big b { font-size: 16px; }
+html[data-theme="day"] .mkt-tier.t-N { --tier: #5d7184; }
+html[data-theme="day"] .mkt-tier.t-K { --tier: #0b84b0; }
+html[data-theme="day"] .mkt-tier.t-M { --tier: #6a4fd8; }
+html[data-theme="day"] .mkt-tier.t-B { --tier: #b07a00; }
+.mkt-store-title h1 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.mkt-store-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mkt-store-name > span[dir] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mkt-store-name .mkt-tier { flex: none; }
+.mkt-pstore > span > b { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mkt-pstore > span > b > span[dir] { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mkt-pstore > span > b > .mkt-tier { flex: none; display: inline-block; overflow: visible; }
+.mkt-pstore .mkt-tier b, .mkt-pstore .mkt-tier span { display: inline; }
+.mkt-your-store .mkt-tier { font-size: 10.5px; padding: 0 6px; }
+.mkt-tierbox {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--sub-bg);
+  max-width: 560px;
+}
+.mkt-tierbox-head { display: flex; align-items: center; gap: 12px; }
+.mkt-tierbox-head > div { display: grid; gap: 1px; min-width: 0; }
+.mkt-tierbox-head .muted { font-size: 13px; }
+.mkt-tierbar { height: 8px; border-radius: 999px; background: color-mix(in srgb, var(--muted) 22%, transparent); overflow: hidden; }
+.mkt-tierbar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--cyan), #9b84ff); }
+.mkt-tierbox-next { margin: 0; font-size: 12.5px; }
+.mkt-tierbox-help summary { cursor: pointer; font-size: 12.5px; color: var(--cyan); width: fit-content; }
+.mkt-tierbox-help p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+
+.mkt-report-btn svg { color: var(--red); }
+.mkt-report-btn:hover { border-color: color-mix(in srgb, var(--red) 55%, transparent); }
+.mkt-rp-what { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); overflow-wrap: anywhere; }
+.mkt-rp-what svg { color: var(--red); flex: none; }
+.mkt-rp-what b { color: var(--text); }
+.mkt-rp-reasons { display: grid; gap: 6px; border: 0; padding: 0; }
+.mkt-rp-reasons legend { margin-bottom: 4px; }
+.mkt-rp-reasons label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  cursor: pointer;
+  font-size: 14px;
+}
+.mkt-rp-reasons label:has(input:checked) { border-color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+.mkt-rp-reasons input { accent-color: var(--red); width: 16px; height: 16px; flex: none; }
+
+.mkt-suspended {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
+  background: color-mix(in srgb, var(--red) 9%, var(--surface));
+}
+.mkt-suspended > svg { color: var(--red); flex: none; margin-top: 2px; }
+.mkt-suspended > div { display: grid; gap: 3px; font-size: 13.5px; min-width: 0; overflow-wrap: anywhere; }
+.mkt-suspended b { color: var(--red); font-size: 14.5px; }
+.mkt-pinfo .mkt-suspended { margin-bottom: 0; }
+.mkt-status.st-suspended { background: rgba(250, 56, 62, 0.12); color: var(--red); }
+
+.mkt-co-deliv {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--sub-bg);
+  font-size: 13.5px;
+}
+.mkt-co-deliv > svg { flex: none; color: var(--cyan); margin-top: 1px; }
+.mkt-co-deliv [data-deliv-text] { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.mkt-co-deliv a { color: var(--cyan); }
+.mkt-check { display: flex; align-items: center; gap: 9px; font-size: 14px; cursor: pointer; }
+.mkt-check input { width: 17px; height: 17px; accent-color: var(--cyan); flex: none; }
+.mkt-order-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 11px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #e9a300;
+  background: rgba(233, 163, 0, 0.13);
+  border: 1px solid rgba(233, 163, 0, 0.35);
+}
+.mkt-order-alert svg { flex: none; }
+html[data-theme="day"] .mkt-order-alert { color: #8a6000; }
+.mkt-order-dl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; font-size: 12.5px; }
+.mkt-order-dl .btn { display: inline-flex; align-items: center; gap: 7px; }
+.mkt-dl-on { color: #42b72a; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.mkt-dl-on svg { width: 13px; height: 13px; }
+.mkt-dl-off { color: #e9a300; }
+.mkt-f-download { gap: 4px; }
+.mkt-f-download svg { vertical-align: -2px; color: var(--muted); }
+@media (max-width: 760px) {
+  .mkt-tierbox { max-width: none; }
+  .mkt-store-title h1 { font-size: 21px; }
+}

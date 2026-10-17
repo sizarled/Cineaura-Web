@@ -254,7 +254,7 @@
     const store = state.me?.store;
     box.innerHTML = `
       <button class="btn btn-sm btn-primary" type="button" data-sell>${ICON.plus}<span>${esc(t("mkt.sell"))}</span></button>
-      ${store ? `<a class="btn btn-sm btn-ghost" href="${esc(M.storeHref(store.id))}" data-nav>${ICON.store}<span>${esc(t("mkt.yourStore"))}</span></a>`
+      ${store ? `<a class="btn btn-sm btn-ghost mkt-your-store" href="${esc(M.storeHref(store.id))}" data-nav>${ICON.store}<span>${esc(t("mkt.yourStore"))}</span>${M.tierHtml(store.tier)}</a>`
         : `<a class="btn btn-sm btn-ghost" href="#settings" data-panel-link="settings">${ICON.store}<span>${esc(t("mkt.openStore"))}</span></a>`}`;
   }
 
@@ -461,6 +461,19 @@
     });
   }
 
+  // What the team suspended (Panel > Reports > Market), as its seller sees it.
+  function suspendedHtml(kind, reason, { withStore = false } = {}) {
+    return `
+      <div class="mkt-suspended glass" role="status">
+        ${ICON.flag}
+        <div>
+          <b>${esc(t(kind === "store" ? "mkt.susp.store" : withStore ? "mkt.susp.withStore" : "mkt.susp.product"))}</b>
+          ${reason ? `<span>${esc(t("mkt.susp.reason"))} <q dir="auto">${esc(reason)}</q></span>` : ""}
+          <span class="muted">${esc(t(kind === "store" ? "mkt.susp.storeText" : "mkt.susp.productText"))}</span>
+        </div>
+      </div>`;
+  }
+
   function storeChips(s) {
     return [
       `<span class="mkt-open ${s.open ? "on" : "off"}">${esc(t(s.open ? "mkt.open" : "mkt.closed"))}</span>`,
@@ -489,20 +502,24 @@
     const own = res.data.own;
     document.title = `${s.name} — ${t("mkt.pageTitle")}`;
     const links = (Array.isArray(s.links) ? s.links : []).filter((l) => /^https?:\/\//i.test(l?.url || ""));
+    const reportBtn = signedIn()
+      ? `<button class="btn btn-sm btn-ghost mkt-report-btn" type="button" data-report-store>${ICON.flag}<span>${esc(t("mkt.rp.btn"))}</span></button>`
+      : `<a class="btn btn-sm btn-ghost mkt-report-btn" href="${esc(M.signinHref())}">${ICON.flag}<span>${esc(t("mkt.rp.btn"))}</span></a>`;
     box.innerHTML = `
+      ${own && s.suspended ? suspendedHtml("store", s.suspended_reason) : ""}
       <section class="glass mkt-store-head">
         <div class="mkt-store-banner">${s.cover ? `<img src="${esc(s.cover)}" alt="" />` : ""}</div>
         <div class="mkt-store-id">
           <img class="mkt-store-logo-lg" src="${esc(s.logo || C.initialsAvatar(s.name || "CA"))}" alt="" />
           <div class="mkt-store-title">
-            <h1 dir="auto">${esc(s.name)}</h1>
+            <h1><span dir="auto">${esc(s.name)}</span>${M.tierHtml(s.tier, { big: true })}</h1>
             <p class="muted">${t("mkt.by")} <a href="${esc(M.profileHref(s.owner?.username))}">@${esc(s.owner?.username || "")}</a> · ${ICON.pin} ${esc([s.city, M.country(s.country)].filter(Boolean).join(t("mkt.listSep")))}</p>
           </div>
           <div class="mkt-store-acts">
             ${own ? `<a class="btn btn-sm btn-ghost" href="#settings" data-panel-link="settings">${ICON.edit}<span>${esc(t("mkt.nav.settings"))}</span></a>
                      <button class="btn btn-sm btn-primary" type="button" data-sell>${ICON.plus}<span>${esc(t("mkt.sell"))}</span></button>`
-              : signedIn() ? `<button class="btn btn-sm btn-primary" type="button" data-ask-store>${ICON.chat}<span>${esc(t("mkt.rq.itemBtn"))}</span></button>`
-              : `<a class="btn btn-sm btn-ghost" href="${esc(M.signinHref())}">${esc(t("mkt.rq.itemBtn"))}</a>`}
+              : signedIn() ? `<button class="btn btn-sm btn-primary" type="button" data-ask-store>${ICON.chat}<span>${esc(t("mkt.rq.itemBtn"))}</span></button>${reportBtn}`
+              : `<a class="btn btn-sm btn-ghost" href="${esc(M.signinHref())}">${esc(t("mkt.rq.itemBtn"))}</a>${reportBtn}`}
           </div>
         </div>
         <div class="mkt-chips">${storeChips(s)}</div>
@@ -512,19 +529,35 @@
           <span class="pro"><b>${esc(M.fmt(s.pros))}</b> ${esc(t("mkt.pros"))}</span>
           <span class="con"><b>${esc(M.fmt(s.cons))}</b> ${esc(t("mkt.cons"))}</span>
         </div>
+        ${M.tierBoxHtml(s.tier)}
         ${s.description ? `<div class="mkt-store-desc" dir="auto">${richText(s.description)}</div>` : ""}
         ${links.length ? `<div class="mkt-store-links"><span class="muted">${esc(t("mkt.s.links"))}</span>${links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow">${ICON.link}<span dir="auto">${esc(l.label || l.url.replace(/^https?:\/\//i, ""))}</span></a>`).join("")}</div>` : ""}
       </section>
       <div class="mkt-sec-head"><h2>${esc(t("mkt.storeProducts"))}</h2></div>
       <div data-list></div>`;
     box.querySelector("[data-ask-store]")?.addEventListener("click", () => M.openRequest({ store: s, kind: "item", onSent: refreshMe }));
+    box.querySelector("[data-report-store]")?.addEventListener("click", () => M.openReport({ kind: "store", id: s.id, name: s.name }));
     loadList(box.querySelector("[data-list]"), searchArgs({ type: "products", sort: "new" }, { p_store: s.id }), "products", {
       emptyText: own ? t("mkt.storeEmptyOwn") : t("mkt.storeEmpty"),
     });
   }
 
   // ---------------------------------------------------------------- the product
+  // After Buy now: the tab of Your purchases where the order is (a request, a digital product
+  // delivered at once, or bought); after its address: that list again.
+  function afterCheckout(o) {
+    refreshMe();
+    go(`./Market.html#purchases/${o.status === "requested" ? "requests" : o.status === "shipped" ? "shipped" : "purchased"}`);
+  }
+  function afterAddress() {
+    refreshMe();
+    if (state.route.view === "panel" && state.route.section === "purchases") route();
+  }
+
   function shipLine(p, s, v) {
+    if (p.kind === "digital" && p.download) {
+      return { cls: "ok", icon: ICON.download, text: t(s.sale_mode === "request" ? "mkt.ship.downloadAccept" : "mkt.ship.download") };
+    }
     if (p.kind === "digital") return { cls: "ok", icon: ICON.cloud, text: t("mkt.ship.digital") };
     if (!s.shipping) return { cls: "", icon: ICON.pin, text: t("mkt.ship.none", { where: M.reachText(s) }) };
     const where = v.country ? M.country(v.country) : "";
@@ -605,7 +638,8 @@
       <article class="mkt-product">
         ${gallery}
         <div class="glass mkt-pinfo">
-          ${p.status !== "active" ? `<p class="mkt-badge b-hidden">${esc(t("mkt.hiddenNote"))}</p>` : ""}
+          ${p.status === "suspended" ? suspendedHtml("product", p.suspended_reason, { withStore: p.suspended_with_store })
+            : p.status !== "active" ? `<p class="mkt-badge b-hidden">${esc(t("mkt.hiddenNote"))}</p>` : ""}
           <h1 class="mkt-ptitle" dir="auto">${esc(p.title)}</h1>
           <div class="mkt-pprice"><b dir="ltr">${esc(M.pt(p.price))}</b><small dir="ltr">≈ ${esc(M.usd(p.price))}</small></div>
           <div class="mkt-pstats">
@@ -623,10 +657,11 @@
           <div class="mkt-pacts">
             <button class="btn btn-sm btn-ghost" type="button" data-share>${ICON.share}<span>${esc(shareLabel(p, v))}</span></button>
             ${v.own ? "" : `<button class="btn btn-sm btn-ghost" type="button" data-ask>${ICON.chat}<span>${esc(t("mkt.ask"))}</span></button>`}
+            ${v.own ? "" : `<button class="btn btn-sm btn-ghost mkt-report-btn" type="button" data-report-product>${ICON.flag}<span>${esc(t("mkt.rp.btn"))}</span></button>`}
           </div>
           <a class="mkt-pstore" href="${esc(M.storeHref(s.id))}" data-nav>
             <img src="${esc(s.logo || C.initialsAvatar(s.name || "CA"))}" alt="" />
-            <span><b dir="auto">${esc(s.name)}</b><small>@${esc(s.owner?.username || "")} · ${esc(M.reachText(s))}</small></span>
+            <span><b><span dir="auto">${esc(s.name)}</span>${M.tierHtml(s.tier)}</b><small>@${esc(s.owner?.username || "")} · ${esc(M.reachText(s))}</small></span>
             <span class="mkt-open ${s.open ? "on" : "off"}">${esc(t(s.open ? "mkt.open" : "mkt.closed"))}</span>
           </a>
           <p class="muted mkt-added">${esc(t("mkt.addedOn", { date: M.date(p.created_at) }))} · <a href="${esc(M.profileHref(s.owner?.username))}">@${esc(s.owner?.username || "")}</a></p>
@@ -706,10 +741,8 @@
         product: p,
         store: s,
         ref: refFor(p.id),
-        onDone: (o) => {
-          refreshMe();
-          go(`./Market.html#purchases/${o.status === "requested" ? "requests" : "purchased"}`);
-        },
+        onDone: afterCheckout,
+        onAddress: afterAddress,
       });
     });
     box.querySelector("[data-later]")?.addEventListener("click", async (e) => {
@@ -726,6 +759,10 @@
       refreshMe();
     });
     box.querySelector("[data-share]")?.addEventListener("click", () => M.openShare({ product: p, own: Boolean(v.own) }));
+    box.querySelector("[data-report-product]")?.addEventListener("click", () => {
+      if (!signedIn()) return needSignin();
+      M.openReport({ kind: "product", id: p.id, name: p.title });
+    });
     box.querySelector("[data-ask]")?.addEventListener("click", () => {
       if (!signedIn()) return needSignin();
       M.openRequest({ store: s, product: p, kind: "question" });
@@ -815,25 +852,31 @@
   // --- Your sales > Products
   function myProductHtml(p) {
     const img = M.images(p)[0];
-    const status = p.status === "active" ? (Number(p.stock) > 0 ? "on" : "out") : "hidden";
+    const suspended = p.status === "suspended";
+    const status = suspended ? "suspended" : p.status === "active" ? (Number(p.stock) > 0 ? "on" : "out") : "hidden";
+    const stLabel = { on: "mkt.forSale", out: "mkt.soldOut", hidden: "mkt.hidden", suspended: "mkt.susp.badge" }[status];
+    const stCls = { on: "sold", out: "cancelled", hidden: "declined", suspended: "suspended" }[status];
     return `
       <article class="mkt-order mkt-mine" data-mine="${esc(p.id)}">
         <a class="mkt-order-img" href="${esc(M.productHref(p.id))}" data-nav>${img ? `<img src="${esc(img)}" alt="" loading="lazy" />` : ICON.bag}</a>
         <div class="mkt-order-body">
           <div class="mkt-order-top">
             <a class="mkt-order-title" href="${esc(M.productHref(p.id))}" data-nav dir="auto">${esc(p.title)}</a>
-            <span class="mkt-status st-${status === "on" ? "sold" : status === "out" ? "cancelled" : "declined"}">${esc(t(status === "on" ? "mkt.forSale" : status === "out" ? "mkt.soldOut" : "mkt.hidden"))}</span>
+            <span class="mkt-status st-${stCls}">${esc(t(stLabel))}</span>
           </div>
+          ${suspended ? `<p class="mkt-order-note bad">${ICON.flag} <b>${esc(t(p.suspended_with_store ? "mkt.susp.withStore" : "mkt.susp.product"))}</b>${p.suspended_reason ? ` <q dir="auto">${esc(p.suspended_reason)}</q>` : ""}</p>` : ""}
           <div class="mkt-order-meta">
             <b dir="ltr">${esc(M.pt(p.price))}</b> · ${esc(t("mkt.leftN", { n: M.fmt(p.stock) }))} · ${esc(t(Number(p.sales) === 1 ? "mkt.salesOne" : "mkt.salesN", { n: M.fmt(p.sales) }))}
             · <span class="pro">+${esc(M.fmt(p.pros))}</span> / <span class="con">−${esc(M.fmt(p.cons))}</span>
             · <span class="mkt-comm-${p.commission_on ? "on" : "off"}">${esc(p.commission_on ? t("mkt.commissionN", { pct: p.commission_pct }) : t("mkt.noCommission"))}</span>
             ${Number(p.open_orders) ? ` · <b>${esc(t("mkt.openOrders", { n: M.fmt(p.open_orders) }))}</b>` : ""}
+            ${p.kind === "digital" ? ` · <span class="mkt-dl-${p.download_url ? "on" : "off"}">${p.download_url ? ICON.download : ""}${esc(t(p.download_url ? "mkt.dl.set" : "mkt.dl.none"))}</span>` : ""}
           </div>
           <div class="mkt-order-meta">${esc((p.categories || []).join(" · "))}</div>
           <div class="mkt-order-acts">
             <button class="btn btn-sm btn-ghost" type="button" data-mine-edit>${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>
-            ${p.status === "active"
+            ${suspended ? ""
+              : p.status === "active"
               ? `<button class="btn btn-sm btn-ghost" type="button" data-mine-status="hidden">${esc(t("mkt.hide"))}</button>`
               : `<button class="btn btn-sm btn-ghost" type="button" data-mine-status="active">${esc(t("mkt.show"))}</button>`}
             <button class="btn btn-sm btn-danger" type="button" data-mine-status="deleted">${esc(t("common.delete"))}</button>
@@ -883,12 +926,14 @@
     return: { label: "mkt.act.return", cls: "btn-ghost" },
     return_accept: { label: "mkt.act.returnAccept", cls: "btn-primary" },
     return_refuse: { label: "mkt.act.returnRefuse", cls: "btn-danger" },
+    address: { label: "mkt.act.address", cls: "btn-primary" },
   };
 
   function actLabel(a, o, side) {
     if (a === "ship" && o.kind === "digital") return t("mkt.act.deliver");
     if (a === "cancel" && side === "purchases") return t("mkt.act.cancelRequest");
     if (a === "review" && o.reviewed) return t("mkt.act.editReview");
+    if (a === "address" && o.address?.name) return t("mkt.act.addressChange");
     return t(ACT[a]?.label || a);
   }
 
@@ -901,7 +946,8 @@
     if (o.release_at && !o.settled_at) notes.push(t(side === "sales" ? "mkt.o.releaseSeller" : "mkt.o.releaseBuyer", { date: M.date(o.release_at) }));
     if (o.settled_at) notes.push(t(side === "sales" ? "mkt.o.paid" : "mkt.o.paidBuyer", { date: M.date(o.settled_at) }));
     if (o.status === "requested") notes.push(t(side === "sales" ? "mkt.o.requestSeller" : "mkt.o.requestBuyer"));
-    if (o.status === "sold") notes.push(t(side === "sales" ? (o.kind === "digital" ? "mkt.o.soldDigital" : "mkt.o.soldSeller") : "mkt.o.soldBuyer"));
+    if (o.status === "sold" && o.needs_address && side === "sales") notes.push(t("mkt.o.waitAddress"));
+    else if (o.status === "sold" && !o.needs_address) notes.push(t(side === "sales" ? (o.kind === "digital" ? "mkt.o.soldDigital" : "mkt.o.soldSeller") : "mkt.o.soldBuyer"));
     if (["cancelled", "declined", "returned"].includes(o.status)) notes.push(t("mkt.o.refunded", { pts: M.pt(o.total) }));
     if (o.via_link && side === "sales") {
       // an order of the first version of the market (no percentage kept): CineAura paid the 25%
@@ -926,7 +972,11 @@
             <bdi dir="ltr">${esc(M.fmt(o.qty))} × ${esc(M.pt(o.unit_price))}</bdi>${Number(o.shipping_cost) ? ` + ${esc(t("mkt.shippingCost"))} <bdi dir="ltr">${esc(M.pt(o.shipping_cost))}</bdi>` : ""} = <b dir="ltr">${esc(M.pt(o.total))}</b>
             <span class="muted">· ${esc(t(o.kind === "digital" ? "mkt.kind.digital" : "mkt.kind.physical"))}</span>
           </div>
-          ${addr.length ? `<p class="mkt-order-note"><b>${esc(t(side === "sales" ? "mkt.o.shipTo" : "mkt.o.yourAddress"))}</b> ${esc(addr.join(" · "))}${a.note ? `<br><span class="muted">${esc(a.note)}</span>` : ""}</p>` : a.note ? `<p class="mkt-order-note"><b>${esc(t("mkt.co.note"))}</b> ${esc(a.note)}</p>` : ""}
+          ${o.needs_address && side === "purchases" ? `<p class="mkt-order-alert" role="status">${ICON.home}<span>${esc(t(o.delivery === "hand" ? "mkt.o.addHand" : "mkt.o.addAddress"))}</span></p>` : ""}
+          ${addr.length ? `<p class="mkt-order-note"><b>${esc(t(side === "sales" ? (o.delivery === "hand" ? "mkt.o.handTo" : "mkt.o.shipTo") : "mkt.o.yourAddress"))}</b> ${esc(addr.join(" · "))}${a.note ? `<br><span class="muted">${esc(a.note)}</span>` : ""}</p>` : a.note ? `<p class="mkt-order-note"><b>${esc(t("mkt.co.note"))}</b> ${esc(a.note)}</p>` : ""}
+          ${o.download_url ? (side === "purchases"
+            ? `<p class="mkt-order-dl"><a class="btn btn-sm btn-primary" href="${esc(o.download_url)}" target="_blank" rel="noopener noreferrer" data-download>${ICON.download}<span>${esc(t("mkt.dl.btn"))}</span></a><span class="muted">${esc(t("mkt.dl.private"))}</span></p>`
+            : `<p class="mkt-order-note"><b>${esc(t("mkt.dl.sent"))}</b> <a href="${esc(o.download_url)}" target="_blank" rel="noopener noreferrer" dir="ltr">${esc(o.download_url.replace(/^https?:\/\//i, "").slice(0, 60))}</a></p>`) : ""}
           ${o.tracking ? `<p class="mkt-order-note"><b>${esc(t(o.kind === "digital" ? "mkt.o.delivery" : "mkt.o.tracking"))}</b> ${richText(o.tracking)}</p>` : ""}
           ${o.reason ? `<p class="mkt-order-note bad"><b>${esc(t("mkt.o.reason"))}</b> ${esc(o.reason)}</p>` : ""}
           ${o.review ? `<div class="mkt-order-review">${(o.review.pros || []).map((x) => `<span class="pro">+ ${esc(x)}</span>`).join("")}${(o.review.cons || []).map((x) => `<span class="con">− ${esc(x)}</span>`).join("")}</div>` : ""}
@@ -979,10 +1029,8 @@
             product: d.data.product,
             store: d.data.store,
             ref: refFor(id),
-            onDone: (o) => {
-              refreshMe();
-              go(`./Market.html#purchases/${o.status === "requested" ? "requests" : "purchased"}`);
-            },
+            onDone: afterCheckout,
+            onAddress: afterAddress,
           });
         }
       };
@@ -1004,6 +1052,10 @@
 
   async function orderAction(o, act, side, btn) {
     let note = "";
+    if (act === "address") {
+      M.openAddress({ order: o, onSaved: () => { refreshMe(); route(); } });
+      return;
+    }
     if (act === "review") {
       M.openReview({ order: o, review: o.review, onSaved: () => { refreshMe(); route(); } });
       return;
@@ -1207,7 +1259,7 @@
     const store = me?.store || null;
     box.innerHTML = panelShell(
       r,
-      `${store ? "" : `<p class="mkt-panel-hint">${esc(t("mkt.s.intro"))}</p>`}${M.storeFormHtml(store, me?.member || { username: M.username(), country: "" })}`,
+      `${store?.suspended ? suspendedHtml("store", store.suspended_reason) : ""}${store ? "" : `<p class="mkt-panel-hint">${esc(t("mkt.s.intro"))}</p>`}${M.storeFormHtml(store, me?.member || { username: M.username(), country: "" })}`,
       { tabs: false }
     );
     M.wireStoreForm(box, {
@@ -1236,6 +1288,10 @@
   function sell() {
     if (!signedIn()) {
       location.href = M.signinHref("Market.html#sales/products");
+      return;
+    }
+    if (state.me?.store?.suspended) {
+      C.toast(t("mkt.err.suspendedStore"));
       return;
     }
     M.openProductForm({

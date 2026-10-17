@@ -2170,11 +2170,19 @@
     market_review: "notif.mktReview",
     market_question: "notif.mktQuestion",
     market_reply: "notif.mktReply",
+    // sold: the buyer gives the delivery address / the buyer gave it / a digital order delivered
+    market_address_needed: "notif.mktAddressNeeded",
+    market_address: "notif.mktAddress",
+    market_download: "notif.mktDownload",
+    // the team suspended / restored a product, or a store (its link is Store settings)
+    market_suspended: (n) => (String(n?.href || "").includes("#settings") ? "notif.mktSuspendedStore" : "notif.mktSuspendedProduct"),
+    market_restored: (n) => (String(n?.href || "").includes("#settings") ? "notif.mktRestoredStore" : "notif.mktRestoredProduct"),
   };
 
   function noteTitle(n) {
     const kind = String(n?.kind || "");
-    if (NOTE_TITLES[kind]) return t(NOTE_TITLES[kind]);
+    const key = NOTE_TITLES[kind];
+    if (key) return t(typeof key === "function" ? key(n) : key);
     return tr(n?.title || kind);
   }
 

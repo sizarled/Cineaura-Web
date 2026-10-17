@@ -664,15 +664,16 @@
     };
   }
 
-  // ---------- Reports: watch links (reportlinks) + channels (channel_reports) ----------
+  // ---------- Reports: watch links (reportlinks) + channels (channel_reports) + the Market (market_reports) ----------
   async function viewReports(main) {
-    const tab = state.reportTab === "channels" ? "channels" : "links";
+    const tab = ["channels", "market"].includes(state.reportTab) ? state.reportTab : "links";
     main.innerHTML = `
       <p class="eyebrow">${t("panel.nav.reports")}</p>
       <h1>${t("panel.reportsTitle")}</h1>
       <div class="tabs follow-tabs" role="tablist">
         <button type="button" role="tab" class="follow-tab${tab === "links" ? " active" : ""}" aria-selected="${tab === "links"}" data-rtab="links">${t("panel.chr.tabLinks")}</button>
         <button type="button" role="tab" class="follow-tab${tab === "channels" ? " active" : ""}" aria-selected="${tab === "channels"}" data-rtab="channels">${t("panel.chr.tabChannels")}<span class="follow-count" id="chr-open-count" hidden></span></button>
+        <button type="button" role="tab" class="follow-tab${tab === "market" ? " active" : ""}" aria-selected="${tab === "market"}" data-rtab="market">${t("panel.mkr.tab")}<span class="follow-count" id="mkr-open-count" hidden></span></button>
       </div>
       <div class="follow-pane" id="rp-pane"></div>`;
     main.onclick = (e) => {
@@ -683,6 +684,7 @@
     };
     const pane = main.querySelector("#rp-pane");
     if (tab === "channels") await viewChannelReports(pane);
+    else if (tab === "market") await viewMarketReports(pane);
     else await viewLinkReports(pane);
     refreshChannelReportCount();
   }
@@ -728,19 +730,222 @@
     };
   }
 
-  // Open channel reports: the badge in the side menu and the count on the tab.
+  // Open channel reports and open Market reports: the badge in the side menu (both) and the
+  // counts on their tabs.
   async function refreshChannelReportCount() {
-    const n = await window.CineAura.countRows("/rest/v1/channel_reports?status=eq.open&select=id").catch(() => 0);
+    const [n, m] = await Promise.all([
+      window.CineAura.countRows("/rest/v1/channel_reports?status=eq.open&select=id").catch(() => 0),
+      marketReportCount(),
+    ]);
     const nav = $('#panel-root .side-nav [data-section="reports"]');
     if (nav) {
       nav.querySelector(".crp-badge")?.remove();
-      if (n) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge">${n > 99 ? "99+" : n}</span>`);
+      if (n + m) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge">${n + m > 99 ? "99+" : n + m}</span>`);
     }
-    const tabCount = $("#chr-open-count");
-    if (tabCount) {
-      tabCount.textContent = String(n);
-      tabCount.hidden = !n;
+    [["#chr-open-count", n], ["#mkr-open-count", m]].forEach(([sel, v]) => {
+      const el = $(sel);
+      if (!el) return;
+      el.textContent = String(v);
+      el.hidden = !v;
+    });
+  }
+  // (0 when sql/market.sql is not run, or the account has no Reports section)
+  async function marketReportCount() {
+    const r = await window.CineAura.rpc("market_reports_count", { p_token: state.staff?.token || "" }).catch(() => null);
+    return r?.ok && Number.isFinite(Number(r.data)) ? Number(r.data) : 0;
+  }
+
+  // ---------- Reports > Market (sql/market.sql): the Report button of the store and product
+  // pages. Reports on the same store / product form one card; the team marks them handled, or
+  // suspends the product / the whole store (with a reason the seller reads), and restores it.
+  const MKR_REASONS = ["fake", "scam", "prohibited", "misleading", "offensive", "no_delivery", "other"];
+  async function viewMarketReports(pane) {
+    const filter = ["open", "closed", "all"].includes(state.mkrFilter) ? state.mkrFilter : "open";
+    // a filter clicked while an action redraws the list: the last one asked is drawn
+    const seq = (state.mkrSeq = (state.mkrSeq || 0) + 1);
+    const res = await window.CineAura.rpc("market_reports_admin", { p_token: state.staff?.token || "", p_filter: filter, p_limit: 600 }).catch(() => null);
+    if (seq !== state.mkrSeq || !pane.isConnected) return;
+    const chip = (k) => `<button type="button" class="crp-filter${filter === k ? " active" : ""}" data-mkr-filter="${k}">${t(`panel.chr.${k}`)}</button>`;
+    const head = `
+      <p class="muted">${t("panel.mkr.lead")}</p>
+      <div class="crp-bar"><div class="crp-filters">${chip("open")}${chip("closed")}${chip("all")}</div></div>`;
+    if (!res?.ok || !res.data?.ok) {
+      const raw = JSON.stringify(res?.data || {});
+      const key = /staff_auth/.test(raw) ? "pza.errAuth"
+        : /staff_forbidden/.test(raw) ? "panel.mkr.forbidden"
+        : res?.status === 404 || /PGRST202|42883|schema cache|does not exist/i.test(raw) ? "panel.mkr.setup" : "panel.actFail";
+      pane.innerHTML = `${head}<div class="form-alert show warn">${t(key)}</div>`;
+      pane.onclick = (e) => onMarketReportClick(e, pane, []);
+      return;
     }
+    const groups = [];
+    const byKey = new Map();
+    (res.data.items || []).forEach((r) => {
+      const key = `${r.kind}:${r.target_id}`;
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, kind: r.kind, id: r.target_id, store: r.store, product: r.product, owner: r.owner, items: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      g.items.push(r);
+    });
+    const reasonText = (r) => t(MKR_REASONS.includes(r) ? `mkt.rp.r.${r}` : r);
+    const statusOf = (g) => (g.items.some((x) => x.status === "open") ? "open" : g.items.every((x) => x.status === "dismissed") ? "dismissed" : "resolved");
+    const card = (g, i) => {
+      const status = statusOf(g);
+      const isStore = g.kind === "store";
+      const st = g.store || {};
+      const pr = g.product || {};
+      const name = isStore ? st.name || g.id : pr.title || g.id;
+      const img = isStore ? st.logo : pr.image;
+      const gone = isStore ? !g.store : !g.product || pr.status === "deleted";
+      const suspended = isStore ? Boolean(st.suspended) : pr.status === "suspended";
+      const why = isStore ? st.suspended_reason : pr.suspended_reason;
+      const href = isStore ? `./Market.html?Store=${encodeURIComponent(g.id)}` : `./Market.html?Product=${encodeURIComponent(g.id)}`;
+      const counts = {};
+      g.items.forEach((x) => { counts[x.reason] = (counts[x.reason] || 0) + 1; });
+      const reasons = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      return `
+        <article class="crp-card mkr-card ${status}" data-mkr="${i}">
+          <div class="crp-top">
+            <span class="crp-logo mkr-img"><img src="${escapeHtml(img || initialsAvatar(name || "CA"))}" alt="" loading="lazy" /></span>
+            <div class="crp-title">
+              <h3>${gone ? escapeHtml(name) : `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`}</h3>
+              <p>${t(isStore ? "panel.mkr.kindStore" : "panel.mkr.kindProduct")} · <span dir="ltr">${escapeHtml(g.id)}</span>${!isStore && st.name ? ` · ${t("panel.mkr.inStore")} <strong>${escapeHtml(st.name)}</strong>` : ""} · ${t("mkt.seller")}: <strong>@${escapeHtml(g.owner?.username || "")}</strong></p>
+              <p>${t("panel.chr.last", { date: escapeHtml(fmtWhen(g.items[0].created_at)) })}</p>
+            </div>
+            <span class="crp-count">${t("panel.chr.reports", { n: g.items.length })}</span>
+          </div>
+          <div class="crp-tags">
+            <span class="crp-tag st-${status}">${t(`panel.chr.st.${status}`)}</span>
+            ${suspended ? `<span class="crp-tag mkr-susp">${t(isStore ? "panel.mkr.storeSuspended" : "panel.mkr.productSuspended")}</span>` : ""}
+            ${!isStore && st.suspended && !suspended ? `<span class="crp-tag mkr-susp">${t("panel.mkr.storeSuspended")}</span>` : ""}
+            ${!isStore && pr.status === "hidden" ? `<span class="crp-tag">${t("panel.mkr.hidden")}</span>` : ""}
+            ${gone ? `<span class="crp-tag">${t("panel.mkr.gone")}</span>` : ""}
+            ${reasons.map(([r, n]) => `<span class="crp-tag">${escapeHtml(reasonText(r))} × ${n}</span>`).join("")}
+          </div>
+          ${suspended && why ? `<p class="mkr-why">${t("panel.mkr.why")} <q>${escapeHtml(why)}</q></p>` : ""}
+          <details class="crp-details">
+            <summary>${t("panel.chr.reporters")} (${g.items.length})</summary>
+            <ul class="crp-items">${g.items.map((x) => `
+              <li class="crp-item">
+                <strong>@${escapeHtml(x.reporter?.username || x.reporter?.id || "")}</strong>
+                <span class="muted"> · ${escapeHtml(x.reporter?.id || "")} · ${escapeHtml(reasonText(x.reason))} · ${escapeHtml(fmtWhen(x.created_at))} · ${t(`panel.chr.st.${x.status}`)}</span>
+                ${x.note ? `<p>${escapeHtml(x.note)}</p>` : ""}
+                ${x.handled_by && x.status !== "open" ? `<p class="muted">${escapeHtml(x.handled_by)} · ${escapeHtml(fmtWhen(x.handled_at))}</p>` : ""}
+              </li>`).join("")}
+            </ul>
+          </details>
+          <div class="crp-actions">
+            ${gone ? "" : suspended
+              ? `<button class="btn btn-sm btn-primary" type="button" data-mkr-restore="${g.kind}">${t(isStore ? "panel.mkr.restoreStore" : "panel.mkr.restoreProduct")}</button>`
+              : `<button class="btn btn-sm btn-danger" type="button" data-mkr-suspend="${g.kind}">${t(isStore ? "panel.mkr.suspendStore" : "panel.mkr.suspendProduct")}</button>`}
+            ${!isStore && g.store ? (st.suspended
+              ? `<button class="btn btn-sm btn-ghost" type="button" data-mkr-restore="store">${t("panel.mkr.restoreStore")}</button>`
+              : `<button class="btn btn-sm btn-ghost" type="button" data-mkr-suspend="store">${t("panel.mkr.suspendStore")}</button>`) : ""}
+            ${status === "open" ? `
+              <button class="btn btn-sm btn-ghost" type="button" data-mkr-set="resolved">${t("panel.mkr.handled")}</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-mkr-set="dismissed">${t("panel.chr.dismiss")}</button>` : `
+              <button class="btn btn-sm btn-ghost" type="button" data-mkr-set="open">${t("panel.chr.reopen")}</button>`}
+            <button class="btn btn-sm btn-danger" type="button" data-mkr-delete>${t("panel.chr.delete")}</button>
+          </div>
+          <div data-mkr-slot></div>
+        </article>`;
+    };
+    pane.innerHTML = `${head}<div class="crp-list">${groups.map(card).join("") || `<p class="empty">${t("panel.mkr.none")}</p>`}</div>`;
+    pane.onclick = (e) => onMarketReportClick(e, pane, groups);
+    pane.onsubmit = (e) => onMarketSuspend(e, pane, groups);
+  }
+
+  const mkrDone = (pane, msg) => {
+    toast(msg);
+    viewMarketReports(pane).then(refreshChannelReportCount);
+  };
+  const mkrFail = (r) => {
+    const raw = JSON.stringify(r?.data || {});
+    const why = r?.data?.reason;
+    toast(t(/staff_auth/.test(raw) ? "pza.errAuth" : /staff_forbidden/.test(raw) ? "panel.mkr.forbidden"
+      : why === "store" ? "panel.mkr.errStore" : why === "reason" ? "panel.mkr.errReason" : "panel.actFail"));
+  };
+
+  async function onMarketReportClick(e, pane, groups) {
+    const f = e.target.closest("[data-mkr-filter]");
+    if (f) {
+      state.mkrFilter = f.dataset.mkrFilter;
+      viewMarketReports(pane);
+      return;
+    }
+    const btn = e.target.closest("[data-mkr-set], [data-mkr-delete], [data-mkr-suspend], [data-mkr-restore], [data-mkr-cancel]");
+    const cardEl = btn?.closest("[data-mkr]");
+    const g = cardEl && groups[Number(cardEl.dataset.mkr)];
+    if (!g) return;
+    const rpc = (fn, args) => window.CineAura.rpc(fn, { p_token: state.staff?.token || "", ...args }).catch(() => null);
+    const ok = (r) => r?.ok && r.data?.ok;
+    if (btn.hasAttribute("data-mkr-cancel")) {
+      cardEl.querySelector("[data-mkr-slot]").innerHTML = "";
+      return;
+    }
+    if (btn.hasAttribute("data-mkr-set")) {
+      const status = btn.dataset.mkrSet;
+      const items = status === "open" ? g.items.filter((x) => x.status !== "open") : g.items.filter((x) => x.status === "open");
+      if (!items.length) return;
+      const r = await rpc("market_reports_set", { p_ids: items.map((x) => x.id), p_status: status });
+      if (!ok(r)) return mkrFail(r);
+      mkrDone(pane, t("panel.chr.updated"));
+      return;
+    }
+    if (btn.hasAttribute("data-mkr-delete")) {
+      if (!confirm(t("panel.chr.deleteAsk"))) return;
+      const r = await rpc("market_reports_delete", { p_ids: g.items.map((x) => x.id) });
+      if (!ok(r)) return mkrFail(r);
+      mkrDone(pane, t("panel.chr.deleted"));
+      return;
+    }
+    const kind = btn.dataset.mkrSuspend || btn.dataset.mkrRestore;
+    const id = kind === "store" ? g.store?.id || (g.kind === "store" ? g.id : "") : g.id;
+    if (!id) return;
+    if (btn.hasAttribute("data-mkr-restore")) {
+      if (!confirm(t(kind === "store" ? "panel.mkr.restoreStoreAsk" : "panel.mkr.restoreProductAsk"))) return;
+      btn.disabled = true;
+      const r = await rpc("market_moderate", { p_kind: kind, p_id: id, p_action: "restore", p_reason: "" });
+      btn.disabled = false;
+      if (!ok(r)) return mkrFail(r);
+      mkrDone(pane, t(kind === "store" ? "panel.mkr.storeRestored" : "panel.mkr.productRestored"));
+      return;
+    }
+    // suspend: the reason the seller reads first
+    const slot = cardEl.querySelector("[data-mkr-slot]");
+    slot.innerHTML = `
+      <form class="mkr-suspend" data-mkr-form data-kind="${kind}" data-id="${escapeHtml(id)}">
+        <label><span>${t(kind === "store" ? "panel.mkr.reasonStore" : "panel.mkr.reasonProduct")}</span>
+          <textarea name="reason" rows="2" maxlength="300" required placeholder="${escapeHtml(t("panel.mkr.reasonPh"))}"></textarea></label>
+        <p class="muted">${t(kind === "store" ? "panel.mkr.storeEffect" : "panel.mkr.productEffect")}</p>
+        <div class="acc-actions">
+          <button class="btn btn-sm btn-danger" type="submit">${t(kind === "store" ? "panel.mkr.suspendStore" : "panel.mkr.suspendProduct")}</button>
+          <button class="btn btn-sm btn-ghost" type="button" data-mkr-cancel>${t("common.cancel")}</button>
+        </div>
+      </form>`;
+    slot.querySelector("textarea").focus();
+  }
+
+  async function onMarketSuspend(e, pane) {
+    const form = e.target.closest("[data-mkr-form]");
+    if (!form) return;
+    e.preventDefault();
+    const reason = form.reason.value.trim();
+    if (reason.length < 3) {
+      toast(t("panel.mkr.errReason"));
+      form.reason.focus();
+      return;
+    }
+    const kind = form.dataset.kind;
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    const r = await window.CineAura.rpc("market_moderate", { p_token: state.staff?.token || "", p_kind: kind, p_id: form.dataset.id, p_action: "suspend", p_reason: reason }).catch(() => null);
+    btn.disabled = false;
+    if (!r?.ok || !r.data?.ok) return mkrFail(r);
+    mkrDone(pane, t(kind === "store" ? "panel.mkr.storeSuspendedDone" : "panel.mkr.productSuspendedDone"));
   }
 
   const chrKey = (r) => `${String(r.package_name || "").trim().toLowerCase()}\n${String(r.channel_name || "").trim().toLowerCase()}`;

@@ -323,3 +323,17 @@ html[data-theme="day"] .apx-state.on { color: #2f7a4a; }
   .apx-fields { grid-template-columns: minmax(0, 1fr) 92px; }
   .apx-changed { margin-inline-start: 0; flex-basis: 100%; }
 }
+
+/* Reports > Market (js/panel.js viewMarketReports): a store / product with its reports */
+.mkr-img img { padding: 0; object-fit: cover; }
+.mkr-card .crp-title h3 a { color: inherit; }
+.mkr-card .crp-title h3 a:hover { color: var(--cyan); }
+.crp-tag.mkr-susp { background: rgba(250, 56, 62, 0.14); color: var(--red); }
+.mkr-why { margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.mkr-why q { color: var(--text); }
+.mkr-suspend { display: grid; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--surface); border: 1px solid rgba(250, 56, 62, 0.35); }
+.mkr-suspend label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+.mkr-suspend textarea { width: 100%; min-height: 64px; resize: vertical; }
+.mkr-suspend p { margin: 0; font-size: 12.5px; }
+/* the counts on the Reports tabs disappear at 0 (facebook.css draws .follow-count as a grid) */
+.follow-tab .follow-count[hidden] { display: none; }

@@ -3042,6 +3042,95 @@
     });
   }
 
+  // ---- Settings > Profile: the delivery address of the Market (sql/market.sql market_addresses).
+  // Each physical product the member buys gets it by itself once the order is sold; only the
+  // sellers of their orders see it. dashboard.html#address opens it.
+  function addressBoxHtml() {
+    const f = (id, key, attrs) =>
+      `<input id="${id}" ${attrs} placeholder="${escapeHtml(t(key))} *" aria-label="${escapeHtml(t(key))}" />`;
+    return `
+      <section class="set-site stack dash-addr" id="s-addr" aria-labelledby="s-addr-title" hidden>
+        <div>
+          <h2 class="sset-lbl" id="s-addr-title">${t("dash.addr.title")}</h2>
+          <p class="sset-hint">${t("dash.addr.hint")}</p>
+        </div>
+        <div class="form-row">
+          ${f("s-addr-name", "dash.addr.name", 'maxlength="80" autocomplete="name" dir="auto"')}
+          ${f("s-addr-phone", "dash.addr.phone", 'maxlength="30" autocomplete="tel" inputmode="tel" dir="ltr"')}
+        </div>
+        <div class="form-row">
+          ${f("s-addr-city", "dash.addr.city", 'maxlength="80" autocomplete="address-level2" dir="auto"')}
+          ${f("s-addr-line", "dash.addr.line", 'maxlength="200" autocomplete="street-address" dir="auto"')}
+        </div>
+        <p class="sset-hint" id="s-addr-state" aria-live="polite"></p>
+        <div class="dash-addr-acts">
+          <button class="btn btn-sm btn-primary" id="s-addr-save" type="button">${t("dash.addr.save")}</button>
+          <button class="btn btn-sm btn-ghost" id="s-addr-del" type="button" hidden>${t("dash.addr.remove")}</button>
+        </div>
+      </section>`;
+  }
+
+  function wireAddressBox(main, m) {
+    const box = main.querySelector("#s-addr");
+    if (!box) return;
+    const el = (k) => box.querySelector(`#s-addr-${k}`);
+    const stateEl = el("state");
+    const digits = (v) => String(v || "")
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x660))
+      .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+    const phoneOk = (v) => {
+      const n = v.replace(/\D/g, "").length;
+      return /^\+?[0-9 ()./-]{5,30}$/.test(v) && n >= 5 && n <= 20;
+    };
+    const show = (a) => {
+      ["name", "phone", "city", "line"].forEach((k) => { el(k).value = a?.[k] || ""; });
+      el("del").hidden = !a;
+      stateEl.textContent = a ? t("dash.addr.since", { date: C.formatDate(a.updated_at) }) : t("dash.addr.none");
+    };
+    C.rpc("market_address", { p_member: m.member_id })
+      .then((r) => {
+        if (!r.ok || !r.data?.ok) return; // sql/market.sql not run yet: no box
+        box.hidden = false;
+        show(r.data.address);
+        if (location.hash === "#address") {
+          box.scrollIntoView({ block: "center" });
+          box.querySelector("input:placeholder-shown")?.focus();
+        }
+      })
+      .catch(() => {});
+    el("save").onclick = async () => {
+      const a = {
+        name: el("name").value.trim(),
+        phone: digits(el("phone").value).trim(),
+        city: el("city").value.trim(),
+        line: el("line").value.trim(),
+      };
+      const bad = (a.name.length < 2 && "name") || (!phoneOk(a.phone) && "phone") || (a.city.length < 2 && "city") || (a.line.length < 4 && "line");
+      if (bad) {
+        stateEl.textContent = t(bad === "phone" ? "dash.addr.errPhone" : "dash.addr.errFields");
+        el(bad).focus();
+        return;
+      }
+      el("save").disabled = true;
+      const r = await C.rpc("market_address_save", { p_member: m.member_id, p_address: a }).catch(() => null);
+      el("save").disabled = false;
+      if (!r?.ok || !r.data?.ok) {
+        const why = r?.data?.reason;
+        stateEl.textContent = t(why === "phone" ? "dash.addr.errPhone" : why === "address" ? "dash.addr.errFields" : "dash.addr.failed");
+        return;
+      }
+      show(r.data.address);
+      toast(Number(r.data.orders) > 0 ? t("dash.addr.savedOrders", { n: r.data.orders }) : t("dash.addr.saved"));
+    };
+    el("del").onclick = async () => {
+      if (!confirm(t("dash.addr.confirmRemove"))) return;
+      const r = await C.rpc("market_address_save", { p_member: m.member_id, p_address: null }).catch(() => null);
+      if (!r?.ok || !r.data?.ok) return toast(t("dash.addr.failed"));
+      show(null);
+      toast(t("dash.addr.removed"));
+    };
+  }
+
   async function viewSettings(main) {
     const m = state.member;
     const p = state.profile || {};
@@ -3065,6 +3154,7 @@
             <input id="s-region" value="${escapeHtml(p.region||"")}" placeholder="${t("common.region")}" />
             <input id="s-country" value="${escapeHtml(p.country||m.country||"")}" placeholder="${t("common.country")}" />
           </div>
+          ${addressBoxHtml()}
         </div>
         <div class="follow-pane stack" data-dpane="set1">
           <p class="muted">${t("dash.settings.appearance")}</p>
@@ -3114,6 +3204,7 @@
         <button class="btn btn-lg btn-primary" id="s-save" type="button">${t("dash.settings.save")}</button>
       </div>`;
     wireTabs(main, "set");
+    wireAddressBox(main, m);
     // An uploaded photo replaces the old file at once, so the profile gets its link at once too.
     C.wireAvatarField(main, {
       memberId: m.member_id,
@@ -3176,6 +3267,8 @@
     devices: { section: "codes", tabs: { codes: "codes-devices" } },
     // dashboard.html#iptv-lists: IPTV > Your lists (the IPTV lists the member published)
     "iptv-lists": { section: "iptv", tabs: { iptv: "iptv-lists" } },
+    // dashboard.html#address: Settings > Profile, the delivery address of the Market
+    address: { section: "settings", tabs: { set: "set0" } },
   };
 
   function routeOf(hash) {

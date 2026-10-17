@@ -51,6 +51,24 @@
 --   * The points received (sales: profiles.market_points / market_sales; shares:
 --     market_ref_points / market_refs) are earned points like the others: they count for the
 --     level (_points() below).
+--   * Delivery (market_orders.delivery): ship (a physical product, the store ships), hand (a
+--     physical product, the store does not ship) or online (a digital product). A physical
+--     order needs the buyer's delivery address and phone once it is sold (bought in an instant
+--     store, or accepted), never before: the address saved in the buyer's profile
+--     (market_addresses: Dashboard > Settings > Profile) goes with it by itself, otherwise the
+--     buyer gives it in Your purchases (market_order_address). The seller ships after that.
+--   * A digital product can have a private download link (market_products.download_url): its
+--     orders are delivered online as soon as they are sold, and the buyer gets the link in
+--     Your purchases. Without a link the seller delivers each order (a code, a message…).
+--
+-- The tier of a store (market_stores.sales_points): the points of its successful orders
+-- (delivered: received by the buyer and not returned):
+--   N under 1,000 PT · K under 1 million · M under 1 billion · B under 1 trillion
+-- shown with the progress inside the tier: K25 = 250,000 PT (25% of 1 million).
+--
+-- Reports (market_reports): the Report button of every store page and product page. The team
+-- reads them in Panel > Reports > Market and can suspend a product or a whole store: hidden
+-- from everybody but its seller, who cannot show it again until the team restores it.
 --
 -- Who sees what: nothing here is open to the public API; the browser calls the functions
 -- (security definer), which check the member, the owner and the order of every action.
@@ -104,6 +122,10 @@ create table if not exists public.market_stores (
   shipping boolean not null default true,
   returns boolean not null default false,
   return_days integer not null default 0,
+  sales_points bigint not null default 0,             -- the totals of its delivered orders: the tier (N K M B)
+  suspended boolean not null default false,           -- by the team (Panel > Reports > Market)
+  suspended_reason text not null default '',
+  suspended_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint market_stores_scope check (scope in ('city', 'country', 'continent', 'world')),
@@ -131,17 +153,21 @@ create table if not exists public.market_products (
   stock integer not null default 1,
   images jsonb not null default '[]'::jsonb,
   video_url text not null default '',
-  status text not null default 'active',              -- active | hidden (by the seller) | deleted
+  status text not null default 'active',              -- active | hidden (by the seller) | deleted | suspended (by the team)
   sales integer not null default 0,                   -- pieces sold (orders not cancelled / returned)
   pros integer not null default 0,                    -- good points written by buyers
   cons integer not null default 0,                    -- bad points
   commission_on boolean not null default false,       -- the share commission (…?Product=<id>&@username), paid by the seller
   commission_pct smallint not null default 10,        -- its percentage of the price (kept while it is off)
+  download_url text not null default '',              -- digital: the private download link the buyers get
+  suspended_reason text not null default '',          -- why the team suspended it
+  status_before text,                                 -- the status a suspension replaced (back on restore)
+  suspended_with_store boolean not null default false,  -- suspended because its store was
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint market_products_kind check (kind in ('physical', 'digital')),
   constraint market_products_commission check (commission_pct between 1 and 25),
-  constraint market_products_status check (status in ('active', 'hidden', 'deleted')),
+  constraint market_products_status check (status in ('active', 'hidden', 'deleted', 'suspended')),
   constraint market_products_price check (price between 1 and 10000000),
   constraint market_products_ship check (shipping_cost between 0 and 1000000),
   constraint market_products_stock check (stock between 0 and 100000)
@@ -182,7 +208,10 @@ create table if not exists public.market_orders (
   commission_pct smallint,                            -- the product's share commission that day (0: none), paid by
                                                       -- the seller; empty: an order of the first version (the site paid 25%)
   buyer_country text not null default '',
-  address jsonb not null default '{}'::jsonb,         -- name, phone, city, line, note
+  address jsonb not null default '{}'::jsonb,         -- note (checkout); name, phone, city, line once it is sold
+  delivery text not null default 'ship',              -- ship | hand (the store does not ship) | online (digital)
+  address_at timestamptz,                             -- when the buyer's address came with it
+  download_url text not null default '',              -- digital: the link when it was delivered online
   status text not null,
   tracking text not null default '',                  -- the seller's shipping note / digital delivery
   reason text not null default '',                    -- why it was declined, cancelled, returned, refused
@@ -221,6 +250,95 @@ begin
   alter table public.market_orders add constraint market_orders_commission check (commission_pct between 0 and 25);
 exception when duplicate_object then null;
 end $$;
+
+-- Added in the third version: the tier of each store, the team's suspensions, the download
+-- link of a digital product, the delivery of each order and the address given after the sale.
+alter table public.market_stores add column if not exists sales_points bigint not null default 0;
+alter table public.market_stores add column if not exists suspended boolean not null default false;
+alter table public.market_stores add column if not exists suspended_reason text not null default '';
+alter table public.market_stores add column if not exists suspended_at timestamptz;
+alter table public.market_products add column if not exists download_url text not null default '';
+alter table public.market_products add column if not exists suspended_reason text not null default '';
+alter table public.market_products add column if not exists status_before text;
+alter table public.market_products add column if not exists suspended_with_store boolean not null default false;
+alter table public.market_orders add column if not exists delivery text;
+alter table public.market_orders add column if not exists address_at timestamptz;
+alter table public.market_orders add column if not exists download_url text not null default '';
+-- the orders of before: from the product and the store
+update public.market_orders o
+   set delivery = case when o.kind = 'digital' then 'online'
+                       when coalesce((select s.shipping from public.market_stores s where s.id = o.store_id), true) then 'ship'
+                       else 'hand' end
+ where o.delivery is null;
+update public.market_orders set address_at = coalesce(accepted_at, created_at) where address_at is null and address ? 'name';
+alter table public.market_orders alter column delivery set default 'ship';
+alter table public.market_orders alter column delivery set not null;
+alter table public.market_products drop constraint if exists market_products_status;
+alter table public.market_products add constraint market_products_status check (status in ('active', 'hidden', 'deleted', 'suspended'));
+do $$
+begin
+  alter table public.market_orders add constraint market_orders_delivery check (delivery in ('ship', 'hand', 'online'));
+exception when duplicate_object then null;
+end $$;
+
+-- The tier: market_stores.sales_points follows the orders (+ the total when one is delivered,
+-- - when it leaves that state: a return asked, then accepted) …
+create or replace function public._mkt_tier_points() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op <> 'INSERT' and old.status = 'delivered' then
+    update public.market_stores set sales_points = greatest(0, sales_points - old.total) where id = old.store_id;
+  end if;
+  if tg_op <> 'DELETE' and new.status = 'delivered' then
+    update public.market_stores set sales_points = sales_points + new.total where id = new.store_id;
+  end if;
+  return null;
+end $$;
+drop trigger if exists market_orders_tier on public.market_orders;
+create trigger market_orders_tier after insert or delete or update of status, total, store_id on public.market_orders
+  for each row execute function public._mkt_tier_points();
+-- … and is counted again from the orders every time this file runs.
+update public.market_stores s set sales_points = x.pts
+  from (select s2.id, coalesce((select sum(o.total) from public.market_orders o where o.store_id = s2.id and o.status = 'delivered'), 0) as pts
+          from public.market_stores s2) x
+ where x.id = s.id and s.sales_points is distinct from x.pts;
+
+-- The delivery address kept in a member's profile (Dashboard > Settings > Profile, or the
+-- checkbox of the address form in Your purchases): it goes with each physical order by itself
+-- once the order is sold. Seen by the member, and by the sellers of their sold orders.
+create table if not exists public.market_addresses (
+  member_id text primary key references public.members(member_id) on delete cascade,
+  name text not null,
+  phone text not null,
+  city text not null,
+  line text not null,
+  updated_at timestamptz not null default now()
+);
+
+-- The Report button of the store pages and product pages (Panel > Reports > Market).
+create table if not exists public.market_reports (
+  id bigint generated always as identity primary key,
+  kind text not null,                                 -- store | product
+  target_id text not null,                            -- STR… | PRD…
+  store_id text not null,                             -- the store (of the product)
+  owner_id text not null,                             -- its seller
+  reporter_id text not null,
+  reason text not null,
+  note text not null default '',
+  status text not null default 'open',                -- open | resolved | dismissed
+  handled_by text not null default '',
+  handled_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint market_reports_kind check (kind in ('store', 'product')),
+  constraint market_reports_reason check (reason in ('fake', 'scam', 'prohibited', 'misleading', 'offensive', 'no_delivery', 'other')),
+  constraint market_reports_status check (status in ('open', 'resolved', 'dismissed')),
+  constraint market_reports_note check (char_length(note) <= 500)
+);
+create index if not exists market_reports_status_idx on public.market_reports (status, created_at desc);
+create index if not exists market_reports_target_idx on public.market_reports (kind, target_id);
+create index if not exists market_reports_reporter_idx on public.market_reports (reporter_id, created_at desc);
+-- one open report per member and store / product
+create unique index if not exists market_reports_one_open on public.market_reports (reporter_id, kind, target_id) where status = 'open';
 
 create table if not exists public.market_reviews (
   order_id text primary key references public.market_orders(id) on delete cascade,
@@ -271,7 +389,8 @@ do $$
 declare t text; pol record;
 begin
   foreach t in array array['market_stores', 'market_categories', 'market_products', 'market_product_categories',
-                           'market_saved', 'market_orders', 'market_reviews', 'market_requests']
+                           'market_saved', 'market_orders', 'market_reviews', 'market_requests', 'market_addresses',
+                           'market_reports']
   loop
     execute format('alter table public.%I enable row level security', t);
     for pol in select policyname from pg_policies where schemaname = 'public' and tablename = t loop
@@ -424,6 +543,47 @@ create or replace function public._mkt_images(p_images jsonb, p_n int) returns j
   select coalesce((select jsonb_agg(x order by i) from jsonb_array_elements(case when jsonb_typeof(p_images) = 'array' then p_images else '[]'::jsonb end) with ordinality e(x, i) where i <= p_n), '[]'::jsonb)
 $$;
 
+-- The tier of a store from the points of its successful orders:
+--   N under 1,000 · K under 1,000,000 · M under 1,000,000,000 · B under 1,000,000,000,000
+--   -> { code, pct, points, top, next }: pct = points x 100 / top, rounded down to 0.1 (K25 = 250,000 PT
+--      of 1,000,000; K0.6 = 6,400 PT); 1 trillion and more stays B100.
+create or replace function public._mkt_tier(p_points bigint) returns jsonb language sql immutable as $$
+  select jsonb_build_object('code', x.code, 'pct', least(100, round(floor(x.pts * 1000 / x.top) / 10, 1)), 'points', x.pts, 'top', x.top,
+                            'next', case x.code when 'N' then 'K' when 'K' then 'M' when 'M' then 'B' end)
+    from (select greatest(coalesce(p_points, 0), 0)::numeric as pts) v,
+         lateral (select v.pts,
+                         case when v.pts < 1000 then 'N' when v.pts < 1000000 then 'K' when v.pts < 1000000000 then 'M' else 'B' end as code,
+                         case when v.pts < 1000 then 1000::numeric when v.pts < 1000000 then 1000000::numeric
+                              when v.pts < 1000000000 then 1000000000::numeric else 1000000000000::numeric end as top) x
+$$;
+
+-- A phone number: digits (Arabic-Indic ones too), spaces, + ( ) . / -; 5 to 20 digits.
+create or replace function public._mkt_phone(p text) returns text language sql immutable as $$
+  select left(btrim(regexp_replace(translate(coalesce(p, ''), '٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹', '01234567890123456789'), '\s+', ' ', 'g')), 30)
+$$;
+create or replace function public._mkt_phone_ok(p text) returns boolean language sql immutable as $$
+  select coalesce(p ~ '^\+?[0-9 ()./-]{5,30}$' and length(regexp_replace(p, '\D', '', 'g')) between 5 and 20, false)
+$$;
+
+-- A delivery address as the forms send it -> { name, phone, city, line } (trimmed, cut to size).
+create or replace function public._mkt_addr(p jsonb) returns jsonb language sql immutable as $$
+  select jsonb_build_object('name', left(public._mkt_line(x->>'name'), 80), 'phone', public._mkt_phone(x->>'phone'),
+                            'city', left(public._mkt_line(x->>'city'), 80), 'line', left(btrim(coalesce(x->>'line', '')), 200))
+    from (select case when jsonb_typeof(p) = 'object' then p else '{}'::jsonb end as x) v
+$$;
+
+-- What is wrong with an address (null: nothing) for p_for: ship (name, phone, city, address),
+-- hand (name, phone) or profile (the four). p_city: the city of a store of one city.
+create or replace function public._mkt_addr_check(a jsonb, p_for text, p_city text default null) returns text
+language sql immutable as $$
+  select case
+    when length(coalesce(a->>'name', '')) < 2 then 'address'
+    when not public._mkt_phone_ok(a->>'phone') then 'phone'
+    when p_for in ('ship', 'profile') and (length(coalesce(a->>'city', '')) < 2 or length(coalesce(a->>'line', '')) < 4) then 'address'
+    when coalesce(p_city, '') <> '' and public._mkt_norm(coalesce(a->>'city', '')) <> public._mkt_norm(p_city) then 'city'
+  end
+$$;
+
 -- A product as a card (Market.html lists).
 create or replace function public._mkt_card(p public.market_products) returns jsonb
 language sql stable security definer set search_path = public as $$
@@ -432,7 +592,8 @@ language sql stable security definer set search_path = public as $$
     'created_at', p.created_at, 'sales', p.sales, 'stock', p.stock, 'status', p.status, 'shipping_cost', p.shipping_cost,
     'pros', p.pros, 'cons', p.cons,
     'commission', case when p.commission_on then p.commission_pct else 0 end,   -- % for a share link (0: none)
-    'store', jsonb_build_object('id', s.id, 'name', s.name, 'logo', s.logo_url, 'country', s.country, 'is_open', s.is_open),
+    'store', jsonb_build_object('id', s.id, 'name', s.name, 'logo', s.logo_url, 'country', s.country, 'is_open', s.is_open,
+                                'tier', public._mkt_tier(s.sales_points)),
     'seller', jsonb_build_object('id', s.owner_id, 'username', coalesce(m.username, '')))
   from public.market_stores s left join public.members m on m.member_id = s.owner_id
   where s.id = p.store_id
@@ -451,6 +612,9 @@ language sql stable security definer set search_path = public as $$
     'sales', (select coalesce(sum(p.sales), 0) from public.market_products p where p.store_id = s.id and p.status <> 'deleted'),
     'pros', (select coalesce(sum(p.pros), 0) from public.market_products p where p.store_id = s.id),
     'cons', (select coalesce(sum(p.cons), 0) from public.market_products p where p.store_id = s.id),
+    'tier', public._mkt_tier(s.sales_points),
+    -- only its seller still sees a suspended store
+    'suspended', s.suspended, 'suspended_reason', s.suspended_reason, 'suspended_at', s.suspended_at,
     'created_at', s.created_at,
     'owner', jsonb_build_object('id', s.owner_id, 'username', coalesce((select m.username from public.members m where m.member_id = s.owner_id), '')))
 $$;
@@ -558,7 +722,9 @@ language sql stable as $$
   select to_jsonb(array_remove(array[
     case when p_viewer = o.seller_id and o.status = 'requested' then 'accept' end,
     case when p_viewer = o.seller_id and o.status = 'requested' then 'decline' end,
-    case when p_viewer = o.seller_id and o.status = 'sold' then 'ship' end,
+    -- a physical order is shipped once the buyer's address is there
+    case when p_viewer = o.seller_id and o.status = 'sold' and (o.delivery = 'online' or o.address ? 'name') then 'ship' end,
+    case when p_viewer = o.buyer_id and o.status = 'sold' and o.delivery <> 'online' then 'address' end,
     case when (p_viewer = o.seller_id and o.status = 'sold') or (p_viewer = o.buyer_id and o.status = 'requested') then 'cancel' end,
     case when p_viewer = o.buyer_id and o.status = 'shipped' then 'received' end,
     case when p_viewer = o.buyer_id and o.status in ('delivered', 'returned') then 'review' end,
@@ -576,6 +742,13 @@ language sql stable security definer set search_path = public as $$
     'qty', o.qty, 'unit_price', o.unit_price, 'shipping_cost', o.shipping_cost, 'total', o.total,
     'status', o.status, 'tracking', o.tracking, 'reason', o.reason, 'return_days', o.return_days,
     'address', case when p_viewer in (o.seller_id, o.buyer_id) then o.address else '{}'::jsonb end,
+    'delivery', o.delivery, 'address_at', o.address_at,
+    'needs_address', o.status = 'sold' and o.delivery <> 'online' and not (o.address ? 'name'),
+    -- a digital order delivered online: the product's link of today (or the one it was delivered with)
+    'download_url', case when p_viewer in (o.seller_id, o.buyer_id) and o.delivery = 'online'
+                              and o.status in ('shipped', 'delivered', 'return_requested')
+                         then coalesce(nullif((select p.download_url from public.market_products p where p.id = o.product_id), ''),
+                                       nullif(o.download_url, '')) end,
     'via_link', o.referrer_id is not null,
     -- the seller's side: the commission of the share link and what the seller receives
     'commission', case when p_viewer = o.seller_id then o.commission end,
@@ -587,12 +760,46 @@ language sql stable security definer set search_path = public as $$
     'auto_at', case when o.status = 'shipped' then o.shipped_at + interval '14 days' end,
     'release_at', case when o.status in ('delivered', 'return_requested') and o.settled_at is null then o.delivered_at + make_interval(days => o.return_days) end,
     'store_name', coalesce((select s.name from public.market_stores s where s.id = o.store_id), ''),
+    'city_only', (select s.city from public.market_stores s where s.id = o.store_id and s.scope = 'city'),   -- the address must be there
     'seller', jsonb_build_object('id', o.seller_id, 'username', coalesce((select m.username from public.members m where m.member_id = o.seller_id), '')),
     'buyer', jsonb_build_object('id', o.buyer_id, 'username', coalesce((select m.username from public.members m where m.member_id = o.buyer_id), '')),
     'reviewed', exists (select 1 from public.market_reviews r where r.order_id = o.id),
     'review', (select jsonb_build_object('pros', r.pros, 'cons', r.cons) from public.market_reviews r where r.order_id = o.id),
     'actions', public._mkt_actions(o, p_viewer))
 $$;
+
+-- An order that has just been sold (bought in an instant store, or accepted):
+--   ship / hand  the address saved in the buyer's profile goes with it, when it fits (a shipped
+--                order needs the city and the address; a store of one city, its city);
+--                otherwise the buyer is asked for it (Your purchases)
+--   online       a product with a download link: delivered online at once
+--   -> 'address' (it has one) | 'ask' (the buyer must give it) | 'online' (delivered) | '' (nothing)
+create or replace function public._mkt_after_sale(p_order text) returns text
+language plpgsql security definer set search_path = public as $$
+declare o public.market_orders; st public.market_stores; a jsonb; link text;
+begin
+  select * into o from public.market_orders where id = p_order for update;
+  if not found or o.status <> 'sold' then return ''; end if;
+  if o.delivery = 'online' then
+    select download_url into link from public.market_products where id = o.product_id;
+    if coalesce(link, '') = '' then return ''; end if;
+    update public.market_orders set status = 'shipped', shipped_at = now(), download_url = link, updated_at = now() where id = o.id;
+    return 'online';
+  end if;
+  if o.address ? 'name' then return 'address'; end if;
+  select jsonb_build_object('name', ad.name, 'phone', ad.phone, 'city', ad.city, 'line', ad.line) into a
+    from public.market_addresses ad where ad.member_id = o.buyer_id;
+  select * into st from public.market_stores where id = o.store_id;
+  if a is null or public._mkt_addr_check(a, o.delivery, case when st.scope = 'city' then st.city end) is not null then
+    return 'ask';
+  end if;
+  update public.market_orders
+     set address = o.address || jsonb_strip_nulls(jsonb_build_object('name', a->>'name', 'phone', a->>'phone',
+                     'city', nullif(a->>'city', ''), 'line', case when o.delivery = 'ship' then nullif(a->>'line', '') end)),
+         address_at = now(), updated_at = now()
+   where id = o.id;
+  return 'address';
+end $$;
 
 -- A store for a member who sells their first product before opening Store settings.
 create or replace function public._mkt_ensure_store(m public.members) returns public.market_stores
@@ -728,7 +935,7 @@ begin
   return jsonb_build_object('ok', true, 'id', sid, 'created', created);
 end $$;
 
--- A store page: Market.html?Store=<id>
+-- A store page: Market.html?Store=<id> (a suspended store: its seller only)
 --   -> { ok: true, store: {…}, own } | { ok: false, reason: not_found }
 create or replace function public.market_store(p_id text, p_member text)
 returns jsonb language plpgsql stable security definer set search_path = public as $$
@@ -737,7 +944,7 @@ begin
   select * into st from public.market_stores where id = btrim(coalesce(p_id, ''));
   if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
   select lower(btrim(coalesce(status, ''))) = 'active' into owner_ok from public.members where member_id = st.owner_id;
-  if not coalesce(owner_ok, false) and st.owner_id <> btrim(coalesce(p_member, '')) then
+  if (not coalesce(owner_ok, false) or st.suspended) and st.owner_id <> btrim(coalesce(p_member, '')) then
     return jsonb_build_object('ok', false, 'reason', 'not_found');
   end if;
   return jsonb_build_object('ok', true, 'store', public._mkt_store_card(st), 'own', st.owner_id = btrim(coalesce(p_member, '')));
@@ -745,16 +952,20 @@ end $$;
 
 -- ------------------------------------------------------------------ 7. products
 -- Add (no id) or change a product. d = { id?, title, description, kind, price, shipping_cost, stock,
--- categories: ["…"], images?: ["https://…"], video_url, commission_on?, commission_pct? (1 to 25) }.
--- The first product opens the store.
+-- categories: ["…"], images?: ["https://…"], video_url, commission_on?, commission_pct? (1 to 25),
+-- download_url? (digital: the private link its buyers get; absent: unchanged) }.
+-- The first product opens the store. A product the team suspended can be changed, and stays
+-- suspended; a suspended store cannot add products. A digital product that gets a download link
+-- delivers its sold orders that were waiting.
 --   -> { ok: true, id, created, store_id } | { ok: false, reason: member | blocked | title | description |
---      kind | price | shipping_cost | stock | categories | images | video | commission | limit | not_found }
+--      kind | price | shipping_cost | stock | categories | images | video | commission | download | limit |
+--      suspended | not_found }
 create or replace function public.market_product_save(p_member text, d jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; st public.market_stores; pr public.market_products; pid text; ttl text; descr text; knd text;
   v_price int; ship int; stk int; cats text[] := '{}'; c text; ckey text; cid text; imgs jsonb := '[]'::jsonb; x jsonb;
-  vid text; created boolean := false; keys text[] := '{}'; c_on boolean; c_raw text; c_pct int;
+  vid text; created boolean := false; keys text[] := '{}'; c_on boolean; c_raw text; c_pct int; dl text; w_id text;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
@@ -804,11 +1015,20 @@ begin
     if coalesce(c_on, false) then return jsonb_build_object('ok', false, 'reason', 'commission'); end if;
     c_pct := null;
   end if;
+  -- the download link (a physical product has none)
+  dl := btrim(coalesce(d->>'download_url', ''));
+  if knd = 'digital' and dl <> '' and (not public._image_url_ok(dl) or length(dl) > 500) then
+    return jsonb_build_object('ok', false, 'reason', 'download');
+  end if;
+  if knd <> 'digital' then dl := ''; end if;
 
   if pid is null then
     if (select count(*) from public.market_products where owner_id = m.member_id and created_at > now() - interval '1 day') >= 30
        or (select count(*) from public.market_products where owner_id = m.member_id and status <> 'deleted') >= 500 then
       return jsonb_build_object('ok', false, 'reason', 'limit');
+    end if;
+    if exists (select 1 from public.market_stores where owner_id = m.member_id and suspended) then
+      return jsonb_build_object('ok', false, 'reason', 'suspended');
     end if;
     st := public._mkt_ensure_store(m);
     loop
@@ -816,8 +1036,8 @@ begin
       exit when not exists (select 1 from public.market_products where id = pid);
     end loop;
     insert into public.market_products (id, store_id, owner_id, title, description, kind, price, shipping_cost, stock, images, video_url,
-                                        commission_on, commission_pct)
-    values (pid, st.id, m.member_id, ttl, descr, knd, v_price, ship, stk, imgs, vid, coalesce(c_on, false), coalesce(c_pct, 10));
+                                        commission_on, commission_pct, download_url)
+    values (pid, st.id, m.member_id, ttl, descr, knd, v_price, ship, stk, imgs, vid, coalesce(c_on, false), coalesce(c_pct, 10), dl);
     created := true;
   else
     select * into pr from public.market_products where id = pid for update;
@@ -825,9 +1045,18 @@ begin
     update public.market_products set
       title = ttl, description = descr, kind = knd, price = v_price, shipping_cost = ship, stock = stk,
       images = case when d ? 'images' then imgs else images end, video_url = vid,
-      commission_on = coalesce(c_on, commission_on), commission_pct = coalesce(c_pct, commission_pct), updated_at = now()
+      commission_on = coalesce(c_on, commission_on), commission_pct = coalesce(c_pct, commission_pct),
+      download_url = case when knd <> 'digital' then '' when d ? 'download_url' then dl else download_url end, updated_at = now()
     where id = pid;
     st.id := pr.store_id;
+    -- sold orders of it that were waiting for their download link
+    for w_id in select o.id from public.market_orders o where o.product_id = pid and o.status = 'sold' and o.delivery = 'online' loop
+      if public._mkt_after_sale(w_id) = 'online' then
+        perform public._mkt_notify(o2.buyer_id, 'market_download', 'Your download link is ready', o2.title,
+                                   './Market.html#purchases/shipped', m.member_id)
+           from public.market_orders o2 where o2.id = w_id;
+      end if;
+    end loop;
   end if;
 
   delete from public.market_product_categories where product_id = pid;
@@ -850,8 +1079,8 @@ begin
 end $$;
 
 -- Show (active), hide or delete a product of the member's store. A product with orders that
--- are still open cannot be deleted.
---   -> { ok: true } | { ok: false, reason: member | not_found | status | orders }
+-- are still open cannot be deleted; a product the team suspended can only be deleted.
+--   -> { ok: true } | { ok: false, reason: member | not_found | status | orders | suspended }
 create or replace function public.market_product_status(p_member text, p_id text, p_status text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare m public.members; pr public.market_products;
@@ -861,6 +1090,7 @@ begin
   if p_status not in ('active', 'hidden', 'deleted') then return jsonb_build_object('ok', false, 'reason', 'status'); end if;
   select * into pr from public.market_products where id = btrim(coalesce(p_id, '')) for update;
   if not found or pr.owner_id <> m.member_id or pr.status = 'deleted' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  if pr.status = 'suspended' and p_status <> 'deleted' then return jsonb_build_object('ok', false, 'reason', 'suspended'); end if;
   if p_status = 'active' and public._mkt_blocked(m.member_id, true) then return jsonb_build_object('ok', false, 'reason', 'blocked'); end if;
   if p_status = 'deleted' and exists (select 1 from public.market_orders where product_id = pr.id
                                        and status in ('requested', 'sold', 'shipped', 'return_requested')) then
@@ -948,7 +1178,8 @@ begin
     'total', (select count(*) from public.market_products where owner_id = m.member_id and status <> 'deleted'),
     'items', coalesce((select jsonb_agg(public._mkt_card(p) || jsonb_build_object(
         'description', p.description, 'video_url', p.video_url, 'images', p.images, 'updated_at', p.updated_at,
-        'commission_on', p.commission_on, 'commission_pct', p.commission_pct,
+        'commission_on', p.commission_on, 'commission_pct', p.commission_pct, 'download_url', p.download_url,
+        'suspended_reason', p.suspended_reason, 'suspended_with_store', p.suspended_with_store,
         'categories', coalesce((select jsonb_agg(c.name order by c.name) from public.market_product_categories pc
                                   join public.market_categories c on c.id = pc.category_id where pc.product_id = p.id), '[]'::jsonb),
         'open_orders', (select count(*) from public.market_orders o where o.product_id = p.id and o.status in ('requested', 'sold', 'shipped', 'return_requested')))
@@ -1055,7 +1286,8 @@ begin
       into total, items
       from (select s as st, s.created_at from public.market_stores s
               join public.members mm on mm.member_id = s.owner_id and lower(btrim(coalesce(mm.status, ''))) = 'active'
-             where (q = '' or lower(s.name) like pat or lower(s.description) like pat)
+             where not s.suspended
+               and (q = '' or lower(s.name) like pat or lower(s.description) like pat)
                and (cc = '' or s.country = cc)
              order by case when old then s.created_at end asc, s.created_at desc) x;
     select coalesce(jsonb_agg(e order by i), '[]'::jsonb) into items
@@ -1149,11 +1381,14 @@ begin
       'shipping_cost', p.shipping_cost, 'stock', p.stock, 'sales', p.sales, 'images', p.images, 'video_url', p.video_url,
       'status', p.status, 'pros', p.pros, 'cons', p.cons, 'created_at', p.created_at, 'updated_at', p.updated_at,
       'commission', case when p.commission_on then p.commission_pct else 0 end,
+      'download', p.kind = 'digital' and p.download_url <> '',      -- the link itself: its buyers only
       'categories', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.name)
                                 from public.market_product_categories pc join public.market_categories c on c.id = pc.category_id
                                where pc.product_id = p.id), '[]'::jsonb))
       -- the seller's own page also gets the switch and the percentage kept while it is off (the form)
-      || case when me = st.owner_id then jsonb_build_object('commission_on', p.commission_on, 'commission_pct', p.commission_pct)
+      || case when me = st.owner_id then jsonb_build_object('commission_on', p.commission_on, 'commission_pct', p.commission_pct,
+                                                            'download_url', p.download_url, 'suspended_reason', p.suspended_reason,
+                                                            'suspended_with_store', p.suspended_with_store)
               else '{}'::jsonb end,
     'store', public._mkt_store_card(st),
     'viewer', jsonb_build_object(
@@ -1209,17 +1444,20 @@ begin
 end $$;
 
 -- ------------------------------------------------------------------ 9. orders
--- "Buy now". p_address = { name, phone, city, line, note } (a physical product: name and phone;
--- shipped: city and address too; a store of one city: its city). p_ref = the username of the
--- share link the buyer came from.
---   -> { ok: true, id, status, total, available } | { ok: false, reason: member | blocked | not_found |
---      own | closed | stock | qty | scope | city | address | limit | points (need, have) }
+-- "Buy now". p_address = { note, city }: a note for the seller, and for a store of one city the
+-- buyer's city (empty: the city of the address saved in the profile), which must be its city.
+-- The delivery address itself never comes with the purchase: once the order is sold (at once in
+-- an instant store, when the seller accepts in the others) the address saved in the buyer's
+-- profile goes with it, or the buyer gives it in Your purchases (market_order_address).
+-- p_ref = the username of the share link the buyer came from.
+--   -> { ok: true, id, status, total, available, needs_address, delivered } | { ok: false, reason: member |
+--      blocked | not_found | own | closed | stock | qty | scope | city | limit | points (need, have) }
 create or replace function public.market_buy(p_member text, p_product text, p_qty int, p_address jsonb, p_ref text default '')
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
-  m public.members; p public.market_products; st public.market_stores; q int := coalesce(p_qty, 1); addr jsonb := '{}'::jsonb;
-  a_name text; a_phone text; a_city text; a_line text; a_note text; ship_on boolean; v_total int; ref text; oid text; st_code text;
-  pts jsonb; need_addr boolean; c_pct int;
+  m public.members; p public.market_products; st public.market_stores; q int := coalesce(p_qty, 1); addr jsonb;
+  a_city text; a_note text; ship_on boolean; v_total int; ref text; oid text; st_code text;
+  pts jsonb; c_pct int; dlv text; after text := ''; final text;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
@@ -1227,7 +1465,7 @@ begin
   select * into p from public.market_products where id = btrim(coalesce(p_product, '')) for update;
   if not found or p.status <> 'active' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
   select * into st from public.market_stores where id = p.store_id;
-  if not exists (select 1 from public.members where member_id = st.owner_id and lower(btrim(coalesce(status, ''))) = 'active') then
+  if st.suspended or not exists (select 1 from public.members where member_id = st.owner_id and lower(btrim(coalesce(status, ''))) = 'active') then
     return jsonb_build_object('ok', false, 'reason', 'not_found');
   end if;
   if st.owner_id = m.member_id then return jsonb_build_object('ok', false, 'reason', 'own'); end if;
@@ -1239,23 +1477,18 @@ begin
     return jsonb_build_object('ok', false, 'reason', 'limit');
   end if;
 
-  ship_on := p.kind = 'physical' and st.shipping;
-  need_addr := p.kind = 'physical';
+  dlv := case when p.kind = 'digital' then 'online' when st.shipping then 'ship' else 'hand' end;
+  ship_on := dlv = 'ship';
   p_address := case when jsonb_typeof(p_address) = 'object' then p_address else '{}'::jsonb end;
-  a_name := left(public._mkt_line(p_address->>'name'), 80);
-  a_phone := left(public._mkt_line(p_address->>'phone'), 30);
   a_city := left(public._mkt_line(p_address->>'city'), 80);
-  a_line := left(btrim(coalesce(p_address->>'line', '')), 200);
   a_note := left(btrim(coalesce(p_address->>'note', '')), 300);
-  if need_addr and (length(a_name) < 2 or length(a_phone) < 5) then return jsonb_build_object('ok', false, 'reason', 'address'); end if;
-  if ship_on and (length(a_city) < 2 or length(a_line) < 4) then return jsonb_build_object('ok', false, 'reason', 'address'); end if;
-  if st.scope = 'city' and public._mkt_norm(a_city) <> public._mkt_norm(st.city) then
-    return jsonb_build_object('ok', false, 'reason', 'city', 'city', st.city);
+  if st.scope = 'city' then
+    if a_city = '' then a_city := coalesce((select ad.city from public.market_addresses ad where ad.member_id = m.member_id), ''); end if;
+    if public._mkt_norm(a_city) <> public._mkt_norm(st.city) then
+      return jsonb_build_object('ok', false, 'reason', 'city', 'city', st.city);
+    end if;
   end if;
-  if need_addr or st.scope = 'city' or a_note <> '' then
-    addr := jsonb_strip_nulls(jsonb_build_object('name', nullif(a_name, ''), 'phone', nullif(a_phone, ''), 'city', nullif(a_city, ''),
-                                                 'line', nullif(a_line, ''), 'note', nullif(a_note, '')));
-  end if;
+  addr := jsonb_strip_nulls(jsonb_build_object('note', nullif(a_note, '')));
 
   v_total := p.price * q + case when ship_on then p.shipping_cost else 0 end;
   if not public._mkt_spend(m.member_id, v_total, p.title) then
@@ -1277,32 +1510,40 @@ begin
     exit when not exists (select 1 from public.market_orders where id = oid);
   end loop;
   insert into public.market_orders (id, product_id, store_id, seller_id, buyer_id, referrer_id, title, image, kind, qty, unit_price,
-                                    shipping_cost, total, commission, commission_pct, buyer_country, address, status, return_days, accepted_at)
+                                    shipping_cost, total, commission, commission_pct, buyer_country, address, delivery, status,
+                                    return_days, accepted_at)
   values (oid, p.id, st.id, st.owner_id, m.member_id, ref, p.title, coalesce(p.images->>0, ''), p.kind, q, p.price,
           case when ship_on then p.shipping_cost else 0 end, v_total,
           floor(p.price::numeric * q * c_pct / 100)::int, c_pct,
-          upper(coalesce(m.country, '')), addr, st_code, case when st.returns then st.return_days else 0 end,
+          upper(coalesce(m.country, '')), addr, dlv, st_code, case when st.returns then st.return_days else 0 end,
           case when st_code = 'sold' then now() end);
   update public.market_products set stock = stock - q, sales = sales + case when st_code = 'sold' then q else 0 end, updated_at = now() where id = p.id;
   delete from public.market_saved where member_id = m.member_id and product_id = p.id;
+  -- sold at once: the saved address goes with it, or a download link delivers it
+  if st_code = 'sold' then after := public._mkt_after_sale(oid); end if;
+  final := case when after = 'online' then 'shipped' else st_code end;
   perform public._mkt_notify(st.owner_id,
     case when st_code = 'requested' then 'market_request' else 'market_order' end,
     case when st_code = 'requested' then 'New purchase request' else 'New order' end,
-    q::text || ' × ' || p.title, './Market.html#sales/' || case when st_code = 'requested' then 'requests' else 'sold' end, m.member_id);
+    q::text || ' × ' || p.title,
+    './Market.html#sales/' || case final when 'requested' then 'requests' when 'shipped' then 'shipped' else 'sold' end, m.member_id);
   pts := public._points(m.member_id);
-  return jsonb_build_object('ok', true, 'id', oid, 'status', st_code, 'total', v_total, 'available', coalesce((pts->>'available')::bigint, 0));
+  return jsonb_build_object('ok', true, 'id', oid, 'status', final, 'total', v_total, 'available', coalesce((pts->>'available')::bigint, 0),
+                            'needs_address', after = 'ask', 'delivered', after = 'online');
 end $$;
 
 -- What the seller and the buyer do with an order:
 --   seller: accept | decline (note = why) | cancel (sold; note) | ship (note = tracking / for a
---           digital product what the buyer receives) | return_accept | return_refuse (note)
+--           digital product what the buyer receives; a physical order needs the buyer's address
+--           first) | return_accept | return_refuse (note)
 --   buyer:  cancel (a request) | received | return (note = why; within the return period)
---   -> { ok: true, status } | { ok: false, reason: member | not_found | state | note | window }
+--   (the buyer's delivery address: market_order_address below)
+--   -> { ok: true, status, needs_address? } | { ok: false, reason: member | not_found | state | note | window | address }
 create or replace function public.market_order_action(p_member text, p_order text, p_action text, p_note text default '')
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; o public.market_orders; me text; seller boolean; buyer boolean; note text := left(btrim(coalesce(p_note, '')), 1000);
-  href_b text; href_s text;
+  href_b text; href_s text; after text;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
@@ -1317,8 +1558,16 @@ begin
   if p_action = 'accept' and seller and o.status = 'requested' then
     update public.market_orders set status = 'sold', accepted_at = now(), updated_at = now() where id = o.id;
     update public.market_products set sales = sales + o.qty where id = o.product_id;
-    perform public._mkt_notify(o.buyer_id, 'market_accepted', 'Your purchase request was accepted', o.title, href_b || 'purchased', me);
-    return jsonb_build_object('ok', true, 'status', 'sold');
+    -- the buyer's saved address goes with it (or the buyer is asked for it); a download link delivers it
+    after := public._mkt_after_sale(o.id);
+    if after = 'online' then
+      perform public._mkt_notify(o.buyer_id, 'market_download', 'Your purchase was accepted: the download link is ready', o.title, href_b || 'shipped', me);
+    elsif after = 'ask' then
+      perform public._mkt_notify(o.buyer_id, 'market_address_needed', 'Your purchase was accepted: add your delivery address', o.title, href_b || 'purchased', me);
+    else
+      perform public._mkt_notify(o.buyer_id, 'market_accepted', 'Your purchase request was accepted', o.title, href_b || 'purchased', me);
+    end if;
+    return jsonb_build_object('ok', true, 'status', case when after = 'online' then 'shipped' else 'sold' end, 'needs_address', after = 'ask');
 
   elsif p_action = 'decline' and seller and o.status = 'requested' then
     if length(note) < 2 then return jsonb_build_object('ok', false, 'reason', 'note'); end if;
@@ -1343,6 +1592,7 @@ begin
 
   elsif p_action = 'ship' and seller and o.status = 'sold' then
     if o.kind = 'digital' and length(note) < 1 then return jsonb_build_object('ok', false, 'reason', 'note'); end if;
+    if o.delivery <> 'online' and not (o.address ? 'name') then return jsonb_build_object('ok', false, 'reason', 'address'); end if;
     update public.market_orders set status = 'shipped', shipped_at = now(), tracking = note, updated_at = now() where id = o.id;
     perform public._mkt_notify(o.buyer_id, 'market_shipped',
       case when o.kind = 'digital' then 'Your order was delivered online' else 'Your order was shipped' end, o.title, href_b || 'shipped', me);
@@ -1378,6 +1628,45 @@ begin
     return jsonb_build_object('ok', true, 'status', 'delivered');
   end if;
   return jsonb_build_object('ok', false, 'reason', 'state', 'status', o.status);
+end $$;
+
+-- The buyer's delivery address for a sold physical order, until it is shipped (given again, it
+-- replaces the one before). p_address = { name, phone, city, line }: name and phone; a shipped
+-- order also the city and the address; a store of one city, its city. p_save: also keep it in
+-- the profile (the four are needed then), for the next orders.
+--   -> { ok: true, address, saved } | { ok: false, reason: member | not_found | state | address | phone | city (city) }
+create or replace function public.market_order_address(p_member text, p_order text, p_address jsonb, p_save boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members; o public.market_orders; st public.market_stores; a jsonb; bad text; first boolean; kept boolean := false;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  select * into o from public.market_orders where id = btrim(coalesce(p_order, '')) for update;
+  if not found or o.buyer_id <> m.member_id then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  if o.status <> 'sold' or o.delivery = 'online' then return jsonb_build_object('ok', false, 'reason', 'state', 'status', o.status); end if;
+  select * into st from public.market_stores where id = o.store_id;
+  a := public._mkt_addr(p_address);
+  bad := public._mkt_addr_check(a, o.delivery, case when st.scope = 'city' then st.city end);
+  if bad is null and coalesce(p_save, false) then bad := public._mkt_addr_check(a, 'profile'); end if;
+  if bad is not null then
+    return jsonb_build_object('ok', false, 'reason', bad) || case when bad = 'city' then jsonb_build_object('city', st.city) else '{}'::jsonb end;
+  end if;
+  first := not (o.address ? 'name');
+  update public.market_orders
+     set address = jsonb_strip_nulls(jsonb_build_object('name', a->>'name', 'phone', a->>'phone', 'city', nullif(a->>'city', ''),
+                     'line', case when o.delivery = 'ship' then nullif(a->>'line', '') end, 'note', nullif(o.address->>'note', ''))),
+         address_at = now(), updated_at = now()
+   where id = o.id;
+  if coalesce(p_save, false) then
+    insert into public.market_addresses (member_id, name, phone, city, line)
+    values (m.member_id, a->>'name', a->>'phone', a->>'city', a->>'line')
+    on conflict (member_id) do update set name = excluded.name, phone = excluded.phone, city = excluded.city, line = excluded.line, updated_at = now();
+    kept := true;
+  end if;
+  perform public._mkt_notify(o.seller_id, 'market_address',
+    case when first then 'The buyer added the delivery address' else 'The buyer changed the delivery address' end,
+    o.title, './Market.html#sales/sold', m.member_id);
+  return jsonb_build_object('ok', true, 'address', (select x.address from public.market_orders x where x.id = o.id), 'saved', kept);
 end $$;
 
 -- The tabs of Your sales / Your purchases.
@@ -1514,6 +1803,7 @@ begin
     select * into st from public.market_stores where id = btrim(coalesce(p_store, ''));
     if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
   end if;
+  if st.suspended then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
   if st.owner_id = m.member_id then return jsonb_build_object('ok', false, 'reason', 'own'); end if;
   if length(v_body) < 2 or length(v_body) > 1000 then return jsonb_build_object('ok', false, 'reason', 'body'); end if;
   if (select count(*) from public.market_requests where from_id = m.member_id and created_at > now() - interval '1 day') >= 30 then
@@ -1577,7 +1867,255 @@ begin
             order by (r.status = case when p_side = 'sent' then 'answered' else 'open' end) desc, r.created_at desc limit lim offset off) r), '[]'::jsonb));
 end $$;
 
--- ------------------------------------------------------------------ 12. who may call what
+-- ------------------------------------------------------------------ 12. the delivery address
+-- The address kept in the member's profile (Dashboard > Settings > Profile). Each physical order
+-- the member buys gets it by itself once it is sold.
+--   -> { ok: true, address: { name, phone, city, line, updated_at } | null } | { ok: false, reason: member }
+create or replace function public.market_address(p_member text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare m public.members;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  return jsonb_build_object('ok', true, 'address',
+    (select jsonb_build_object('name', a.name, 'phone', a.phone, 'city', a.city, 'line', a.line, 'updated_at', a.updated_at)
+       from public.market_addresses a where a.member_id = m.member_id));
+end $$;
+
+-- Saves it: p_address = { name, phone, city, line } (the four are needed); null removes it.
+-- The sold orders still waiting for an address (and not for a city it does not fit) get it too.
+--   -> { ok: true, address, orders } | { ok: false, reason: member | address | phone }
+create or replace function public.market_address_save(p_member text, p_address jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members; a jsonb; bad text; w_id text; n int := 0;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  if p_address is null or jsonb_typeof(p_address) = 'null' then
+    delete from public.market_addresses where member_id = m.member_id;
+    return jsonb_build_object('ok', true, 'address', null, 'orders', 0);
+  end if;
+  a := public._mkt_addr(p_address);
+  bad := public._mkt_addr_check(a, 'profile');
+  if bad is not null then return jsonb_build_object('ok', false, 'reason', bad); end if;
+  insert into public.market_addresses (member_id, name, phone, city, line)
+  values (m.member_id, a->>'name', a->>'phone', a->>'city', a->>'line')
+  on conflict (member_id) do update set name = excluded.name, phone = excluded.phone, city = excluded.city, line = excluded.line, updated_at = now();
+  for w_id in select o.id from public.market_orders o
+               where o.buyer_id = m.member_id and o.status = 'sold' and o.delivery <> 'online' and not (o.address ? 'name') loop
+    if public._mkt_after_sale(w_id) = 'address' then
+      n := n + 1;
+      perform public._mkt_notify(o.seller_id, 'market_address', 'The buyer added the delivery address', o.title, './Market.html#sales/sold', m.member_id)
+         from public.market_orders o where o.id = w_id;
+    end if;
+  end loop;
+  return jsonb_build_object('ok', true, 'orders', n,
+    'address', (select jsonb_build_object('name', x.name, 'phone', x.phone, 'city', x.city, 'line', x.line, 'updated_at', x.updated_at)
+                  from public.market_addresses x where x.member_id = m.member_id));
+end $$;
+
+-- ------------------------------------------------------------------ 13. reports and the team
+-- The Report button of a store page and of a product page (not your own). One open report per
+-- member and store / product, 20 a day.
+--   p_reason: fake | scam | prohibited | misleading | offensive | no_delivery | other (other: p_note says why)
+--   -> { ok: true, id } | { ok: false, reason: member | blocked | kind | not_found | own | reason | note | already | limit }
+create or replace function public.market_report(p_member text, p_kind text, p_id text, p_reason text, p_note text default '')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  m public.members; st public.market_stores; pr public.market_products; v_id text := btrim(coalesce(p_id, ''));
+  why text := coalesce(p_reason, ''); v_note text := left(btrim(coalesce(p_note, '')), 500); rid bigint;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  if public._mkt_blocked(m.member_id, false) then return jsonb_build_object('ok', false, 'reason', 'blocked'); end if;
+  if p_kind = 'product' then
+    select * into pr from public.market_products where id = v_id and status <> 'deleted';
+    if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    select * into st from public.market_stores where id = pr.store_id;
+  elsif p_kind = 'store' then
+    select * into st from public.market_stores where id = v_id;
+    if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  else
+    return jsonb_build_object('ok', false, 'reason', 'kind');
+  end if;
+  if st.owner_id = m.member_id then return jsonb_build_object('ok', false, 'reason', 'own'); end if;
+  if why not in ('fake', 'scam', 'prohibited', 'misleading', 'offensive', 'no_delivery', 'other') then
+    return jsonb_build_object('ok', false, 'reason', 'reason');
+  end if;
+  if why = 'other' and length(v_note) < 5 then return jsonb_build_object('ok', false, 'reason', 'note'); end if;
+  if exists (select 1 from public.market_reports where reporter_id = m.member_id and kind = p_kind and target_id = v_id and status = 'open') then
+    return jsonb_build_object('ok', false, 'reason', 'already');
+  end if;
+  if (select count(*) from public.market_reports where reporter_id = m.member_id and created_at > now() - interval '1 day') >= 20 then
+    return jsonb_build_object('ok', false, 'reason', 'limit');
+  end if;
+  insert into public.market_reports (kind, target_id, store_id, owner_id, reporter_id, reason, note)
+  values (p_kind, v_id, st.id, st.owner_id, m.member_id, why, v_note)
+  on conflict do nothing
+  returning id into rid;
+  if rid is null then return jsonb_build_object('ok', false, 'reason', 'already'); end if;
+  return jsonb_build_object('ok', true, 'id', rid);
+end $$;
+
+-- The team (staff sessions of sql/prize_secure.sql): the Super Admin, or a staff member with the
+-- Reports section. -> who did it, for handled_by.
+create or replace function public._mkt_staff(p_token text) returns text
+language plpgsql security definer set search_path = public as $$
+declare s record;
+begin
+  s := public._staff(p_token);
+  if s.role <> 'super' and position(',reports,' in ',' || coalesce(s.sections, '') || ',') = 0 then
+    raise exception 'staff_forbidden';
+  end if;
+  return coalesce(nullif(s.username, ''), s.role);
+end $$;
+
+create or replace function public._mkt_report_json(r public.market_reports) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', r.id, 'kind', r.kind, 'target_id', r.target_id, 'store_id', r.store_id, 'reason', r.reason, 'note', r.note,
+    'status', r.status, 'created_at', r.created_at, 'handled_by', r.handled_by, 'handled_at', r.handled_at,
+    'reporter', jsonb_build_object('id', r.reporter_id, 'username', coalesce((select mm.username from public.members mm where mm.member_id = r.reporter_id), '')),
+    'owner', jsonb_build_object('id', r.owner_id, 'username', coalesce((select mm.username from public.members mm where mm.member_id = r.owner_id), '')),
+    'store', (select jsonb_build_object('id', s.id, 'name', s.name, 'logo', s.logo_url, 'suspended', s.suspended,
+                                        'suspended_reason', s.suspended_reason, 'tier', public._mkt_tier(s.sales_points))
+                from public.market_stores s where s.id = r.store_id),
+    'product', case when r.kind = 'product' then
+                 (select jsonb_build_object('id', p.id, 'title', p.title, 'image', coalesce(p.images->>0, ''), 'price', p.price,
+                                            'kind', p.kind, 'status', p.status, 'suspended_reason', p.suspended_reason,
+                                            'suspended_with_store', p.suspended_with_store)
+                    from public.market_products p where p.id = r.target_id) end)
+$$;
+
+-- Panel > Reports > Market. p_filter: open | closed | all
+--   -> { ok: true, open, items: [ report ] }  (an expired session: error staff_auth)
+create or replace function public.market_reports_admin(p_token text, p_filter text default 'open', p_limit int default 400)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare who text; lim int := least(greatest(coalesce(p_limit, 400), 1), 1000);
+begin
+  who := public._mkt_staff(p_token);
+  return jsonb_build_object('ok', true,
+    'open', (select count(*) from public.market_reports where status = 'open'),
+    'items', coalesce((select jsonb_agg(public._mkt_report_json(r) order by r.created_at desc)
+                         from (select * from public.market_reports
+                                where case coalesce(p_filter, 'open') when 'open' then status = 'open'
+                                                                      when 'closed' then status <> 'open' else true end
+                                order by created_at desc limit lim) r), '[]'::jsonb));
+end $$;
+
+-- The open market reports (the badge of Reports in the side menu of the panel).
+create or replace function public.market_reports_count(p_token text)
+returns int language plpgsql security definer set search_path = public as $$
+declare who text;
+begin
+  who := public._mkt_staff(p_token);
+  return (select count(*) from public.market_reports where status = 'open');
+end $$;
+
+-- p_status: resolved | dismissed | open (reopen)
+--   -> { ok: true, changed } | { ok: false, reason: status }
+create or replace function public.market_reports_set(p_token text, p_ids bigint[], p_status text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare who text; n int;
+begin
+  who := public._mkt_staff(p_token);
+  if p_status not in ('resolved', 'dismissed', 'open') then return jsonb_build_object('ok', false, 'reason', 'status'); end if;
+  if p_status = 'open' then
+    -- one open report per member and thing: their latest one, unless another one is open already
+    update public.market_reports r set status = 'open', handled_by = '', handled_at = null
+     where r.id in (select distinct on (x.reporter_id, x.kind, x.target_id) x.id from public.market_reports x
+                     where x.id = any (coalesce(p_ids, '{}')) and x.status <> 'open'
+                     order by x.reporter_id, x.kind, x.target_id, x.created_at desc, x.id desc)
+       and not exists (select 1 from public.market_reports o2 where o2.status = 'open' and o2.reporter_id = r.reporter_id
+                         and o2.kind = r.kind and o2.target_id = r.target_id);
+  else
+    update public.market_reports set status = p_status, handled_by = who, handled_at = now()
+     where id = any (coalesce(p_ids, '{}')) and status <> p_status;
+  end if;
+  get diagnostics n = row_count;
+  return jsonb_build_object('ok', true, 'changed', n);
+end $$;
+
+--   -> { ok: true, deleted }
+create or replace function public.market_reports_delete(p_token text, p_ids bigint[])
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare who text; n int;
+begin
+  who := public._mkt_staff(p_token);
+  delete from public.market_reports where id = any (coalesce(p_ids, '{}'));
+  get diagnostics n = row_count;
+  return jsonb_build_object('ok', true, 'deleted', n);
+end $$;
+
+-- Suspend or restore a product or a whole store (Panel > Reports > Market).
+--   p_kind store | product, p_action suspend (p_reason: 3 to 300 characters, the seller reads it) | restore
+--   A suspended product is hidden from everybody but its seller, who cannot show it again (only
+--   delete it). A suspended store is hidden with all its products and cannot add any; the orders
+--   already made go on. Suspending closes the open reports of it (resolved); the seller gets a
+--   notification both times.
+--   -> { ok: true, status } | { ok: false, reason: kind | action | not_found | reason | state | store }
+create or replace function public.market_moderate(p_token text, p_kind text, p_id text, p_action text, p_reason text default '')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; st public.market_stores; pr public.market_products; v_id text := btrim(coalesce(p_id, ''));
+  why text := left(btrim(regexp_replace(coalesce(p_reason, ''), '\s+', ' ', 'g')), 300); v_status text;
+begin
+  who := public._mkt_staff(p_token);
+  if p_action not in ('suspend', 'restore') then return jsonb_build_object('ok', false, 'reason', 'action'); end if;
+  if p_action = 'suspend' and length(why) < 3 then return jsonb_build_object('ok', false, 'reason', 'reason'); end if;
+  if p_kind = 'product' then
+    select * into pr from public.market_products where id = v_id for update;
+    if not found or pr.status = 'deleted' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    if p_action = 'suspend' then
+      update public.market_products
+         set status_before = case when status = 'suspended' then status_before else status end,
+             status = 'suspended', suspended_reason = why, suspended_with_store = false, updated_at = now()
+       where id = pr.id;
+      update public.market_reports set status = 'resolved', handled_by = who, handled_at = now()
+       where kind = 'product' and target_id = pr.id and status = 'open';
+      perform public._mkt_notify(pr.owner_id, 'market_suspended', 'The team suspended your product', pr.title || ' · ' || why,
+                                 './Market.html#sales/products');
+      return jsonb_build_object('ok', true, 'status', 'suspended');
+    end if;
+    if pr.status <> 'suspended' then return jsonb_build_object('ok', false, 'reason', 'state'); end if;
+    if exists (select 1 from public.market_stores s where s.id = pr.store_id and s.suspended) then
+      return jsonb_build_object('ok', false, 'reason', 'store');
+    end if;
+    v_status := case when pr.status_before in ('active', 'hidden') then pr.status_before else 'hidden' end;
+    update public.market_products
+       set status = v_status, status_before = null, suspended_reason = '', suspended_with_store = false, updated_at = now()
+     where id = pr.id;
+    perform public._mkt_notify(pr.owner_id, 'market_restored', 'The team restored your product', pr.title, './Market.html#sales/products');
+    return jsonb_build_object('ok', true, 'status', v_status);
+  elsif p_kind = 'store' then
+    select * into st from public.market_stores where id = v_id for update;
+    if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    if p_action = 'suspend' then
+      update public.market_stores set suspended = true, suspended_reason = why, suspended_at = coalesce(suspended_at, now()), updated_at = now()
+       where id = st.id;
+      update public.market_products
+         set status_before = status, status = 'suspended', suspended_reason = why, suspended_with_store = true, updated_at = now()
+       where store_id = st.id and status in ('active', 'hidden');
+      update public.market_products set suspended_reason = why, updated_at = now()
+       where store_id = st.id and status = 'suspended' and suspended_with_store;
+      update public.market_reports set status = 'resolved', handled_by = who, handled_at = now()
+       where kind = 'store' and target_id = st.id and status = 'open';
+      perform public._mkt_notify(st.owner_id, 'market_suspended', 'The team suspended your store', st.name || ' · ' || why, './Market.html#settings');
+      return jsonb_build_object('ok', true, 'status', 'suspended');
+    end if;
+    if not st.suspended then return jsonb_build_object('ok', false, 'reason', 'state'); end if;
+    update public.market_stores set suspended = false, suspended_reason = '', suspended_at = null, updated_at = now() where id = st.id;
+    update public.market_products
+       set status = case when status_before in ('active', 'hidden') then status_before else 'hidden' end,
+           status_before = null, suspended_reason = '', suspended_with_store = false, updated_at = now()
+     where store_id = st.id and status = 'suspended' and suspended_with_store;
+    perform public._mkt_notify(st.owner_id, 'market_restored', 'The team restored your store', st.name, './Market.html#settings');
+    return jsonb_build_object('ok', true, 'status', 'active');
+  end if;
+  return jsonb_build_object('ok', false, 'reason', 'kind');
+end $$;
+
+-- ------------------------------------------------------------------ 14. who may call what
 do $$
 declare f text;
 begin
@@ -1586,7 +2124,8 @@ begin
     'public._mkt_store_card(public.market_stores)', 'public._mkt_notify(text, text, text, text, text, text)',
     'public._mkt_spend(text, int, text)', 'public._mkt_refund(public.market_orders)', 'public._mkt_credit(text, int, boolean)',
     'public._mkt_settle(int)', 'public.market_settle()', 'public._mkt_order_json(public.market_orders, text)',
-    'public._mkt_seller_gets(public.market_orders)', 'public._mkt_ensure_store(public.members)', 'public._guard_market_points()']
+    'public._mkt_seller_gets(public.market_orders)', 'public._mkt_ensure_store(public.members)', 'public._guard_market_points()',
+    'public._mkt_tier_points()', 'public._mkt_after_sale(text)', 'public._mkt_staff(text)', 'public._mkt_report_json(public.market_reports)']
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;
@@ -1601,7 +2140,11 @@ begin
     'public.market_orders(text, text, text, int, int)', 'public.market_review_save(text, text, jsonb, jsonb)',
     'public.market_reviews(text, text, int, int)', 'public.market_request_send(text, text, text, text, text)',
     'public.market_request_reply(text, bigint, text)', 'public.market_request_close(text, bigint)',
-    'public.market_requests(text, text, int, int)']
+    'public.market_requests(text, text, int, int)', 'public.market_order_address(text, text, jsonb, boolean)',
+    'public.market_address(text)', 'public.market_address_save(text, jsonb)', 'public.market_report(text, text, text, text, text)',
+    'public.market_reports_admin(text, text, int)', 'public.market_reports_count(text)',
+    'public.market_reports_set(text, bigint[], text)', 'public.market_reports_delete(text, bigint[])',
+    'public.market_moderate(text, text, text, text, text)']
   loop
     execute format('revoke all on function %s from public', f);
     execute format('grant execute on function %s to anon, authenticated', f);

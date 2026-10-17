@@ -9,6 +9,9 @@
  *                                   Market/Product/<id>.jpg, <id>-1.jpg …), categories, video …
  *   M.storeFormHtml / M.wireStoreForm   Store settings (logo and cover: IPTV/Market/Logo|Cover/<id>.jpg)
  *   M.openCheckout, M.openReview, M.openRequest, M.openShare, M.openNote, M.openZoom
+ *   M.tierHtml(tier)                the tier of a store: N / K / M / B and the progress in it (K25%)
+ *   M.openReport({ kind, id })      the Report button of a store / product (Panel > Reports > Market)
+ *   M.openAddress({ order })        the buyer's delivery address of a sold physical order
  */
 (() => {
   "use strict";
@@ -45,6 +48,10 @@
     edit: svg('<path d="M4 20h4l10.5-10.5a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>', 15),
     zoom: svg('<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3M11 8.5v5M8.5 11h5"/>', 16),
     coins: svg('<ellipse cx="9" cy="7" rx="5.5" ry="2.8"/><path d="M3.5 7v4c0 1.5 2.5 2.8 5.5 2.8s5.5-1.3 5.5-2.8V7"/><path d="M9.5 16.6c.8.2 1.6.2 2.5.2 3 0 5.5-1.3 5.5-2.8v-4"/><path d="M14.5 10.2c1.7.3 3 1.2 3 2.3"/>', 18, 1.8),
+    flag: svg('<path d="M5 21V4"/><path d="M5 4.5h11.5l-2.2 4 2.2 4H5"/>', 16),
+    download: svg('<path d="M12 4v11"/><path d="M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19.5h14"/>', 16),
+    home: svg('<path d="M4 10.5L12 4l8 6.5"/><path d="M6 9v10.5h12V9"/><path d="M10 19.5v-5h4v5"/>', 16),
+    lock: svg('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>', 14),
   };
   M.ICON = ICON;
 
@@ -77,7 +84,7 @@
     "member", "blocked", "name", "description", "links", "logo", "cover", "scope", "country", "city", "sale_mode",
     "return_days", "title", "kind", "price", "shipping_cost", "stock", "categories", "images", "video", "limit",
     "not_found", "own", "closed", "qty", "address", "points", "state", "note", "window", "empty", "text", "body",
-    "product", "orders", "commission",
+    "product", "orders", "commission", "download", "suspended", "reason", "already", "phone",
   ];
   M.errText = (data) => {
     const r = String(data?.reason || "");
@@ -104,6 +111,8 @@
     }
   };
   M.pt = (n) => `${M.fmt(n)} PT`;
+  // an amount inside a sentence: kept as "7,780 PT" in Arabic too (a bidi isolate)
+  M.ptIn = (n) => `\u2066${M.pt(n)}\u2069`;
   // 1 point = 1 cent
   M.usd = (points) => {
     try {
@@ -133,6 +142,43 @@
   };
 
   // ---------------------------------------------------------------- addresses
+  // ---------------------------------------------------------------- the tier of a store
+  // { code: N|K|M|B, pct, points, top, next } (sql/market.sql _mkt_tier): the points of its
+  // successful orders. The progress: one decimal under 10% (K0.6%), then whole numbers (K25%).
+  M.tierPct = (pct) => {
+    const v = Math.max(0, Math.min(100, Number(pct) || 0));
+    return v >= 10 ? String(Math.floor(v)) : String(Math.floor(v * 10) / 10);
+  };
+  M.tierTitle = (tier) =>
+    tier ? t("mkt.tier.badge", { code: tier.code, pct: M.tierPct(tier.pct), points: M.fmt(tier.points) }) : "";
+  M.tierHtml = (tier, { big = false } = {}) => {
+    if (!tier || !tier.code) return "";
+    const title = M.tierTitle(tier);
+    return `<span class="mkt-tier t-${esc(tier.code)}${big ? " big" : ""}" title="${esc(title)}" aria-label="${esc(title)}" dir="ltr"><b>${esc(tier.code)}</b><span>${esc(M.tierPct(tier.pct))}%</span></span>`;
+  };
+  // The tier box of a store page: the badge, a bar and what is left to the next tier.
+  M.tierBoxHtml = (tier) => {
+    if (!tier || !tier.code) return "";
+    const left = Math.max(0, Number(tier.top) - Number(tier.points));
+    const pct = Math.max(0, Math.min(100, Number(tier.pct) || 0));
+    const next = tier.next
+      ? t("mkt.tier.toNext", { left: M.ptIn(left), next: tier.next })
+      : pct >= 100 ? t("mkt.tier.top") : t("mkt.tier.toEnd", { left: M.ptIn(left) });
+    return `
+      <div class="mkt-tierbox" data-tierbox>
+        <div class="mkt-tierbox-head">
+          ${M.tierHtml(tier, { big: true })}
+          <div>
+            <b>${esc(t("mkt.tier.label"))}</b>
+            <span class="muted">${esc(t("mkt.tier.sold", { points: M.ptIn(tier.points) }))}</span>
+          </div>
+        </div>
+        <div class="mkt-tierbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${esc(String(pct))}" aria-label="${esc(M.tierTitle(tier))}"><i style="width:${Math.max(pct, pct > 0 ? 1.5 : 0)}%"></i></div>
+        <p class="muted mkt-tierbox-next">${esc(next)}</p>
+        <details class="mkt-tierbox-help"><summary>${esc(t("mkt.tier.how"))}</summary><p>${esc(t("mkt.tier.help"))}</p></details>
+      </div>`;
+  };
+
   M.productHref = (id, ref = "") => `./Market.html?Product=${encodeURIComponent(id)}${ref ? `&@${encodeURIComponent(ref)}` : ""}`;
   M.storeHref = (id) => `./Market.html?Store=${encodeURIComponent(id)}`;
   M.categoryHref = (id) => `./Market.html?Categories=${encodeURIComponent(id)}`;
@@ -226,7 +272,7 @@
       <span class="mkt-store-cover">${s.cover ? `<img src="${esc(s.cover)}" alt="" loading="lazy" />` : ""}</span>
       <img class="mkt-store-logo" src="${esc(s.logo || C.initialsAvatar(s.name || "CA"))}" alt="" loading="lazy" />
       <span class="mkt-store-body">
-        <span class="mkt-store-name" dir="auto">${esc(s.name)}</span>
+        <span class="mkt-store-name"><span dir="auto">${esc(s.name)}</span>${M.tierHtml(s.tier)}</span>
         <span class="mkt-store-meta">${esc([M.country(s.country), t(Number(s.products) === 1 ? "mkt.productsOne" : "mkt.productsN", { n: M.fmt(s.products) })].filter(Boolean).join(" · "))}</span>
         <span class="mkt-open ${s.open ? "on" : "off"}">${esc(t(s.open ? "mkt.open" : "mkt.closed"))}</span>
       </span>
@@ -520,6 +566,11 @@
         </div>
         <p class="muted mkt-f-hint" data-price-hint></p>
         ${!ships ? `<p class="muted mkt-f-hint">${esc(t("mkt.f.noShipHint"))}</p>` : ""}
+        <div class="mkt-field mkt-f-download" data-download ${kind === "digital" ? "" : "hidden"}>
+          <label class="mkt-field"><span>${ICON.lock} ${esc(t("mkt.f.download"))}</span>
+            <input name="download_url" type="url" dir="ltr" maxlength="500" value="${esc(p.download_url || "")}" placeholder="https://…" /></label>
+          <p class="muted mkt-f-hint">${esc(t("mkt.f.downloadHint"))}</p>
+        </div>
         <fieldset class="mkt-field mkt-seg"><legend>${esc(t("mkt.f.commission"))}</legend>
           <label><input type="radio" name="commission_on" value="1" ${cOn ? "checked" : ""} /><span>${esc(t("mkt.f.commissionOn"))}</span></label>
           <label><input type="radio" name="commission_on" value="0" ${cOn ? "" : "checked"} /><span>${esc(t("mkt.f.commissionOff"))}</span></label>
@@ -618,7 +669,10 @@
     form.commission_pct.addEventListener("input", showPrice);
     showPrice();
     form.addEventListener("change", (e) => {
-      if (e.target.name === "kind") form.querySelector("[data-ship-cost]").hidden = form.kind.value === "digital";
+      if (e.target.name === "kind") {
+        form.querySelector("[data-ship-cost]").hidden = form.kind.value === "digital";
+        form.querySelector("[data-download]").hidden = form.kind.value !== "digital";
+      }
       if (e.target.name === "commission_on") {
         showPrice();
         if (commissionIsOn()) form.commission_pct.focus();
@@ -642,16 +696,21 @@
         commission_pct: form.commission_pct.value.trim(),
       };
       if (editing) d.id = p.id;
+      // the private download link (digital); a product opened without it (not from Your
+      // products / its page) leaves it as it is unless something was typed
+      const dl = form.download_url.value.trim();
+      if (d.kind === "digital" && (!editing || typeof p.download_url === "string" || dl)) d.download_url = dl;
       const bad =
         (d.title.length < 3 && "title") ||
         (!(Number(d.price) >= 1) && "price") ||
         (!(Number(d.stock) >= 0) || d.stock === "" ? "stock" : "") ||
         (!cats.length && "categories") ||
         (d.video_url && !/^https?:\/\/\S+$/i.test(d.video_url) && "video") ||
+        (d.download_url && !/^https?:\/\/[^\s<>"']+$/i.test(d.download_url) && "download") ||
         (d.commission_on && !(d.commission_pct !== "" && commissionOk(Number(d.commission_pct))) && "commission");
       if (bad) {
         err.textContent = M.errText({ reason: bad });
-        const field = { categories: "kind", video: "video_url", commission: "commission_pct" }[bad] || bad;
+        const field = { categories: "kind", video: "video_url", commission: "commission_pct", download: "download_url" }[bad] || bad;
         form.querySelector(`[name="${field}"]`)?.focus?.();
         if (bad === "categories") catIn.focus();
         return;
@@ -831,8 +890,11 @@
     });
   };
 
-  // ---------------------------------------------------------------- checkout
-  const ADDR_KEY = "cineaura_market_addr";
+  // ---------------------------------------------------------------- the delivery address
+  // Never asked at checkout: once a physical order is sold (at once in an instant store, when
+  // the seller accepts in the others) the address saved in the profile goes with it, or the
+  // buyer gives it in Your purchases (M.openAddress).
+  const ADDR_KEY = "cineaura_market_addr"; // the last address typed (fills the form next time)
   const readAddr = () => {
     try {
       return JSON.parse(localStorage.getItem(ADDR_KEY) || "{}") || {};
@@ -840,17 +902,116 @@
       return {};
     }
   };
+  const keepAddr = (a) => {
+    try {
+      localStorage.setItem(ADDR_KEY, JSON.stringify({ name: a.name || "", phone: a.phone || "", city: a.city || "", line: a.line || "" }));
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  // Arabic-Indic digits as 0-9 (the server does the same)
+  M.digits = (v) =>
+    String(v ?? "")
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x660))
+      .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+  M.phoneOk = (v) => {
+    const x = M.digits(v).trim();
+    const n = x.replace(/\D/g, "").length;
+    return /^\+?[0-9 ()./-]{5,30}$/.test(x) && n >= 5 && n <= 20;
+  };
+  M.addressText = (a) => (a ? [a.name, a.phone, [a.line, a.city].filter(Boolean).join(", ")].filter(Boolean).join(" · ") : "");
+  M.addressHref = "./dashboard.html#address";
+  // The address saved in the profile -> { name, phone, city, line } | null (asked once a page)
+  let savedAddr;
+  M.savedAddress = async (fresh = false) => {
+    if (!M.memberId()) return null;
+    if (savedAddr !== undefined && !fresh) return savedAddr;
+    const r = await M.call("market_address", { p_member: M.memberId() });
+    if (!r.ok || !r.data?.ok) return null;
+    savedAddr = r.data.address || null;
+    return savedAddr;
+  };
 
-  // Buy now: pieces, the address (a physical product), the total and the points.
-  M.openCheckout = ({ product, store, ref = "", onDone = null }) => {
+  // The buyer's address for a sold physical order: name and phone, the city and the street when
+  // the store ships; "keep it in my profile" for the next orders. -> calls onSaved(result)
+  M.openAddress = async ({ order, onSaved = null }) => {
+    const o = order || {};
+    const ships = o.delivery !== "hand";
+    const cur = o.address && o.address.name ? o.address : null;
+    const saved = await M.savedAddress();
+    const a = cur || saved || readAddr();
+    const cityOnly = o.city_only || "";
+    const title = t(cur ? "mkt.ad.change" : "mkt.ad.title");
+    const wrap = M.modal(`
+      ${head(title)}
+      <form class="mkt-form" data-addr novalidate>
+        <div class="mkt-co-item">
+          <img src="${esc(o.image || C.initialsAvatar(o.title || "CA"))}" alt="" />
+          <div><b dir="auto">${esc(o.title || "")}</b><span class="muted" dir="auto">${esc(o.store_name || "")}</span><span class="muted" dir="ltr">${esc(o.id || "")}</span></div>
+        </div>
+        <p class="muted mkt-f-hint">${esc(t(ships ? "mkt.ad.hintShip" : "mkt.ad.hintHand"))}</p>
+        <div class="mkt-form-row">
+          <label class="mkt-field"><span>${esc(t("mkt.co.name"))} *</span><input name="name" dir="auto" maxlength="80" autocomplete="name" value="${esc(a.name || "")}" /></label>
+          <label class="mkt-field"><span>${esc(t("mkt.co.phone"))} *</span><input name="phone" maxlength="30" autocomplete="tel" dir="ltr" inputmode="tel" value="${esc(a.phone || "")}" placeholder="+212 6…" /></label>
+        </div>
+        <label class="mkt-field"><span>${esc(t("mkt.co.city"))}${ships || cityOnly ? " *" : ""}</span><input name="city" dir="auto" maxlength="80" autocomplete="address-level2" value="${esc(a.city || "")}" /></label>
+        ${ships ? `<label class="mkt-field"><span>${esc(t("mkt.co.line"))} *</span><input name="line" dir="auto" maxlength="200" autocomplete="street-address" value="${esc(a.line || "")}" /></label>` : ""}
+        ${cityOnly ? `<p class="muted mkt-f-hint">${esc(t("mkt.co.cityOnly", { city: cityOnly }))}</p>` : ""}
+        ${ships ? `<label class="mkt-check"><input type="checkbox" name="save" ${saved ? "" : "checked"} /><span>${esc(t("mkt.ad.save"))}</span></label>` : ""}
+        <p class="mkt-form-err" data-err role="alert"></p>
+        <div class="mkt-form-acts">
+          <button class="btn btn-ghost" type="button" data-close>${esc(t("common.cancel"))}</button>
+          <button class="btn btn-primary" type="submit" data-save>${ICON.home}<span>${esc(t("mkt.ad.send"))}</span></button>
+        </div>
+      </form>`, { cls: "mkt-modal-sm", label: title });
+    const form = wrap.querySelector("[data-addr]");
+    const err = form.querySelector("[data-err]");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      const val = (n) => (form[n] ? form[n].value.trim() : "");
+      const ad = { name: val("name"), phone: M.digits(val("phone")), city: val("city"), line: val("line") };
+      const save = Boolean(form.save?.checked);
+      const bad =
+        (ad.name.length < 2 && "name") ||
+        (!M.phoneOk(ad.phone) && "phone") ||
+        ((ships || cityOnly) && ad.city.length < 2 && "city") ||
+        (ships && ad.line.length < 4 && "line");
+      if (bad) {
+        err.textContent = t(bad === "phone" ? "mkt.err.phone" : "mkt.err.address");
+        form[bad]?.focus();
+        return;
+      }
+      const btn = form.querySelector("[data-save]");
+      btn.disabled = true;
+      const r = await M.call("market_order_address", { p_member: M.memberId(), p_order: o.id, p_address: ad, p_save: save });
+      btn.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = M.failText(r);
+        return;
+      }
+      keepAddr(ad);
+      if (r.data.saved) savedAddr = { ...ad };
+      wrap.close();
+      C.toast(t(r.data.saved ? "mkt.ad.savedBoth" : "mkt.ad.saved"));
+      onSaved?.(r.data);
+    });
+    return wrap;
+  };
+
+  // ---------------------------------------------------------------- checkout
+  // Buy now: pieces, a note, the city for a store of one city, the total and the points. A
+  // physical product shows where it goes (the address saved in the profile) or that the address
+  // comes after; a digital one when its download link comes.
+  M.openCheckout = ({ product, store, ref = "", onDone = null, onAddress = null }) => {
     const p = product;
     const s = store || {};
     const physical = p.kind !== "digital";
     const ships = physical && s.shipping !== false;
     const cityOnly = s.scope === "city";
     const maxQty = Math.max(1, Math.min(100, Number(p.stock) || 1));
-    const a = readAddr();
     const request = s.sale_mode === "request";
+    const digitalText = p.download ? (request ? "mkt.co.downloadAccept" : "mkt.co.downloadNow") : "mkt.co.digital";
     const wrap = M.modal(`
       ${head(t(request ? "mkt.co.titleRequest" : "mkt.co.title"))}
       <form class="mkt-form" data-co novalidate>
@@ -860,19 +1021,11 @@
         </div>
         <label class="mkt-field mkt-qty"><span>${esc(t("mkt.co.qty"))}</span>
           <input name="qty" type="number" min="1" max="${maxQty}" step="1" value="1" inputmode="numeric" /></label>
-        ${physical ? `
-        <fieldset class="mkt-field mkt-addr"><legend>${esc(t(ships ? "mkt.co.address" : "mkt.co.contact"))}</legend>
-          <div class="mkt-form-row">
-            <label class="mkt-field"><span>${esc(t("mkt.co.name"))} *</span><input name="name" dir="auto" maxlength="80" autocomplete="name" value="${esc(a.name || "")}" /></label>
-            <label class="mkt-field"><span>${esc(t("mkt.co.phone"))} *</span><input name="phone" maxlength="30" autocomplete="tel" dir="ltr" inputmode="tel" value="${esc(a.phone || "")}" /></label>
-          </div>
-          ${ships || cityOnly ? `<label class="mkt-field"><span>${esc(t("mkt.co.city"))} *</span><input name="city" dir="auto" maxlength="80" autocomplete="address-level2" value="${esc(cityOnly ? s.city || a.city || "" : a.city || "")}" /></label>` : ""}
-          ${ships ? `<label class="mkt-field"><span>${esc(t("mkt.co.line"))} *</span><input name="line" dir="auto" maxlength="200" autocomplete="street-address" value="${esc(a.line || "")}" /></label>` : ""}
-          ${!ships ? `<p class="muted mkt-f-hint">${esc(t("mkt.co.noShip"))}</p>` : ""}
-        </fieldset>` : `
-        <p class="muted mkt-f-hint">${ICON.cloud} ${esc(t("mkt.co.digital"))}</p>
-        ${cityOnly ? `<label class="mkt-field"><span>${esc(t("mkt.co.city"))} *</span><input name="city" maxlength="80" value="${esc(s.city || "")}" /></label>` : ""}`}
-        ${cityOnly ? `<p class="muted mkt-f-hint">${esc(t("mkt.co.cityOnly", { city: s.city || "" }))}</p>` : ""}
+        ${physical ? `<div class="mkt-co-deliv" data-deliv>${ICON.home}<div data-deliv-text><span class="muted">${esc(t("common.loading"))}</span></div></div>`
+          : `<p class="mkt-co-deliv">${p.download ? ICON.download : ICON.cloud}<span>${esc(t(digitalText))}</span></p>`}
+        ${cityOnly ? `
+        <label class="mkt-field"><span>${esc(t("mkt.co.yourCity"))} *</span><input name="city" dir="auto" maxlength="80" autocomplete="address-level2" value="" /></label>
+        <p class="muted mkt-f-hint">${esc(t("mkt.co.cityOnly", { city: s.city || "" }))}</p>` : ""}
         <label class="mkt-field"><span>${esc(t("mkt.co.note"))}</span><textarea name="note" dir="auto" rows="2" maxlength="300"></textarea></label>
         <dl class="mkt-co-sum" data-sum></dl>
         <p class="muted mkt-f-hint">${esc(t(request ? "mkt.co.holdRequest" : "mkt.co.hold"))}</p>
@@ -905,18 +1058,31 @@
         if (form.isConnected) sum();
       })
       .catch(() => {});
+    // where it goes: the address saved in the profile, or "you give it after"
+    if (physical) {
+      M.savedAddress().then((a) => {
+        const box = form.querySelector("[data-deliv-text]");
+        if (!box) return;
+        const when = t(request ? "mkt.co.whenAccepted" : "mkt.co.whenBought");
+        box.innerHTML = a
+          ? `<b>${esc(t(ships ? "mkt.co.shipTo" : "mkt.co.handTo"))}</b>
+             <span dir="auto" data-saved-addr>${esc(M.addressText({ ...a, line: ships ? a.line : "" }))}</span>
+             <span class="muted">${esc(t("mkt.co.savedGoes", { when }))} <a href="${esc(M.addressHref)}">${esc(t("mkt.co.changeProfile"))}</a></span>`
+          : `<b>${esc(t("mkt.co.addrLater"))}</b>
+             <span class="muted">${esc(t("mkt.co.addrAfter", { when }))} <a href="${esc(M.addressHref)}">${esc(t("mkt.co.saveProfile"))}</a></span>`;
+        if (!ships) box.insertAdjacentHTML("beforeend", `<span class="muted">${esc(t("mkt.co.noShip"))}</span>`);
+        if (cityOnly && form.city && !form.city.value && a?.city) form.city.value = a.city;
+      });
+    }
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       err.textContent = "";
       const { q, total } = sum();
       const val = (n) => (form[n] ? form[n].value.trim() : "");
-      const addr = { name: val("name"), phone: val("phone"), city: val("city"), line: val("line"), note: val("note") };
-      if (physical && (addr.name.length < 2 || addr.phone.length < 5 || (ships && (addr.city.length < 2 || addr.line.length < 4)))) {
-        err.textContent = t("mkt.err.address");
-        return;
-      }
+      const addr = { note: val("note"), city: val("city") };
       if (cityOnly && addr.city.length < 2) {
         err.textContent = t("mkt.err.cityOnly", { city: s.city || "" });
+        form.city.focus();
         return;
       }
       if (have != null && have < total) {
@@ -931,16 +1097,71 @@
         err.textContent = M.failText(r);
         return;
       }
-      if (physical) {
-        try {
-          localStorage.setItem(ADDR_KEY, JSON.stringify({ name: addr.name, phone: addr.phone, city: addr.city, line: addr.line }));
-        } catch {
-          /* storage unavailable */
-        }
+      wrap.close();
+      const d = r.data;
+      C.toast(t(d.status === "requested" ? "mkt.co.requested" : d.delivered ? "mkt.co.downloadReady" : d.needs_address ? "mkt.co.boughtAddress" : "mkt.co.bought"));
+      onDone?.(d);
+      // bought at once and no address saved: ask for it now
+      if (d.needs_address) {
+        M.openAddress({
+          order: { id: d.id, title: p.title, image: images(p)[0] || "", store_name: s.name || "", delivery: ships ? "ship" : "hand", city_only: cityOnly ? s.city || "" : "" },
+          onSaved: (x) => onAddress?.(x),
+        });
+      }
+    });
+    return wrap;
+  };
+
+  // ---------------------------------------------------------------- report
+  // The Report button of a store page and of a product page: a reason (and a few words);
+  // the team reads it in Panel > Reports > Market.
+  const REPORT_REASONS = ["fake", "scam", "prohibited", "misleading", "offensive", "no_delivery", "other"];
+  M.openReport = ({ kind, id, name = "", onSent = null }) => {
+    const title = t(kind === "store" ? "mkt.rp.titleStore" : "mkt.rp.titleProduct");
+    const wrap = M.modal(`
+      ${head(title)}
+      <form class="mkt-form" data-rp novalidate>
+        <p class="mkt-rp-what">${ICON.flag}<b dir="auto">${esc(name)}</b></p>
+        <fieldset class="mkt-field mkt-rp-reasons"><legend>${esc(t("mkt.rp.why"))} *</legend>
+          ${REPORT_REASONS.map((r) => `<label><input type="radio" name="reason" value="${r}" /><span>${esc(t(`mkt.rp.r.${r}`))}</span></label>`).join("")}
+        </fieldset>
+        <label class="mkt-field"><span>${esc(t("mkt.rp.note"))}</span>
+          <textarea name="note" dir="auto" rows="3" maxlength="500" placeholder="${esc(t("mkt.rp.notePh"))}"></textarea></label>
+        <p class="muted mkt-f-hint">${esc(t("mkt.rp.hint"))}</p>
+        <p class="mkt-form-err" data-err role="alert"></p>
+        <div class="mkt-form-acts">
+          <button class="btn btn-ghost" type="button" data-close>${esc(t("common.cancel"))}</button>
+          <button class="btn btn-danger" type="submit" data-send>${ICON.flag}<span>${esc(t("mkt.rp.send"))}</span></button>
+        </div>
+      </form>`, { cls: "mkt-modal-sm", label: title });
+    const form = wrap.querySelector("[data-rp]");
+    const err = form.querySelector("[data-err]");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      const reason = form.querySelector('input[name="reason"]:checked')?.value || "";
+      const note = form.note.value.trim();
+      if (!reason) {
+        err.textContent = t("mkt.err.reason");
+        form.querySelector('input[name="reason"]')?.focus();
+        return;
+      }
+      if (reason === "other" && note.length < 5) {
+        err.textContent = t("mkt.rp.noteNeeded");
+        form.note.focus();
+        return;
+      }
+      const btn = form.querySelector("[data-send]");
+      btn.disabled = true;
+      const r = await M.call("market_report", { p_member: M.memberId(), p_kind: kind, p_id: id, p_reason: reason, p_note: note });
+      btn.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        err.textContent = M.failText(r);
+        return;
       }
       wrap.close();
-      C.toast(t(r.data.status === "requested" ? "mkt.co.requested" : "mkt.co.bought"));
-      onDone?.(r.data);
+      C.toast(t("mkt.rp.sent"));
+      onSent?.();
     });
     return wrap;
   };
