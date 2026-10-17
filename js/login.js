@@ -18,6 +18,7 @@
     primeAvatars,
     avatarUrlFor,
     profileHref,
+    escapeHtml,
   } = window.CineAura;
 
   const TABLES = ["members", "Members"];
@@ -155,20 +156,23 @@
         result = { ok: true, reason: "ok", member: found.row };
       }
 
-      if (result.ok === false || result.reason === "not_found") {
-        showAlert("error", `${t("login.notReg")} <a class="btn btn-sm btn-primary" href="./register.html" style="margin-left:8px">${t("nav.signup")}</a>`);
-        return;
-      }
+      // the precise refusals first: every refusal has ok: false
       if (result.reason === "bad_password") {
         showAlert("error", `${t("login.badPass")} <a class="btn btn-sm btn-primary" href="./Rest.html" style="margin-left:8px">${t("auth.recovery")}</a>`);
         return;
       }
       if (result.reason === "banned") {
-        showAlert("error", t("login.banned"));
+        // banned for not being activated / re-activated within 30 days (sql/account_deadline.sql)
+        const why = window.CineAura.accountBanText?.(result.ban_reason);
+        showAlert("error", why ? escapeHtml(why) : t("login.banned"));
         return;
       }
       if (result.reason === "setup") {
         showAlert("warn", t("login.setup"));
+        return;
+      }
+      if (result.ok === false || result.reason === "not_found") {
+        showAlert("error", `${t("login.notReg")} <a class="btn btn-sm btn-primary" href="./register.html" style="margin-left:8px">${t("nav.signup")}</a>`);
         return;
       }
 

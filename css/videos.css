@@ -703,3 +703,148 @@ html[data-theme] .vs-searchbar input { flex: 1; min-width: 0; border: 0; backgro
   .vs-c-pl { max-width: none; }
   .table.vs-table--manage .vs-c-act { position: static; box-shadow: none; background: none; }
 }
+
+/* ---------- a video rated 13+: the watch code (Content.html) ----------
+   The code box sits on the poster; the player grows with it on a narrow screen. */
+.vw-main { container-type: inline-size; }
+.vw-player.is-gated { aspect-ratio: auto; min-height: 56.25cqw; display: grid; }
+.vw-player.is-gated > .vw-poster { position: absolute; inset: 0; }
+.vw-player.is-gated > .vw-gate { position: relative; inset: auto; }
+.vw-codegate { gap: 8px; padding: 22px 18px; }
+.vw-codegate h2,
+.vw-codegate p { margin: 0; }
+.vw-code-need { font-size: 13px; color: rgba(255, 255, 255, 0.72) !important; }
+.vw-code-form { width: min(390px, 100%); display: grid; gap: 10px; margin-top: 6px; }
+.vw-code-form .pin-input { margin: 0; color: #fff; background: rgba(4, 14, 24, 0.7); border-color: rgba(255, 255, 255, 0.22); }
+.vw-code-form .pin-input:disabled { opacity: 0.5; }
+.vw-code-form .gate-remember { margin: 0; color: #fff; background: rgba(0, 0, 0, 0.38); border-color: rgba(255, 255, 255, 0.2); }
+.vw-code-form .gate-remember small { color: rgba(255, 255, 255, 0.72); }
+.vw-code-form .vw-gate-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.vw-code-msg { margin: 0; min-height: 0; font-size: 13.5px; font-weight: 600; }
+.vw-code-msg:empty { display: none; }
+.vw-code-msg.error { color: #ff9a9a; }
+.vw-code-msg.ok { color: #7ee2a0; }
+
+/* ---------- Content.html alone: search + the 50 most watched / liked / shared ---------- */
+.vw-page.is-hub { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
+.vh-hero { padding: 26px 22px 22px; border-radius: 14px; display: grid; justify-items: center; gap: 8px; text-align: center; }
+.vh-hero h1 { font-size: clamp(24px, 3.4vw, 34px); }
+.vh-hero > p { margin: 0; max-width: 640px; }
+.vh-hero .vw-search { width: 100%; max-width: 680px; margin: 10px auto 0; }
+.vh-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+.vh-top-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 18px; }
+.vh-top-head h2 { font-size: 21px; }
+.vh-tabs { margin: 0; }
+.vh-tabs .follow-tab { display: inline-flex; align-items: center; gap: 6px; }
+.vh-note { margin: 0; font-size: 13px; }
+.vh-grid { list-style: none; margin: 0; padding: 0; }
+.vh-item { min-width: 0; display: grid; }
+.vh-wait,
+.vh-none,
+.vh-offers { grid-column: 1 / -1; min-width: 0; }
+.vh-wait { min-height: 160px; display: grid; place-items: center; }
+.vh-wait .loader { position: static; }
+.vrank {
+  position: absolute;
+  inset-block-end: 8px;
+  inset-inline-start: 8px;
+  padding: 1px 9px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.6;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+}
+.vh-item:nth-child(-n + 3) .vrank { background: linear-gradient(90deg, #ffd66b, #f5a524); color: #3a2600; }
+.vcard-stat { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--cyan); }
+.vcard-stat svg { flex: none; }
+
+/* ---------- sponsored offers (js/offers.js) ---------- */
+.vw-offers { min-width: 0; }
+/* one box shows: in the side column on a wide screen, under the description on a narrow one */
+@media (min-width: 1081px) { .vw-offers--inline { display: none !important; } }
+@media (max-width: 1080px) { .vw-side .vw-offers { display: none !important; } }
+.cx-offers { padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); display: grid; gap: 10px; min-width: 0; }
+.cx-offers-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cx-offers-head h2 { margin: 0; font-size: 16px; }
+.cx-offers-ad { flex: none; padding: 2px 7px; border-radius: 6px; background: var(--sub-bg); color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.cx-offers-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.cx-offers--row .cx-offers-list { grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); }
+.cx-offer {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--sub-bg);
+  color: inherit;
+  text-decoration: none;
+  height: 100%;
+}
+.cx-offer:hover { box-shadow: 0 0 0 2px rgba(45, 136, 255, 0.4); }
+.cx-offer:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.cx-offer-ico {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--cyan);
+  background: linear-gradient(135deg, rgba(45, 136, 255, 0.22), rgba(66, 183, 42, 0.2));
+}
+.cx-offer-ico img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cx-offer-txt { display: grid; gap: 2px; min-width: 0; }
+.cx-offer-txt b,
+.cx-offer-txt small {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.cx-offer-txt b { font-size: 13.5px; }
+.cx-offer-txt small { font-size: 12px; color: var(--muted); }
+.cx-offer-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  background: var(--btn-blue, #2374e1);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+html[dir="rtl"] .cx-offer-go svg { transform: scaleX(-1); }
+
+/* ---------- Home page > Members' videos ---------- */
+.hv-track .vcard { width: 288px; flex: none; scroll-snap-align: start; }
+.hv-track .vcard-desc,
+.hv-track .vcard-tags { display: none; }
+.hv-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-top: 18px; }
+.hv-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.hv-chip { padding: 7px 14px; border-radius: 999px; background: var(--sub-bg); color: var(--text); font-size: 13.5px; font-weight: 600; text-decoration: none; }
+.hv-chip:hover,
+.hv-chip:focus-visible { color: var(--cyan); }
+
+@media (max-width: 640px) {
+  .vh-hero { padding: 20px 14px 16px; }
+  .vh-top-head { align-items: stretch; }
+  /* three equal tabs; a long label goes on two lines instead of out of sight */
+  .vh-tabs { width: 100%; flex-wrap: nowrap; gap: 0; }
+  .vh-tabs .follow-tab { flex: 1 1 0; min-width: 0; justify-content: center; padding: 10px 6px; font-size: 13.5px; line-height: 1.25; white-space: normal; text-align: center; }
+  .hv-track .vcard { width: 240px; }
+  .cx-offer { grid-template-columns: 40px minmax(0, 1fr); }
+  .cx-offer-ico { width: 40px; height: 40px; }
+  .cx-offer-go { grid-column: 2; justify-self: start; }
+  .vw-codegate { padding: 18px 12px; }
+}
+@media (max-width: 420px) {
+  .vh-tabs .follow-tab svg { display: none; }
+}

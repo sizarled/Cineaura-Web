@@ -28,6 +28,7 @@
 
   const state = {
     member: null,
+    acct: null, // account_check(): the day of the ban while the account waits (sql/account_deadline.sql)
     mode: null,
     plan: null,
     bio: "",
@@ -222,6 +223,12 @@
     $("#activate-root").innerHTML = html;
   }
 
+  // "Activate it before …": the day this account is banned if it waits (account_check)
+  function dueHtml() {
+    const text = window.CineAura.accountDeadlineText?.(state.acct, "gate");
+    return text ? `<p class="acct-gate-due" role="status">${text}</p>` : "";
+  }
+
   function stepChoice() {
     const current = state.member.membership_type || "Free";
     const status = normalizeAccountStatus(state.member.status);
@@ -236,6 +243,7 @@
           <div>${t("act.currentPlan")} <strong>${escapeHtml(current)}</strong></div>
           <div>${t("act.status")} <strong>${escapeHtml(status || t("dash.disabledTitle"))}</strong></div>
         </div>
+        ${dueHtml()}
         <div class="choice-grid">
           <button class="choice" id="pick-activate" type="button">
             <strong>${t("act.activate")}</strong>
@@ -345,6 +353,7 @@
           <div>${t("act.prevDur")} <strong>${escapeHtml(m.membership_duration || "1 month")}</strong></div>
           <div>${t("act.expired")} <strong>${escapeHtml(dateLabel(m.membership_expires_at))}</strong></div>
         </div>
+        ${dueHtml()}
         <div class="plan-pick">
           ${Object.entries(PLANS).map(([name, p]) => `
             <button class="plan-card ${name === current ? "on" : ""}" data-plan="${name}" type="button">
@@ -432,6 +441,8 @@
   }
 
   function stepSuccess(result) {
+    // the day of the ban moved (or went): the banner of the other pages follows at once
+    window.CineAura.accountCheck?.({ fresh: true }).catch(() => {});
     const end = result.end ? result.end.toISOString().slice(0, 10) : "";
     render(`
       <section class="glass wizard">
@@ -458,13 +469,16 @@
       render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.signFirst")}</h1><p class="muted">${t("act.needAcc")}</p><div class="success-actions"><a class="btn btn-lg btn-primary" href="./login.html">${t("nav.signin")}</a></div></section>`);
       return;
     }
+    // an account past its 30 days is banned here (sql/account_deadline.sql)
+    state.acct = await window.CineAura.accountCheck?.({ fresh: true }).catch(() => null);
     state.member = await loadMember(session.member_id);
     if (!state.member) {
       render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.notFound")}</h1><div class="success-actions"><a class="btn btn-lg btn-primary" href="./login.html">${t("nav.signin")}</a></div></section>`);
       return;
     }
     if (normalizeAccountStatus(state.member.status) === "banned") {
-      render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.banned")}</h1><p class="muted">${t("act.noAct")}</p></section>`);
+      const why = window.CineAura.accountBanText?.(state.member.ban_reason);
+      render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.banned")}</h1><p class="muted">${why ? escapeHtml(why) : t("act.noAct")}</p></section>`);
       return;
     }
     const prof = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(state.member.member_id)}&select=bio,avatar_url`);

@@ -3069,3 +3069,62 @@ html[data-theme="day"] .app-os-wait {
     min-height: 340px;
   }
 }
+
+/* ── Activation deadline (js/common.js, sql/account_deadline.sql) ─────────────
+   A signed-in member whose account waits to be activated / re-activated sees the
+   day of the automatic ban at the bottom of every page; a member the rule banned
+   sees why. */
+.acct-due {
+  position: fixed;
+  z-index: 70;
+  inset-inline: 12px;
+  bottom: 12px;
+  max-width: 780px;
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 12px 14px;
+  border-radius: 12px;
+  background: var(--surface, #242526);
+  color: var(--text, #e4e6eb);
+  border: 1px solid rgba(245, 165, 36, 0.6);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+}
+html[dir="rtl"] .acct-due { padding: 12px 14px 12px 12px; }
+.acct-due.is-banned { border-color: rgba(255, 107, 112, 0.7); }
+.acct-due-ico { flex: none; display: grid; color: #f5a524; }
+.acct-due.is-banned .acct-due-ico { color: var(--red, #ff6b70); }
+.acct-due-txt { flex: 1; min-width: 0; margin: 0; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.acct-due-acts { flex: none; display: flex; align-items: center; gap: 6px; }
+.acct-due-x {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted, #b0b3b8);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.acct-due-x:hover,
+.acct-due-x:focus-visible { background: var(--sub-bg, #3a3b3c); color: var(--text, #e4e6eb); }
+/* the same sentence on the dashboard gate and the activation page */
+.acct-gate-due {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 165, 36, 0.45);
+  background: rgba(245, 165, 36, 0.12);
+  color: var(--text, #e4e6eb);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: start;
+}
+.acct-panel-due { color: #f5a524; font-weight: 600; }
+@media (max-width: 560px) {
+  .acct-due { inset-inline: 8px; bottom: 8px; flex-wrap: wrap; gap: 8px 10px; }
+  .acct-due-txt { flex-basis: calc(100% - 34px); font-size: 13.5px; }
+  .acct-due-acts { width: 100%; justify-content: flex-end; }
+}

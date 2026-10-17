@@ -2507,11 +2507,13 @@
 
   // The member videos (Search.html, Content.html) get a place in the header menu of every
   // page, after Series, and in the phone menu.
+  // "Videos" in every header: Content.html, the search box and the 50 videos with the
+  // most watched minutes, recommendations or shares.
   function addVideosNav() {
     const here = /\/(search|content)(\.html)?$/i.test(location.pathname);
     const make = () => {
       const a = document.createElement("a");
-      a.href = "./Search.html";
+      a.href = "./Content.html";
       a.dataset.i18n = "nav.videos";
       a.dataset.videosNav = "1";
       a.textContent = t("nav.videos");
@@ -2552,6 +2554,125 @@
     return /^https:\/\/[^\s<>"'`]+$/i.test(url) ? url : fallback;
   }
 
+  /* ---------- Activation deadline (sql/account_deadline.sql) ----------
+     An account that is not activated within 30 days of signing up, or not
+     re-activated within 30 days after its membership ends, is fully banned.
+     account_check() applies a ban whose day has passed and says what is left to
+     do: need = "activate" | "renew" (with due_at, the day of the ban) or nothing.
+     The answer is kept for 10 minutes in this tab. Without the SQL: null. */
+  const ACCT_KEY = "cineaura_acct_check";
+  const ACCT_HIDE_KEY = "cineaura_acct_hide";
+  async function accountCheck({ fresh = false } = {}) {
+    const s = getSession();
+    if (!s?.member_id) return null;
+    if (!fresh) {
+      try {
+        const hit = JSON.parse(sessionStorage.getItem(ACCT_KEY) || "null");
+        if (hit && hit.id === s.member_id && Date.now() - hit.at < 10 * 60 * 1000) return hit.data;
+      } catch {
+        /* checked again */
+      }
+    }
+    let res;
+    try {
+      res = await rpc("account_check", { p_member: s.member_id });
+    } catch {
+      return null;
+    }
+    if (!res.ok || !res.data || res.data.ok === false) return null;
+    try {
+      sessionStorage.setItem(ACCT_KEY, JSON.stringify({ id: s.member_id, at: Date.now(), data: res.data }));
+    } catch {
+      /* asked again on the next page */
+    }
+    return res.data;
+  }
+
+  // "3 days left" / "less than a day left", in the reader's language
+  function accountLeftText(dueAt) {
+    const ms = Date.parse(dueAt || "") - Date.now();
+    if (!Number.isFinite(ms)) return "";
+    if (ms < 86400000) return t("acct.leftHours");
+    const days = Math.ceil(ms / 86400000);
+    let time;
+    try {
+      time = new Intl.NumberFormat(getLocale(), { style: "unit", unit: "day", unitDisplay: "long", numberingSystem: "latn" }).format(days);
+    } catch {
+      time = `${days} days`;
+    }
+    return t("acct.left", { time });
+  }
+
+  function accountDateText(value) {
+    const d = new Date(value || "");
+    if (Number.isNaN(d.getTime())) return "";
+    return dateFormat({ day: "numeric", month: "long", year: "numeric" }).format(d);
+  }
+
+  // The sentence for a countdown: "gate" = the dashboard / activation page wording,
+  // "bar" = the banner of the other pages. "" when nothing is due.
+  function accountDeadlineText(info, kind = "bar") {
+    if (!info?.need || !info.due_at) return "";
+    const vars = {
+      date: escapeHtml(accountDateText(info.due_at)),
+      left: escapeHtml(accountLeftText(info.due_at)),
+      end: escapeHtml(accountDateText(info.expires_at)),
+    };
+    return t(`acct.${kind}.${info.need === "activate" ? "activate" : "renew"}`, vars);
+  }
+
+  // Why the rule banned an account (login page, dashboard, activation page); "" otherwise.
+  function accountBanText(reason) {
+    return reason === "not_activated" || reason === "not_renewed" ? t(`acct.banned.${reason}`) : "";
+  }
+
+  // The banner: at the bottom of every page of a signed-in member whose countdown runs
+  // (the activation page shows it in its own card). "Hide" keeps it away for this tab.
+  async function showAccountDeadline() {
+    if (/\/activate(\.html)?$/i.test(location.pathname)) return;
+    const info = await accountCheck();
+    document.getElementById("acct-due")?.remove();
+    if (!info) return;
+    let text = "";
+    let action = "";
+    let kind = "warn";
+    if (info.status === "banned" && accountBanText(info.ban_reason)) {
+      text = escapeHtml(accountBanText(info.ban_reason));
+      action = `<button class="btn btn-sm btn-danger" type="button" data-acct-logout>${escapeHtml(t("nav.logout"))}</button>`;
+      kind = "banned";
+    } else if (info.need && info.due_at) {
+      try {
+        if (sessionStorage.getItem(ACCT_HIDE_KEY) === String(info.due_at)) return;
+      } catch {
+        /* shown */
+      }
+      text = accountDeadlineText(info, "bar");
+      action = `<a class="btn btn-sm btn-primary" href="./activate.html">${escapeHtml(t(info.need === "activate" ? "acct.btn.activate" : "acct.btn.renew"))}</a>`;
+    }
+    // a page that already shows the date in its own card (dashboard gate) needs no banner
+    if (!text || document.querySelector(".acct-gate-due")) return;
+    const bar = document.createElement("div");
+    bar.id = "acct-due";
+    bar.className = `acct-due is-${kind}`;
+    bar.setAttribute("role", kind === "banned" ? "alert" : "status");
+    bar.innerHTML = `
+      <span class="acct-due-ico" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5v.01"/></svg></span>
+      <p class="acct-due-txt">${text}</p>
+      <span class="acct-due-acts">${action}${kind === "banned" ? "" : `<button class="acct-due-x" type="button" data-acct-hide aria-label="${escapeHtml(t("acct.hide"))}" title="${escapeHtml(t("acct.hide"))}">×</button>`}</span>`;
+    bar.addEventListener("click", (e) => {
+      if (e.target.closest("[data-acct-logout]")) logout();
+      if (e.target.closest("[data-acct-hide]")) {
+        try {
+          sessionStorage.setItem(ACCT_HIDE_KEY, String(info.due_at));
+        } catch {
+          /* hidden for this page */
+        }
+        bar.remove();
+      }
+    });
+    document.body.appendChild(bar);
+  }
+
   function setupChrome() {
     applyPrefs({ persist: false });
     initSettingsMenu();
@@ -2566,6 +2687,7 @@
     pollSectionBadges();
     hydratePrefsFromProfile();
     addVideosNav();
+    showAccountDeadline().catch(() => {});
     const header = $("#site-header");
     if (header) {
       const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 8);
@@ -4084,6 +4206,11 @@
     photo,
     tmdb,
     verifyCode,
+    codeFailure,
+    accountCheck,
+    accountDeadlineText,
+    accountBanText,
+    accountDateText,
     readCodeLock,
     recordFailedCode,
     clearCodeLock,

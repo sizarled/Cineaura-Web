@@ -107,11 +107,12 @@
     if (state.member && document.querySelector("#dash-root .dash-layout")) renderShell();
   });
 
-  const gate = (title, text, actions) => `
+  const gate = (title, text, actions, extra = "") => `
     <section class="glass dash-gate">
       <span class="eyebrow">${t("nav.dashboard")}</span>
       <h1>${title}</h1>
       <p>${text}</p>
+      ${extra}
       <div class="success-actions">${actions}</div>
     </section>`;
 
@@ -3161,6 +3162,9 @@
       $("#dash-root").innerHTML = gate(t("dash.gate.title"), t("dash.gate.text"), signin);
       return;
     }
+    // an account past its 30 days (not activated / re-activated) is banned first
+    // (sql/account_deadline.sql); the answer gives the day of the ban
+    const acct = await C.accountCheck({ fresh: true }).catch(() => null);
     state.member = await loadMember(state.session.member_id);
     if (!state.member) {
       $("#dash-root").innerHTML = gate(t("dash.gate.title"), t("dash.loadFail"), signin);
@@ -3183,20 +3187,24 @@
     menuCheckAt = Date.now();
     const status = normalizeAccountStatus(state.member.status);
     if (status === "banned") {
+      const why = C.accountBanText(state.member.ban_reason);
       $("#dash-root").innerHTML = gate(
         t("dash.bannedTitle"),
-        t("dash.bannedText"),
+        why ? escapeHtml(why) : t("dash.bannedText"),
         `<button class="btn btn-lg btn-danger" id="gate-logout" type="button">${t("nav.logout")}</button>`
       );
       $("#gate-logout").onclick = () => { logout(); location.href = "./"; };
       return;
     }
     if (status === "disabled") {
+      const due = C.accountDeadlineText(acct, "gate");
       $("#dash-root").innerHTML = gate(
         t("dash.disabledTitle"),
         t("dash.disabledText"),
-        `<a class="btn btn-lg btn-primary" href="./activate.html">${t("dash.activate")}</a>`
+        `<a class="btn btn-lg btn-primary" href="./activate.html">${t("dash.activate")}</a>`,
+        due ? `<p class="acct-gate-due" role="status">${due}</p>` : ""
       );
+      if (due) document.getElementById("acct-due")?.remove(); // the gate says it already
       return;
     }
     await ensureProfile(state.member);

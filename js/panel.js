@@ -191,6 +191,30 @@
     (san.ok && Array.isArray(san.data) ? san.data : []).forEach((s) => {
       state.sanctions[s.member_id] = s;
     });
+    // the day of the automatic ban (not activated / re-activated within 30 days) and
+    // why the rule banned an account (sql/account_deadline.sql; nothing without it)
+    state.deadlines = {};
+    const due = await supabaseRequest(
+      "/rest/v1/members?or=(ban_due_at.not.is.null,ban_reason.not.is.null)&select=member_id,status,ban_due_at,ban_reason,activated_at,membership_expires_at&limit=5000"
+    ).catch(() => null);
+    (due?.ok && Array.isArray(due.data) ? due.data : []).forEach((d) => {
+      state.deadlines[d.member_id] = d;
+    });
+  }
+
+  // " · auto-ban 16 Nov 2026" while an account waits to be activated / re-activated,
+  // " · not activated in 30 days" on an account the rule banned; "" otherwise.
+  function deadlineNote(m) {
+    const d = state.deadlines?.[m.member_id];
+    if (!d) return "";
+    if (accStatus(m) === "banned") {
+      return d.ban_reason ? ` · ${t(`panel.banWhy.${d.ban_reason}`)}` : "";
+    }
+    if (!d.ban_due_at || staffRoleOf(m.member_id)) return "";
+    const waiting = (!d.activated_at && accStatus(m) !== "active") || (d.membership_expires_at && Date.parse(d.membership_expires_at) <= Date.now());
+    if (!waiting) return "";
+    const date = window.CineAura.accountDateText?.(d.ban_due_at) || String(d.ban_due_at).slice(0, 10);
+    return ` · <span class="acct-panel-due">${t("panel.autoBan", { date: escapeHtml(date) })}</span>`;
   }
 
   function renderLogin(mode) {
@@ -353,6 +377,9 @@
   async function viewAccounts(main) {
     if (!state.purged) {
       state.purged = true;
+      // accounts past their 30 days are banned first (sql/account_deadline.sql), then
+      // accounts banned for 3 months are deleted (sql/ban_system.sql)
+      await supabaseRequest("/rest/v1/rpc/account_ban_overdue", { method: "POST", body: "{}" }).catch(() => {});
       await supabaseRequest("/rest/v1/rpc/purge_banned_members", { method: "POST", body: "{}" }).catch(() => {});
     }
     await loadDirectory();
@@ -386,7 +413,7 @@
             ${avatarTag(m.member_id, m.username, m.username)}
             <div>
               <strong>@${escapeHtml(m.username)}</strong>
-              <div class="muted">${escapeHtml(m.member_id)} · ${escapeHtml(tr(m.status || "active"))}${role ? " · " + roleLabel(role) : ""}${temp ? " · " + t("panel.tempBan") : ""}${feats ? " · " + escapeHtml(feats) : ""}${del ? " · " + t("panel.autoDelete", { date: del }) : ""}</div>
+              <div class="muted">${escapeHtml(m.member_id)} · ${escapeHtml(tr(m.status || "active"))}${role ? " · " + roleLabel(role) : ""}${temp ? " · " + t("panel.tempBan") : ""}${feats ? " · " + escapeHtml(feats) : ""}${del ? " · " + t("panel.autoDelete", { date: del }) : ""}${deadlineNote(m)}</div>
             </div>
             <div class="acc-actions">
               <button class="btn btn-sm btn-ghost" data-info="${escapeHtml(m.member_id)}" type="button">${t("panel.fullInfo")}</button>

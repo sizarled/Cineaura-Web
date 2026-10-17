@@ -75,7 +75,8 @@
     </div>
 
     <main class="page-main vw-page" id="vw-root">
-      <!-- Search for other videos (opens Search.html) -->
+      <!-- Search for other videos (opens Search.html). Content.html without a video:
+           this box, then the 50 most watched / liked / shared videos (js/content.js). -->
       <form class="vw-search" id="vw-search" action="./Search.html" method="get" role="search">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></svg>
         <input name="q" id="vw-q" type="search" autocomplete="off" placeholder="Search videos" data-i18n-placeholder="vid.searchPh" aria-label="Search videos" data-i18n-aria="vid.searchPh" />
@@ -86,6 +87,8 @@
           <div class="vw-player" id="vw-player"><div class="loader"><div class="spinner"></div></div></div>
         </section>
         <aside class="vw-side" id="vw-side" aria-labelledby="vw-side-h">
+          <!-- Sponsored offers (js/offers.js) -->
+          <div class="vw-offers" id="vw-offers" hidden></div>
           <h2 id="vw-side-h" data-i18n="vid.suggestions">Suggestions</h2>
           <div class="vw-sugg" id="vw-sugg"></div>
         </aside>
@@ -98,6 +101,7 @@
   <script src="js/common.js"></script>
   <script src="js/watch-clock.js"></script>
   <script src="js/videos.js"></script>
+  <script src="js/offers.js"></script>
   <script src="js/content.js"></script>
 </body>
 </html>

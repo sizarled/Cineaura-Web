@@ -1,9 +1,22 @@
-/* CineAura — Content.html?idcontent=CT…: one member video (sql/content.sql).
+/* CineAura — Content.html: member videos (sql/content.sql).
 
-   Under the player: the title, the numbers, the publisher, recommend / don't
-   recommend, share, add to a playlist, the description and the comments. On the
-   side: suggestions — the same tags, language and publisher first, else the
-   same country (content_suggest). A search box on top opens Search.html.
+   Content.html (no video): the search box (it opens Search.html) and under it the
+   50 videos with the most watched minutes, the most recommendations or the most
+   shares (?top=minutes | likes | shares), plus the sponsored offers (js/offers.js).
+
+   Content.html?idcontent=CT…: one video. Under the player: the title, the numbers,
+   the publisher, recommend / don't recommend, share, add to a playlist, the
+   description, the sponsored offers (on a narrow screen) and the comments. On the
+   side: the sponsored offers (on a wide screen), then suggestions — the same tags,
+   language and publisher first, else the same country (content_suggest). A search
+   box on top opens Search.html.
+
+   A video rated 13+ (13+, 16+, 18+) asks for a watch code before it plays, for
+   everybody: content_get leaves its link out and content_unlock gives it for a code
+   whose age tier reaches the rating. "Remember the code" keeps the code in this
+   browser and links this device to it (Dashboard > Codes > Linked devices), so it is
+   not asked again here — on this page, the watch page and the premium channels.
+   Three wrong codes lock code entry for 24 hours (shared with the watch page).
 
    Every minute that plays counts (js/watch-clock.js: the tab is visible, the
    window has focus, the browser is online and the video is playing) and earns
@@ -28,6 +41,9 @@
     replyTo: null,
     hls: null,
     ytListening: false,
+    unlocked: false, // a 13+ video opened with a watch code
+    codeIssue: "", // why the remembered code didn't open it (shown in the code box)
+    lockTimer: 0,
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -113,7 +129,8 @@
 
   function playerIdleHtml(c) {
     const age = Number(c.age) || 3;
-    if (!V.memberId() && age >= 16 && !ageConfirmed(age)) {
+    // the watch code replaced it (content.code); kept for a database without content_unlock
+    if (c.code === undefined && !V.memberId() && age >= 16 && !ageConfirmed(age)) {
       return `${posterHtml(c)}
         <div class="vw-gate" role="dialog" aria-labelledby="vw-age-h">
           <span class="vw-gate-ico"><b>${esc(V.ageLabel(age))}</b></span>
@@ -130,6 +147,191 @@
         <span class="vw-play-orb"><svg width="30" height="30" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.2L13.2 8L4 13.8V2.2Z"/></svg></span>
         <span class="vw-play-txt">${esc(t("vid.play"))}</span>
       </button>`;
+  }
+
+  // ---------------------------------------------------------------- watch code (13+)
+  const gated = () => state.data?.access === "ok" && state.data.content.code === true && !state.data.content.url;
+
+  function codeGateHtml(c) {
+    const age = Number(c.age) || 13;
+    const create = V.memberId() ? "./dashboard.html#codes" : `./login.html?next=${encodeURIComponent("dashboard.html#codes")}`;
+    return `${posterHtml(c)}
+      <div class="vw-gate vw-codegate" role="group" aria-labelledby="vw-code-h">
+        <span class="vw-gate-ico"><b>${esc(V.ageLabel(age))}</b></span>
+        <h2 id="vw-code-h">${esc(t("vid.code.title"))}</h2>
+        <p>${esc(t("vid.code.text", { n: age }))}</p>
+        <p class="vw-code-need">${esc(t("vid.code.need", { n: age, need: t(C.tierForAge(age).label) }))}</p>
+        <form class="vw-code-form" id="vw-code-form" novalidate>
+          <p class="gate-msg vw-code-msg${state.codeIssue ? " error" : ""}" id="vw-code-msg" role="alert">${esc(state.codeIssue)}</p>
+          <input class="pin-input" id="vw-code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="••••••" dir="ltr" aria-label="${esc(t("vid.code.label"))}" aria-describedby="vw-code-msg" />
+          <label class="gate-remember" for="vw-code-remember">
+            <input type="checkbox" id="vw-code-remember" />
+            <span><b>${esc(t("watch.remember"))}</b><small>${esc(t("watch.rememberHint"))}</small></span>
+          </label>
+          <div class="vw-gate-actions">
+            <button class="btn btn-lg btn-primary" id="vw-code-go" type="submit">${esc(t("watch.gateEnter"))}</button>
+            <a class="btn btn-lg btn-ghost" href="${create}">${esc(t("watch.gateCreate"))}</a>
+          </div>
+        </form>
+      </div>`;
+  }
+
+  function setCodeMsg(text, kind = "error") {
+    const msg = $("#vw-code-msg");
+    if (!msg) return;
+    msg.textContent = text || "";
+    msg.className = `gate-msg vw-code-msg${text ? ` ${kind}` : ""}`;
+  }
+
+  const lockClock = (ms) => {
+    const sec = Math.max(0, Math.ceil(ms / 1000));
+    return [Math.floor(sec / 3600), Math.floor((sec % 3600) / 60), sec % 60].map((n) => String(n).padStart(2, "0")).join(":");
+  };
+
+  // Three wrong codes in a row: code entry is locked for 24 hours (common.js, shared
+  // with the watch page). True while it is locked.
+  function paintLock() {
+    const input = $("#vw-code");
+    const btn = $("#vw-code-go");
+    if (!input || !btn) {
+      clearInterval(state.lockTimer);
+      state.lockTimer = 0;
+      return false;
+    }
+    const left = C.codeLockLeft();
+    if (left <= 0) {
+      input.disabled = false;
+      btn.disabled = false;
+      if (state.lockTimer) {
+        clearInterval(state.lockTimer);
+        state.lockTimer = 0;
+        setCodeMsg(t("watch.lockoutOver"), "ok");
+      }
+      return false;
+    }
+    input.disabled = true;
+    btn.disabled = true;
+    setCodeMsg(t("watch.lockout", { time: lockClock(left) }), "error");
+    if (!state.lockTimer) state.lockTimer = setInterval(paintLock, 1000);
+    return true;
+  }
+
+  // content_unlock: the code against this video and this device.
+  // -> { ok: true, url, linked, freed } | { ok: false, reason, message }
+  async function unlock(code, { silent = false, link = false } = {}) {
+    const clean = String(code || "").replace(/\D/g, "");
+    if (!/^\d{6}$/.test(clean)) return { ok: false, reason: "invalid", message: t("code.invalid") };
+    const age = Number(state.data.content.age) || 13;
+    const args = {
+      p_id: state.id,
+      p_member: V.memberId(),
+      p_code: clean,
+      p_mac: C.deviceMac(),
+      p_name: C.deviceName(),
+      p_ip: "",
+      p_silent: Boolean(silent),
+      p_link: Boolean(link),
+    };
+    const res = await V.call("content_unlock", args);
+    if (!res.ok) return { ok: false, reason: res.setup ? "setup" : "error", message: t(res.setup ? "code.setup" : "code.error") };
+    const d = res.data && typeof res.data === "object" ? res.data : {};
+    if (d.ok && d.url) {
+      // the gateway passed no address on: the browser looks it up (as on the watch page)
+      if (d.kept && !d.ip) {
+        C.publicIp()
+          .then((ip) => {
+            if (ip) C.rpc("code_use", { p_code: clean, p_mac: args.p_mac, p_name: args.p_name, p_ip: ip, p_age: age, p_silent: true }).catch(() => {});
+          })
+          .catch(() => {});
+      }
+      return { ok: true, url: d.url, linked: Boolean(d.linked), freed: Array.isArray(d.freed) ? d.freed : [] };
+    }
+    // the video itself went away or is out of reach (not_found is about the code)
+    if (d.reason === "access" || d.reason === "no_video") return { ok: false, reason: "access", message: t("vid.actFail") };
+    return C.codeFailure(d.reason || "error", d, { silent, requiredAge: age }, clean);
+  }
+
+  // The code remembered in this browser opens the video without being typed — while
+  // it is still linked to this device. One that was unlinked, used elsewhere, deleted
+  // or ended is forgotten (and the box says why); one that is only too young for this
+  // video stays for the next one.
+  async function tryStoredCode() {
+    const stored = C.getStoredCode();
+    if (!stored) return;
+    const r = await unlock(stored, { silent: true, link: true });
+    if (r.ok) {
+      state.data.content.url = r.url;
+      state.unlocked = true;
+      return;
+    }
+    if (["not_found", "expired", "disabled", "banned", "other_device", "unlinked", "invalid"].includes(r.reason)) C.clearStoredCode();
+    if (r.reason !== "error") state.codeIssue = r.message;
+  }
+
+  function wireCodeGate() {
+    const form = $("#vw-code-form");
+    if (!form) return;
+    const input = $("#vw-code");
+    input.addEventListener("input", () => {
+      const digits = input.value.replace(/\D/g, "").slice(0, 6);
+      if (digits !== input.value) input.value = digits;
+    });
+    form.addEventListener("submit", submitCode);
+    paintLock();
+  }
+
+  async function submitCode(e) {
+    e.preventDefault();
+    if (paintLock()) {
+      toast(t("watch.lockoutToast"));
+      return;
+    }
+    const input = $("#vw-code");
+    const btn = $("#vw-code-go");
+    const code = input.value.replace(/\D/g, "");
+    const remember = Boolean($("#vw-code-remember")?.checked);
+    btn.disabled = true;
+    const r = await unlock(code, { silent: false, link: remember });
+    btn.disabled = false;
+    if (!r.ok) {
+      // a valid code that is too young, or linked to another device, is not a wrong guess
+      const counts = !["setup", "error", "invalid", "age", "other_device", "device", "access"].includes(r.reason);
+      if (counts) {
+        const lock = C.recordFailedCode();
+        if (lock.until > Date.now()) {
+          paintLock();
+          toast(t("watch.lockoutToast"));
+          return;
+        }
+        setCodeMsg(`${r.message} ${t("watch.triesLeft", { n: Math.max(0, C.CODE_FAIL_MAX - lock.fails) })}`);
+      } else {
+        setCodeMsg(r.message);
+      }
+      input.focus();
+      input.select();
+      return;
+    }
+    C.clearCodeLock();
+    // remembered: not asked again in this browser, for every video, title or channel that needs a code
+    if (remember) C.setStoredCode(code);
+    state.codeIssue = "";
+    const accepted = remember ? t("watch.codeSaved") : t("watch.codeOk");
+    toast(r.linked && !r.freed.length ? `${accepted} ${t("watch.devAdded")}` : accepted);
+    applyUnlock(r.url);
+    startPlayback();
+  }
+
+  function applyUnlock(url) {
+    state.data.content.url = url;
+    state.unlocked = true;
+    state.info = V.parseVideo(url);
+    const box = $("#vw-player");
+    if (box) {
+      box.classList.remove("is-gated");
+      box.innerHTML = playerIdleHtml(state.data.content);
+    }
+    const under = $(".vw-under");
+    if (under) under.innerHTML = underHtml();
   }
 
   function setPlaying(on) {
@@ -189,7 +391,7 @@
     const box = $("#vw-player");
     const c = state.data.content;
     const info = state.info;
-    if (!box || !info) return;
+    if (!box || !info || gated()) return;
     box.classList.add("is-started");
     if (info.provider === "file" || info.provider === "hls") {
       box.innerHTML = `<video class="vw-video" controls playsinline preload="metadata" ${c.thumb ? `poster="${esc(c.thumb)}"` : ""}></video>`;
@@ -264,10 +466,18 @@
     return `<span class="vw-chip ${cls}">${esc(text)}</span>`;
   }
 
+  // Under the player: the minutes counted, "Open on …" for a link that is not a known player.
+  function underHtml() {
+    const openable = state.data.access === "ok" && state.info && !["youtube", "vimeo", "dailymotion"].includes(state.info.provider);
+    return `<span class="vw-minutes" id="vw-minutes"${state.minutes ? "" : " hidden"}>${icon("clock", 14)}<span>${state.minutes ? esc(t("vid.minutesCounted", { n: state.minutes })) : ""}</span></span>
+        ${openable ? `<a class="vw-open" href="${esc(state.info.url)}" target="_blank" rel="noopener noreferrer">${icon("ext", 14)}<span>${esc(t("vid.openOn", { host: state.info.host }))}</span></a>` : ""}`;
+  }
+
   function render() {
     const { content: c, owner, access, mine } = state.data;
     document.title = `${c.title} — CineAura`;
     state.info = c.url ? V.parseVideo(c.url) : null;
+    const needCode = gated();
     const href = V.contentHref(c.id);
     const chips = [
       Number(c.age) > 3 ? chip(V.ageLabel(c.age), "is-age") : "",
@@ -275,13 +485,9 @@
       c.language ? chip(V.langLabel(c.language)) : "",
       c.country ? chip(V.regionLabel(c.country)) : "",
     ].join("");
-    const openable = access === "ok" && state.info && !["youtube", "vimeo", "dailymotion"].includes(state.info.provider);
     $("#vw-main").innerHTML = `
-      <div class="vw-player" id="vw-player">${access === "ok" ? playerIdleHtml(c) : lockedHtml(c, access)}</div>
-      <div class="vw-under">
-        <span class="vw-minutes" id="vw-minutes" hidden>${icon("clock", 14)}<span></span></span>
-        ${openable ? `<a class="vw-open" href="${esc(state.info.url)}" target="_blank" rel="noopener noreferrer">${icon("ext", 14)}<span>${esc(t("vid.openOn", { host: state.info.host }))}</span></a>` : ""}
-      </div>
+      <div class="vw-player${needCode ? " is-gated" : ""}" id="vw-player">${access !== "ok" ? lockedHtml(c, access) : needCode ? codeGateHtml(c) : playerIdleHtml(c)}</div>
+      <div class="vw-under">${underHtml()}</div>
       <h1 class="vw-title">${esc(c.title)}</h1>
       <div class="vw-meta">
         <span>${esc(t("vid.viewsN", { n: V.fmtNum(c.views) }))}</span>
@@ -314,6 +520,7 @@
         ${Array.isArray(c.tags) && c.tags.length ? `<div class="vw-tags">${c.tags.map((x) => `<a href="${V.searchHref({ tag: x })}"><bdi>#${esc(x)}</bdi></a>`).join("")}</div>` : ""}
         <p class="vw-desc-foot muted">${esc(t("vid.publishedOn", { date: V.fullDate(c.publish_at) }))} · <a href="${V.searchHref({ owner: owner.username })}">${esc(t("vid.moreFrom", { name: owner.username }))}</a></p>
       </section>
+      <div class="vw-offers vw-offers--inline" id="vw-offers-m" hidden></div>
       <section class="vw-comments" id="comments" aria-labelledby="vw-com-h">
         <h2 id="vw-com-h">${esc(t("vid.comments"))} <span class="vw-count" id="vw-com-count">${access === "ok" ? esc(V.fmtNum(c.comments)) : ""}</span></h2>
         <div id="vw-com-body">${access === "ok" ? `<p class="muted">${esc(t("common.loading"))}</p>` : `<p class="muted">${esc(t("vid.commentsLocked"))}</p>`}</div>
@@ -321,6 +528,7 @@
     C.hydrateAvatars($("#vw-main"));
     paintVote();
     wire();
+    if (needCode) wireCodeGate();
     if (access === "ok") {
       V.track([c.id], "view");
       loadComments();
@@ -340,6 +548,7 @@
     const main = $("#vw-main");
     main.addEventListener("click", async (e) => {
       if (e.target.closest("[data-play]")) {
+        if (gated()) return $("#vw-code")?.focus();
         startPlayback();
         return;
       }
@@ -536,15 +745,141 @@
     V.observeCards(box);
   }
 
+  // ---------------------------------------------------------------- Content.html alone: the 50 most …
+  // minutes = watched minutes, likes = recommendations (content_search "recs"), shares
+  const TOPS = [
+    { key: "minutes", sort: "minutes", icon: "clock" },
+    { key: "likes", sort: "recs", icon: "up" },
+    { key: "shares", sort: "shares", icon: "share" },
+  ];
+  const TOP_LIMIT = 50;
+  const OFFERS_AFTER = 12; // the offers row comes after this many videos
+  const hub = { key: "minutes", cache: {}, seq: 0 };
+
+  function statHtml(key, item) {
+    if (key === "likes") return `${icon("up", 14)}<span>${esc(t("vid.hub.statLikes", { n: V.fmtCount(item.likes) }))}</span>`;
+    if (key === "shares") return `${icon("share", 14)}<span>${esc(t("vid.hub.statShares", { n: V.fmtCount(item.shares) }))}</span>`;
+    return `${icon("clock", 14)}<span>${esc(t("vid.hub.statMinutes", { n: V.fmtCount(item.minutes) }))}</span>`;
+  }
+
+  function renderHub() {
+    const fromUrl = String(params.get("top") || "").toLowerCase();
+    hub.key = TOPS.some((x) => x.key === fromUrl) ? fromUrl : "minutes";
+    document.title = `${t("vid.hub.title")} — CineAura`;
+    const root = $("#vw-root");
+    root.classList.add("is-hub");
+    const form = $("#vw-search");
+    const layout = root.querySelector(".vw-layout");
+    const hero = document.createElement("section");
+    hero.className = "glass vh-hero";
+    hero.innerHTML = `
+      <span class="eyebrow">${esc(t("nav.videos"))}</span>
+      <h1>${esc(t("vid.hub.title"))}</h1>
+      <p class="muted">${esc(t("vid.hub.lead"))}</p>`;
+    if (form) hero.appendChild(form);
+    const top = document.createElement("section");
+    top.className = "vh-top";
+    top.setAttribute("aria-labelledby", "vh-top-h");
+    top.innerHTML = `
+      <div class="vh-top-head">
+        <h2 id="vh-top-h">${esc(t("vid.hub.topTitle", { n: TOP_LIMIT }))}</h2>
+        <div class="follow-tabs vh-tabs" role="tablist" aria-label="${esc(t("vid.hub.tabsLabel"))}">
+          ${TOPS.map((x) => `<button type="button" role="tab" class="follow-tab" id="vh-tab-${x.key}" data-top="${x.key}" aria-controls="vh-grid">${icon(x.icon, 15)}<span>${esc(t(`vid.hub.tab.${x.key}`))}</span></button>`).join("")}
+        </div>
+      </div>
+      <p class="muted vh-note" id="vh-note"></p>
+      <ol class="vgrid vh-grid" id="vh-grid" role="tabpanel" aria-live="polite"></ol>`;
+    layout?.replaceWith(hero, top);
+    const tabs = top.querySelector(".vh-tabs");
+    tabs.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-top]");
+      if (btn && btn.dataset.top !== hub.key) selectTop(btn.dataset.top, true);
+    });
+    // arrows move between the tabs (the tab pattern)
+    tabs.addEventListener("keydown", (e) => {
+      const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+      if (!keys.includes(e.key)) return;
+      e.preventDefault();
+      const list = TOPS.map((x) => x.key);
+      const rtl = document.documentElement.dir === "rtl";
+      let i = list.indexOf(hub.key);
+      if (e.key === "Home") i = 0;
+      else if (e.key === "End") i = list.length - 1;
+      else i = (i + ((e.key === "ArrowRight") !== rtl ? 1 : -1) + list.length) % list.length;
+      selectTop(list[i], true);
+      tabs.querySelector(`[data-top="${list[i]}"]`)?.focus();
+    });
+    selectTop(hub.key, false);
+  }
+
+  async function selectTop(key, push) {
+    hub.key = key;
+    document.querySelectorAll(".vh-tabs [data-top]").forEach((b) => {
+      const on = b.dataset.top === key;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    const grid = $("#vh-grid");
+    grid.setAttribute("aria-labelledby", `vh-tab-${key}`);
+    $("#vh-note").textContent = t(`vid.hub.note.${key}`);
+    if (push) {
+      const q = new URLSearchParams(location.search);
+      if (key === "minutes") q.delete("top");
+      else q.set("top", key);
+      const qs = q.toString();
+      history.replaceState(history.state, "", `${location.pathname}${qs ? `?${qs}` : ""}`);
+    }
+    const seq = (hub.seq += 1);
+    if (!hub.cache[key]) {
+      grid.setAttribute("aria-busy", "true");
+      grid.innerHTML = `<li class="vh-wait"><div class="loader" style="display:grid"><div class="spinner"></div></div></li>`;
+      const sort = TOPS.find((x) => x.key === key).sort;
+      const res = await V.call("content_search", { p_member: V.memberId(), p_sort: sort, p_limit: TOP_LIMIT });
+      if (seq !== hub.seq) return;
+      grid.removeAttribute("aria-busy");
+      if (!res.ok) {
+        grid.innerHTML = `<li class="glass vs-none"><p>${esc(t(res.setup ? "vid.err.pageText.setup" : "vid.err.pageText.load"))}</p></li>`;
+        return;
+      }
+      hub.cache[key] = Array.isArray(res.data?.items) ? res.data.items : [];
+    }
+    drawTop(key);
+  }
+
+  function drawTop(key) {
+    const grid = $("#vh-grid");
+    const items = hub.cache[key] || [];
+    if (!items.length) {
+      grid.innerHTML = `<li class="glass vs-none vh-none">
+          <p><b>${esc(t("vid.hub.none"))}</b></p>
+          <p class="muted">${esc(t("vid.hub.noneText"))}</p>
+          <a class="btn btn-lg btn-primary" href="./Profile.html#content">${esc(t("vid.hub.create"))}</a>
+        </li>`;
+      return;
+    }
+    const cards = items.map((x, i) => `<li class="vh-item">${V.cardHtml(x, { rank: i + 1, stat: statHtml(key, x) })}</li>`);
+    const at = Math.min(OFFERS_AFTER, cards.length);
+    cards.splice(at, 0, `<li class="vh-offers" id="vh-offers" hidden></li>`);
+    grid.innerHTML = cards.join("");
+    V.observeCards(grid);
+    window.CineAuraOffers?.mount($("#vh-offers"), { limit: 5, layout: "row" });
+  }
+
   async function boot() {
     C.setupChrome();
-    if (!state.id) return showError("not_found");
+    if (!state.id) return renderHub();
     const res = await V.call("content_get", { p_id: state.id, p_member: V.memberId() });
     if (!res.ok) return showError(res.setup ? "setup" : "load");
     if (!res.data?.ok) return showError(res.data?.reason);
     state.data = res.data;
+    // 13+: the code remembered in this browser opens it without being typed
+    if (gated()) await tryStoredCode();
     render();
     loadSuggestions();
+    // the side column on a wide screen; under the description on a narrow one (css/videos.css)
+    window.CineAuraOffers?.mount($("#vw-offers"), { limit: 5, layout: "side" });
+    window.CineAuraOffers?.mount($("#vw-offers-m"), { limit: 5, layout: "side" });
   }
 
   document.addEventListener("DOMContentLoaded", boot);

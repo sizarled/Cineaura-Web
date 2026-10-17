@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="css/style.css" />
   <link rel="stylesheet" href="css/prize.css" />
   <link rel="stylesheet" href="css/browse.css" />
+  <link rel="stylesheet" href="css/videos.css" />
   <link rel="stylesheet" href="css/facebook.css" />
   <link rel="stylesheet" href="css/mobile.css" />
 </head>
@@ -248,11 +249,39 @@
         </div>
       </section>
 
+      <!-- Members' videos (sql/content.sql): the most watched ones, filled by
+           js/home-videos.js; Explore opens Content.html (the search box and the 50
+           most watched / liked / shared videos). -->
+      <section class="section" id="videos">
+        <div class="container">
+          <div class="section-head">
+            <div>
+              <div class="kicker"><span class="kicker-num">06</span><span class="eyebrow" data-i18n="home.vids.kicker">From the community</span></div>
+              <h2 data-i18n="home.vids.h2">Members’ videos</h2>
+            </div>
+            <p data-i18n="home.vids.p">Videos shared by CineAura members. Explore them: search, or browse the 50 most watched, most liked and most shared.</p>
+          </div>
+        </div>
+        <div class="marquee-wrap hv-wrap" id="videos-row" hidden>
+          <div class="marquee hv-track" id="videos-track" aria-busy="true"></div>
+        </div>
+        <div class="container">
+          <div class="hv-cta">
+            <a class="btn btn-lg btn-primary hv-explore" href="./Content.html" data-i18n="home.vids.explore">Explore</a>
+            <nav class="hv-chips" aria-label="The 50 most popular videos" data-i18n-aria="home.vids.listsLabel">
+              <a class="hv-chip" href="./Content.html" data-i18n="vid.hub.tab.minutes">Most watched</a>
+              <a class="hv-chip" href="./Content.html?top=likes" data-i18n="vid.hub.tab.likes">Most liked</a>
+              <a class="hv-chip" href="./Content.html?top=shares" data-i18n="vid.hub.tab.shares">Most shared</a>
+            </nav>
+          </div>
+        </div>
+      </section>
+
       <section class="section" id="iptv">
         <div class="container">
           <div class="section-head">
             <div>
-              <div class="kicker"><span class="kicker-num">06</span><span class="eyebrow" data-i18n="home.iptv.kicker">Live television</span></div>
+              <div class="kicker"><span class="kicker-num">07</span><span class="eyebrow" data-i18n="home.iptv.kicker">Live television</span></div>
               <h2 data-i18n="home.iptv.h2">IPTV Channels</h2>
             </div>
             <p data-i18n="home.iptv.p">Jump into free public streams or unlock the premium live lineup.</p>
@@ -297,7 +326,7 @@
         <div class="container">
           <div class="section-head">
             <div>
-              <div class="kicker"><span class="kicker-num">07</span><span class="eyebrow" data-i18n="prize.homeKicker">Win something</span></div>
+              <div class="kicker"><span class="kicker-num">08</span><span class="eyebrow" data-i18n="prize.homeKicker">Win something</span></div>
               <h2 data-i18n="prize.available">Available prizes</h2>
             </div>
             <p data-i18n="prize.homeP">Open prizes you can subscribe to right now.</p>
@@ -311,7 +340,7 @@
         <div class="container">
           <div class="glass app-card">
             <div class="app-copy">
-              <div class="kicker"><span class="kicker-num">08</span><span class="eyebrow" data-i18n="home.app.kicker">Get the app</span></div>
+              <div class="kicker"><span class="kicker-num">09</span><span class="eyebrow" data-i18n="home.app.kicker">Get the app</span></div>
               <h2 data-i18n="home.apps.h2">CineAura on all your screens</h2>
               <p class="app-lead" data-i18n="home.apps.p">Movies, series and live TV on your computer, phone and TV. Download the app for your device.</p>
               <ul class="iptv-feats app-feats">
@@ -341,7 +370,7 @@
         <div class="container">
           <div class="section-head">
             <div>
-              <div class="kicker"><span class="kicker-num">09</span><span class="eyebrow" data-i18n="home.plans.kicker">Membership</span></div>
+              <div class="kicker"><span class="kicker-num">10</span><span class="eyebrow" data-i18n="home.plans.kicker">Membership</span></div>
               <h2 data-i18n="home.plans.h2">Plans & Pricing</h2>
             </div>
             <p data-i18n="home.plans.p">Every plan needs an account. Choose how long your access code stays active.</p>
@@ -428,7 +457,7 @@
         <div class="container">
           <div class="section-head">
             <div>
-              <div class="kicker"><span class="kicker-num">10</span><span class="eyebrow" data-i18n="home.support.kicker">We’re here</span></div>
+              <div class="kicker"><span class="kicker-num">11</span><span class="eyebrow" data-i18n="home.support.kicker">We’re here</span></div>
               <h2 data-i18n="home.support.h2">Support & Contact</h2>
             </div>
             <p data-i18n="home.support.p">Send a message or reach the team on WhatsApp and Telegram.</p>
@@ -535,6 +564,8 @@
   <script src="js/common.js"></script>
   <script src="js/main.js"></script>
   <script src="js/home-channels.js"></script>
+  <script src="js/videos.js"></script>
+  <script src="js/home-videos.js"></script>
   <script src="js/prize-rules.js"></script>
   <script src="js/prize.js"></script>
 </body>

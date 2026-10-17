@@ -275,7 +275,7 @@
     return HUES[h % HUES.length];
   }
 
-  function thumbHtml(item, { badges = true } = {}) {
+  function thumbHtml(item, { badges = true, rank = 0 } = {}) {
     const title = String(item?.title || "");
     const initial = escapeHtml((title.trim()[0] || "▶").toUpperCase());
     const age = Number(item?.age || item?.age_rating || 3);
@@ -285,13 +285,15 @@
       <span class="vthumb-ph" aria-hidden="true">${initial}</span>
       ${item?.thumb ? `<img src="${escapeHtml(item.thumb)}" alt="" loading="lazy" data-vthumb />` : ""}
       ${badges ? `<span class="vbadges">${age > 3 ? `<span class="vbadge vbadge-age">${ageLabel(age)}</span>` : ""}${lock}</span>` : ""}
+      ${rank ? `<span class="vrank"><bdi dir="ltr" aria-hidden="true">#${Number(rank)}</bdi><span class="sr-only">${escapeHtml(t("vid.hub.rank", { n: rank }))}</span></span>` : ""}
       <span class="vthumb-play" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5L13 8L4 13.5V2.5Z"/></svg></span>
     </span>`;
   }
 
   const LOCK_ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 
-  function cardHtml(item, { compact = false } = {}) {
+  // rank: the place in a top list (#1 on the picture); stat: an HTML line under the meta
+  function cardHtml(item, { compact = false, rank = 0, stat = "" } = {}) {
     if (!item?.id) return "";
     const meta = [
       `<bdi>@${escapeHtml(item.owner || "")}</bdi>`,
@@ -302,10 +304,11 @@
       ? `<span class="vcard-tags">${item.tags.slice(0, 4).map((x) => `<bdi>#${escapeHtml(x)}</bdi>`).join("")}</span>`
       : "";
     return `<a class="vcard${compact ? " vcard--compact" : ""}" href="${contentHref(item.id)}" data-vid="${escapeHtml(item.id)}" data-owner="${escapeHtml(item.owner_id || "")}">
-      ${thumbHtml(item)}
+      ${thumbHtml(item, { rank })}
       <span class="vcard-body">
         <b class="vcard-title">${escapeHtml(item.title || "")}</b>
         <span class="vcard-meta">${meta}</span>
+        ${stat ? `<span class="vcard-stat">${stat}</span>` : ""}
         ${!compact && item.description ? `<span class="vcard-desc">${escapeHtml(item.description)}</span>` : ""}
         ${tags}
       </span>
