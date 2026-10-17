@@ -13,7 +13,12 @@
   } = window.CineAura;
 
   const LOCKER_ID = "13897974-6da6-11f1-a2d7-8a5fb7be40ea";
-  const PATREON_URL = "https://www.patreon.com/";
+  // The Patreon page of the premium codes is set in Panel > Settings (sql/point_codes.sql);
+  // the Patreon home page until then.
+  let PATREON_URL = window.CineAura.PATREON_DEFAULT || "https://www.patreon.com/";
+  window.CineAura.siteLink?.("patreon_plans").then((url) => {
+    PATREON_URL = url;
+  });
   const PLANS = {
     Free: { months: 1, duration: "1 month", price: "$0" },
     Silver: { months: 3, duration: "3 months", price: "$5" },
@@ -23,6 +28,7 @@
 
   const state = {
     member: null,
+    acct: null, // account_check(): the day of the ban while the account waits (sql/account_deadline.sql)
     mode: null,
     plan: null,
     bio: "",
@@ -217,6 +223,12 @@
     $("#activate-root").innerHTML = html;
   }
 
+  // "Activate it before …": the day this account is banned if it waits (account_check)
+  function dueHtml() {
+    const text = window.CineAura.accountDeadlineText?.(state.acct, "gate");
+    return text ? `<p class="acct-gate-due" role="status">${text}</p>` : "";
+  }
+
   function stepChoice() {
     const current = state.member.membership_type || "Free";
     const status = normalizeAccountStatus(state.member.status);
@@ -231,6 +243,7 @@
           <div>${t("act.currentPlan")} <strong>${escapeHtml(current)}</strong></div>
           <div>${t("act.status")} <strong>${escapeHtml(status || t("dash.disabledTitle"))}</strong></div>
         </div>
+        ${dueHtml()}
         <div class="choice-grid">
           <button class="choice" id="pick-activate" type="button">
             <strong>${t("act.activate")}</strong>
@@ -295,11 +308,19 @@
         <div class="stack">
           <label class="muted">${t("reg.username")}<input value="${escapeHtml(state.member.username)}" disabled /></label>
           <label class="muted">${t("act.bio")}<textarea id="bio" placeholder="${t("act.bioPh")}">${escapeHtml(state.bio)}</textarea></label>
-          <label class="muted">${t("act.avatarUrl")}<input id="avatar" value="${escapeHtml(state.avatar)}" placeholder="https://..." /></label>
+          ${window.CineAura.avatarFieldHtml({ id: "avatar", value: state.avatar, name: state.member.username, memberId: state.member.member_id })}
           <button class="btn btn-lg btn-primary" id="next" type="button">${t("rest.continue")}</button>
           <button class="btn btn-sm btn-ghost" id="back" type="button">${t("act.back")}</button>
         </div>
       </section>`);
+    // An upload fills the link; "Continue" saves it with the rest of the profile.
+    window.CineAura.wireAvatarField($("#activate-root"), {
+      memberId: state.member.member_id,
+      name: state.member.username,
+      uploaded: (url) => {
+        state.avatar = url;
+      },
+    });
     $("#back").onclick = stepPlan;
     $("#next").onclick = async () => {
       state.bio = $("#bio").value.trim();
@@ -332,6 +353,7 @@
           <div>${t("act.prevDur")} <strong>${escapeHtml(m.membership_duration || "1 month")}</strong></div>
           <div>${t("act.expired")} <strong>${escapeHtml(dateLabel(m.membership_expires_at))}</strong></div>
         </div>
+        ${dueHtml()}
         <div class="plan-pick">
           ${Object.entries(PLANS).map(([name, p]) => `
             <button class="plan-card ${name === current ? "on" : ""}" data-plan="${name}" type="button">
@@ -419,6 +441,8 @@
   }
 
   function stepSuccess(result) {
+    // the day of the ban moved (or went): the banner of the other pages follows at once
+    window.CineAura.accountCheck?.({ fresh: true }).catch(() => {});
     const end = result.end ? result.end.toISOString().slice(0, 10) : "";
     render(`
       <section class="glass wizard">
@@ -445,13 +469,16 @@
       render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.signFirst")}</h1><p class="muted">${t("act.needAcc")}</p><div class="success-actions"><a class="btn btn-lg btn-primary" href="./login.html">${t("nav.signin")}</a></div></section>`);
       return;
     }
+    // an account past its 30 days is banned here (sql/account_deadline.sql)
+    state.acct = await window.CineAura.accountCheck?.({ fresh: true }).catch(() => null);
     state.member = await loadMember(session.member_id);
     if (!state.member) {
       render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.notFound")}</h1><div class="success-actions"><a class="btn btn-lg btn-primary" href="./login.html">${t("nav.signin")}</a></div></section>`);
       return;
     }
     if (normalizeAccountStatus(state.member.status) === "banned") {
-      render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.banned")}</h1><p class="muted">${t("act.noAct")}</p></section>`);
+      const why = window.CineAura.accountBanText?.(state.member.ban_reason);
+      render(`<section class="glass wizard"><span class="eyebrow">${t("act.eyebrow")}</span><h1>${t("act.banned")}</h1><p class="muted">${why ? escapeHtml(why) : t("act.noAct")}</p></section>`);
       return;
     }
     const prof = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(state.member.member_id)}&select=bio,avatar_url`);

@@ -299,6 +299,9 @@ create policy "Update password via recovery"
   using (true)
   with check (true);
 
+-- An account that was not activated, or not re-activated, within 30 days is banned
+-- when it signs in (sql/account_deadline.sql, which carries the same body), and the
+-- answer says why (ban_reason: not_activated | not_renewed).
 create or replace function public.login_member(
   p_login text,
   p_password text
@@ -309,6 +312,7 @@ set search_path = public
 as $$
 declare
   rec members%rowtype;
+  now_banned boolean := false;
 begin
   select * into rec
   from members
@@ -320,8 +324,16 @@ begin
     return json_build_object('ok', false, 'reason', 'not_found');
   end if;
 
+  -- sql/account_deadline.sql: not activated / re-activated within 30 days
+  if rec.status <> 'banned' and to_regprocedure('public._account_ban(text)') is not null then
+    execute 'select public._account_ban($1)' into now_banned using rec.member_id;
+    if now_banned then
+      select * into rec from members where member_id = rec.member_id;
+    end if;
+  end if;
+
   if rec.status = 'banned' then
-    return json_build_object('ok', false, 'reason', 'banned');
+    return json_build_object('ok', false, 'reason', 'banned', 'ban_reason', to_jsonb(rec) ->> 'ban_reason');
   end if;
 
   if rec.password is distinct from p_password then

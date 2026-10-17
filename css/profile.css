@@ -871,15 +871,7 @@ html[data-theme="day"] .vis-private { color: #c62f35; }
   .pm-row .pm-vis-select, .pm-row .prof-actions { grid-column: 2; }
 }
 
-/* Points section: earned and spent side by side (stacked on small screens) */
-.pts-cols {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
-}
-.pts-cols .pt-box { margin-top: 0; }
-.pts-sub { margin: 8px 0 0; font-size: 13px; }
-@media (max-width: 760px) {
-  .pts-cols { grid-template-columns: minmax(0, 1fr); }
-}
+/* The owner's "points available" figure opens Dashboard > Points */
+a.prof-stat-link { color: inherit; text-decoration: none; transition: background 0.15s; }
+a.prof-stat-link:hover { background: rgba(45, 136, 255, 0.12); }
+a.prof-stat-link:hover b { color: var(--cyan); }

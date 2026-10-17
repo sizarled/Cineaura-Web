@@ -626,6 +626,24 @@ select {
     font-size: 14px;
   }
 
+  .gate-remember {
+    margin-bottom: 8px;
+    padding: 7px 10px;
+  }
+
+  .gate-remember b {
+    font-size: 13px;
+  }
+
+  .gate-remember small {
+    font-size: 11.5px;
+  }
+
+  .gate-device {
+    margin-top: 8px !important;
+    font-size: 11px !important;
+  }
+
   /* Countdown: pinned to the bottom of the screen, off the video */
   .countdown-dock {
     position: fixed;

@@ -20,6 +20,8 @@
     verifyCode,
     getStoredCode,
     setStoredCode,
+    clearStoredCode,
+    deviceMac,
     toast,
     getSession,
     supabaseRequest,
@@ -59,7 +61,7 @@
     fetchProviderOffers,
     titleAge,
     tierForAge,
-    AGE_GATE_MIN,
+    titleNeedsCode,
     AGE_NO_PREVIEW,
   } = window.CineAura;
 
@@ -89,6 +91,11 @@
     timer: null,
     lockTimer: null,
     endsAt: 0,
+    // The free preview of a title that needs a code: 5 minutes per title (per
+    // episode), paused while nothing plays — choosing another link does not
+    // start it again.
+    previewLeft: PREVIEW_MS,
+    storedIssue: "",
     watchMinutes: 0,
     viewId: null,
     viewMinutes: 0,
@@ -113,6 +120,11 @@
     linkRows: [],
     linkOrder: [],
     selectedLink: null,
+    // The watch link the big play button starts (null = the main link) and the
+    // one playing now. Choosing a link only arms it: the play button and the
+    // runtime come back, and the minutes count from the press on play.
+    playLink: null,
+    playingLink: null,
     mainRow: null,
     linkFilters: { quality: "", platform: "" },
   };
@@ -231,11 +243,47 @@
     const bg = idleBackdrop();
     idle.style.backgroundImage = bg ? `url('${bg}')` : "none";
     $("#play-runtime").textContent = formatRuntime(currentRuntime());
+    renderPlaySource();
   }
 
+  // Above the play button: the link it is going to start, once one was chosen.
+  function playSourceName(row) {
+    if (row.isMain) return SITE_NAME;
+    const index = state.linkOrder.indexOf(row);
+    const named = index >= 0 ? $(`.src-card[data-index="${index}"] .src-name`)?.textContent : "";
+    const url = String(row.watch_url || "");
+    return named || linkHostName(url) || urlHost(url) || t("watch.source");
+  }
+
+  function renderPlaySource() {
+    const el = $("#play-source");
+    const btn = $("#play-btn");
+    const row = state.playLink;
+    if (!el) return;
+    if (!row) {
+      el.hidden = true;
+      el.innerHTML = "";
+      btn?.setAttribute("aria-label", t("watch.play"));
+      return;
+    }
+    const name = playSourceName(row);
+    const logo = row.isMain
+      ? `<img src="${SITE_LOGO}" alt="" />`
+      : `<img src="${escapeHtml(hostIconUrl(String(row.watch_url || "")))}" alt="" referrerpolicy="no-referrer" />`;
+    el.innerHTML = `${logo}<span>${escapeHtml(name)}</span>${qualityList(row.quality)
+      .slice(0, 3)
+      .map((q) => `<em>${escapeHtml(q)}</em>`)
+      .join("")}`;
+    el.hidden = false;
+    btn?.setAttribute("aria-label", t("watch.playFrom", { name }));
+  }
+
+  // Pauses the preview: the time left is kept for the next press on play.
   function stopTimer() {
+    if (state.timer && state.endsAt) state.previewLeft = Math.max(0, state.endsAt - Date.now());
     clearInterval(state.timer);
     state.timer = null;
+    state.endsAt = 0;
     $("#countdown-dock").classList.remove("show");
   }
 
@@ -393,6 +441,27 @@
     return Boolean($("#player")?.classList.contains("is-playing")) && !state.gated;
   }
 
+  // Watch points (sql/point_levels.sql): the server credits every counted minute at the
+  // rate of the viewer's country times the level of whoever earns — the viewer, and the
+  // member whose link is playing. The IP country found here goes along only for a server
+  // without Cloudflare's country header; the country picked in Site Settings never does.
+  async function creditWatchPoints() {
+    const session = getSession && getSession();
+    const viewer = session?.member_id || state.guestId;
+    if (!state.viewId || !viewer) return;
+    let cc = "";
+    try {
+      cc = (await CineAura.detectGeo()) || "";
+    } catch {
+      cc = "";
+    }
+    const res = await CineAura.rpc("watch_minute", { p_view: state.viewId, p_viewer: viewer, p_country: cc }).catch(() => null);
+    const me = res?.ok ? res.data?.viewer : null;
+    if (me && Number(me.level_after) > Number(me.level)) {
+      toast(t("points.levelUp", { level: CineAura.levelName(me.level_after), n: CineAura.levelMultiplier(me.level_after) }));
+    }
+  }
+
   async function countWatchedMinute() {
     if (!(await adsAllowCounting())) return;
     state.watchMinutes += 1;
@@ -403,6 +472,7 @@
         method: "PATCH",
         body: JSON.stringify({ minutes: state.viewMinutes }),
       });
+      creditWatchPoints();
     }
     const session = getSession && getSession();
     if (session?.member_id) {
@@ -561,9 +631,13 @@
     state.gated = true;
     stopTimer();
     stopEmbed();
+    state.playingLink = null;
     showIdle();
     $("#player-gate").classList.add("show");
     $("#create-code").href = isLoggedIn() ? "./dashboard.html#codes" : "./login.html";
+    // A code works on one device: say which one this is
+    const device = $("#gate-device");
+    if (device) device.textContent = t("watch.deviceLine", { mac: `\u2066${deviceMac()}\u2069` });
     renderAgeNotice();
     if (applyLockUI()) return;
     const msg = $("#gate-msg");
@@ -588,15 +662,21 @@
     showGate(state.storedIssue || t("watch.enterCode"));
   }
 
+  // Starts (or goes on with) the preview of a title that needs a code.
   function startCountdown() {
-    state.endsAt = Date.now() + PREVIEW_MS;
+    if (state.previewLeft <= 0) {
+      lockPlayer();
+      return;
+    }
+    clearInterval(state.timer);
+    state.endsAt = Date.now() + state.previewLeft;
     const dock = $("#countdown-dock");
     const label = $("#countdown-time");
     dock.classList.add("show");
-    label.textContent = "05:00";
-    clearInterval(state.timer);
+    label.textContent = formatClock(state.previewLeft);
     state.timer = setInterval(() => {
       const left = state.endsAt - Date.now();
+      state.previewLeft = Math.max(0, left);
       label.textContent = formatClock(left);
       if (left <= 0) lockPlayer();
     }, 250);
@@ -605,6 +685,8 @@
   function playEmbed() {
     hideGate();
     hideIdle();
+    // (the link list may still be loading: the main link is known by its flag)
+    state.playingLink = state.mainRow || { isMain: true };
     $("#player-frame").src = embedUrl();
     if (state.needsCode && !state.unlocked) startCountdown();
     else stopTimer();
@@ -615,7 +697,9 @@
     activateMainLink();
   }
 
-  function playMemberLink(url, ownerId) {
+  // A member's watch link in the player. Its view is counted here, on play.
+  function playMemberLink(row) {
+    const url = String(row?.watch_url || "");
     if (!url) return;
     if (ageLocked()) {
       lockPlayer();
@@ -628,11 +712,39 @@
     }
     hideGate();
     hideIdle();
+    state.playingLink = row;
     $("#player-frame").src = url;
-    $("#player")?.scrollIntoView({ behavior: "smooth", block: "center" });
     if (state.needsCode && !state.unlocked) startCountdown();
     else stopTimer();
-    ensureViewRow(ownerId || "", url).then(() => startMinuteTicker());
+    ensureViewRow(row.member_id || "", url).then(() => startMinuteTicker());
+    countClick(row);
+  }
+
+  // The big play button: starts the link that was chosen (the main one when
+  // none was).
+  function playArmed() {
+    const row = state.playLink;
+    if (row && !row.isMain && linkKindOf(row) === "watch") playMemberLink(row);
+    else playEmbed();
+  }
+
+  /* Choosing a watch link stops what plays and brings the play button back, with
+     the runtime under it: nothing loads and no minute counts before the press on
+     play. The link that is already playing goes on. */
+  function armLink(row) {
+    const current = state.playingLink;
+    const playing = Boolean(current) && !state.gated && $("#player")?.classList.contains("is-playing");
+    if (playing && (current === row || (current.isMain && row.isMain))) {
+      $("#player")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    state.playLink = row;
+    stopTimer(); // the preview pauses: its time left waits for the press on play
+    stopEmbed();
+    state.playingLink = null;
+    showIdle();
+    setIdleArt();
+    $("#player")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   function linkHost(url) {
@@ -2542,16 +2654,11 @@
     state.selectedLink = row;
     markActiveCard(row);
     renderLinkDetail(row);
-    if (row.isMain) {
-      onPlay();
+    if (!row.isMain && linkKindOf(row) === "download") {
+      $("#link-detail")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
-    if (linkKindOf(row) === "download") {
-      $("#link-detail")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    } else {
-      playMemberLink(String(row.watch_url || ""), row.member_id || "");
-      countClick(row);
-    }
+    armLink(row);
   }
 
   function renderRail(def, rows, indexOf) {
@@ -2628,16 +2735,6 @@
     if (!rail) return;
     const step = Math.max(200, Math.round(rail.clientWidth * 0.8));
     rail.scrollBy({ left: Number(button.dataset.railScroll) * step, behavior: "smooth" });
-  }
-
-  // A click on a watch link: the source opens in the player above. The click is
-  // what the list is ordered by, so it is counted for the publisher.
-  function openWatchLink(row) {
-    const url = String(row.watch_url || "");
-    if (!url) return;
-    markActiveCard(row);
-    playMemberLink(url, row.member_id || "");
-    countClick(row);
   }
 
   // A click on a download link: the new tab is opened by the link itself and the
@@ -3011,11 +3108,7 @@
       lockPlayer();
       return;
     }
-    if (state.needsCode && !state.unlocked && !state.timer) {
-      playEmbed();
-      return;
-    }
-    playEmbed();
+    playArmed();
   }
 
   async function submitCode() {
@@ -3024,15 +3117,15 @@
       return;
     }
     const code = $("#code-input").value.replace(/\D/g, "");
-    const result = await verifyCode(code, ageVerifyOptions());
+    // "Remember the code": kept on this device and linked to it (Dashboard > Codes >
+    // Linked devices). Without it the code opens this title only and links nothing.
+    const remember = Boolean($("#code-remember")?.checked);
+    const result = await verifyCode(code, { ...ageVerifyOptions(), link: remember });
     const msg = $("#gate-msg");
     if (!result.ok) {
-      // A valid code that is too young for this title is not a failed guess.
-      const counts =
-        result.reason !== "setup" &&
-        result.reason !== "error" &&
-        result.reason !== "invalid" &&
-        result.reason !== "age";
+      // A valid code that is too young for this title, or that is linked to
+      // another device, is not a failed guess.
+      const counts = !["setup", "error", "invalid", "age", "other_device", "device"].includes(result.reason);
       if (counts) {
         const lock = recordFailedCode();
         if (lock.until > Date.now()) {
@@ -3052,25 +3145,41 @@
     clearCodeLock();
     stopLockTicker();
     setCodeFormEnabled(true);
-    setStoredCode(code);
+    // Remembered: not asked again on this device, for every title that needs a
+    // code (above 50%, or rated 13+). Without it the next one asks again.
+    if (remember) setStoredCode(code);
+    state.storedIssue = "";
     state.unlocked = true;
     state.needsCode = false;
     msg.textContent = result.message;
     msg.className = "gate-msg ok";
-    toast(t("watch.codeOk"));
-    playEmbed();
+    $("#code-input").value = "";
+    // a device that had no code yet has just joined its owner's Linked devices
+    // (one that left another code for this one was already there)
+    const accepted = remember ? t("watch.codeSaved") : t("watch.codeOk");
+    const added = result.linked && !(result.row?.freed || []).length;
+    toast(added ? `${accepted} ${t("watch.devAdded")}` : accepted);
+    hideGate(); // before playing: a member link refuses to start behind the gate
+    playArmed();
   }
 
+  /* The code remembered on this device ("Remember the code") is checked without
+     being typed. It only works while it is still linked to this device: once it
+     was unlinked in the dashboard, used on another device, deleted or ended, it
+     is forgotten and asked again, with the reason. A code that is only too young
+     for this title stays for the next one; a network failure changes nothing. */
   async function restoreCode() {
     const stored = getStoredCode();
     if (!stored) return;
-    const result = await verifyCode(stored, ageVerifyOptions());
+    const result = await verifyCode(stored, { ...ageVerifyOptions(), silent: true, link: true });
     if (result.ok) {
       state.unlocked = true;
       state.needsCode = false;
       return;
     }
-    if (result.reason === "not_found") return;
+    if (["not_found", "expired", "disabled", "banned", "other_device", "unlinked", "invalid"].includes(result.reason)) {
+      clearStoredCode();
+    }
     state.storedIssue = result.message;
   }
 
@@ -3141,7 +3250,7 @@
         <div class="meta-row">
           <span class="chip score">★ ${ratingText(d.vote_average)} · ${score}%</span>
           <span class="chip">${escapeHtml(date)}</span>
-          <span class="chip chip-age" title="${escapeHtml(ageNoticeText())}">${certChipText(d)}</span>
+          <span class="chip chip-age" dir="ltr" title="${escapeHtml(ageNoticeText())}">${certChipText(d)}</span>
           <span class="chip">${formatRuntime(currentRuntime())}</span>
           <span class="chip" id="watch-min-chip">${minutesLabel(state.watchMinutes)}</span>
           <span class="chip">${escapeHtml(genres)}</span>
@@ -3236,6 +3345,13 @@
   }
 
   async function loadSeason(seasonNumber, preferredEpisode) {
+    // Another episode: what played stops, the play button starts its main link
+    // and its preview time starts again.
+    stopTimer();
+    stopEmbed();
+    state.playLink = null;
+    state.playingLink = null;
+    state.previewLeft = PREVIEW_MS;
     const data = await tmdb(`/tv/${mediaId}/season/${seasonNumber}`);
     state.season = seasonNumber;
     state.episodes = data.episodes || [];
@@ -3333,11 +3449,12 @@
           : `/tv/${mediaId}?append_to_response=credits,similar,recommendations,content_ratings`;
       state.detail = await tmdb(path);
       state.ageInfo = titleAge(state.detail, { mediaType });
-      const score = ratingPercent(state.detail.vote_average);
-      // A title rated for older viewers always asks for a code, whatever its
-      // score, so a child's restricted code cannot open it.
-      state.needsCode = score >= 70 || state.ageInfo.age >= AGE_GATE_MIN;
-      await restoreCode();
+      // A code is asked for a title scored above 50% on TMDB, and always for a
+      // title rated 13+ (13+, 16+, 18+) whatever its score, so a child's
+      // restricted code cannot open it (titleNeedsCode in common.js).
+      state.needsCode = titleNeedsCode(state.detail, state.ageInfo);
+      // the remembered code is only checked (and its device link) where a code is needed
+      if (state.needsCode) await restoreCode();
       await loadMySanctions();
       await loadPostOwner();
       if (state.unlocked) state.needsCode = false;

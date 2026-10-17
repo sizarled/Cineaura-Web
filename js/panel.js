@@ -20,7 +20,7 @@
   } = window.CineAura;
 
   const PANEL_KEY = "cineaura_panel";
-  const ALL_SECTIONS = ["accounts", "links", "iptv", "reports", "prizes", "messages", "staff", "settings"];
+  const ALL_SECTIONS = ["accounts", "links", "iptv", "apps", "reports", "prizes", "messages", "staff", "settings"];
   const FEATURES = ["links", "messages", "comments", "posts", "reports"];
   const requestedSection = new URLSearchParams(location.search).get("section");
 
@@ -30,6 +30,7 @@
     staffRows: [],
     section: ALL_SECTIONS.includes(requestedSection) ? requestedSection : "accounts",
     members: [],
+    extraMembers: [], // looked up one by one (Panel > IPTV): not among the newest 400
     profiles: {},
     sanctions: {},
   };
@@ -190,6 +191,30 @@
     (san.ok && Array.isArray(san.data) ? san.data : []).forEach((s) => {
       state.sanctions[s.member_id] = s;
     });
+    // the day of the automatic ban (not activated / re-activated within 30 days) and
+    // why the rule banned an account (sql/account_deadline.sql; nothing without it)
+    state.deadlines = {};
+    const due = await supabaseRequest(
+      "/rest/v1/members?or=(ban_due_at.not.is.null,ban_reason.not.is.null)&select=member_id,status,ban_due_at,ban_reason,activated_at,membership_expires_at&limit=5000"
+    ).catch(() => null);
+    (due?.ok && Array.isArray(due.data) ? due.data : []).forEach((d) => {
+      state.deadlines[d.member_id] = d;
+    });
+  }
+
+  // " · auto-ban 16 Nov 2026" while an account waits to be activated / re-activated,
+  // " · not activated in 30 days" on an account the rule banned; "" otherwise.
+  function deadlineNote(m) {
+    const d = state.deadlines?.[m.member_id];
+    if (!d) return "";
+    if (accStatus(m) === "banned") {
+      return d.ban_reason ? ` · ${t(`panel.banWhy.${d.ban_reason}`)}` : "";
+    }
+    if (!d.ban_due_at || staffRoleOf(m.member_id)) return "";
+    const waiting = (!d.activated_at && accStatus(m) !== "active") || (d.membership_expires_at && Date.parse(d.membership_expires_at) <= Date.now());
+    if (!waiting) return "";
+    const date = window.CineAura.accountDateText?.(d.ban_due_at) || String(d.ban_due_at).slice(0, 10);
+    return ` · <span class="acct-panel-due">${t("panel.autoBan", { date: escapeHtml(date) })}</span>`;
   }
 
   function renderLogin(mode) {
@@ -270,7 +295,7 @@
             <span>${escapeHtml(me.member_id || "—")}</span>
           </div>
           <nav class="side-nav">
-            ${allowed.map((s) => `<button type="button" data-section="${s}" class="${state.section === s ? "active" : ""}">${t("panel.nav." + s)}</button>`).join("")}
+            ${allowed.map((s) => `<button type="button" data-section="${s}" class="${state.section === s ? "active" : ""}">${window.CineAura.navIcon(s)}<span>${t("panel.nav." + s)}</span></button>`).join("")}
           </nav>
           <button class="btn btn-sm btn-ghost" id="panel-out" type="button" style="margin-top:16px;width:100%">${t("panel.leave")}</button>
         </aside>
@@ -291,6 +316,8 @@
     };
     hydrateAvatars($("#panel-root"));
     hydrateMedals($("#panel-root"));
+    if (allowed.includes("reports")) refreshChannelReportCount();
+    if (allowed.includes("prizes")) refreshClaimCount();
     renderSection();
   }
 
@@ -300,6 +327,7 @@
       accounts: viewAccounts,
       links: viewLinks,
       iptv: viewIptv,
+      apps: viewApps,
       reports: viewReports,
       prizes: viewPrizes,
       messages: viewMessages,
@@ -349,6 +377,9 @@
   async function viewAccounts(main) {
     if (!state.purged) {
       state.purged = true;
+      // accounts past their 30 days are banned first (sql/account_deadline.sql), then
+      // accounts banned for 3 months are deleted (sql/ban_system.sql)
+      await supabaseRequest("/rest/v1/rpc/account_ban_overdue", { method: "POST", body: "{}" }).catch(() => {});
       await supabaseRequest("/rest/v1/rpc/purge_banned_members", { method: "POST", body: "{}" }).catch(() => {});
     }
     await loadDirectory();
@@ -382,7 +413,7 @@
             ${avatarTag(m.member_id, m.username, m.username)}
             <div>
               <strong>@${escapeHtml(m.username)}</strong>
-              <div class="muted">${escapeHtml(m.member_id)} · ${escapeHtml(tr(m.status || "active"))}${role ? " · " + roleLabel(role) : ""}${temp ? " · " + t("panel.tempBan") : ""}${feats ? " · " + escapeHtml(feats) : ""}${del ? " · " + t("panel.autoDelete", { date: del }) : ""}</div>
+              <div class="muted">${escapeHtml(m.member_id)} · ${escapeHtml(tr(m.status || "active"))}${role ? " · " + roleLabel(role) : ""}${temp ? " · " + t("panel.tempBan") : ""}${feats ? " · " + escapeHtml(feats) : ""}${del ? " · " + t("panel.autoDelete", { date: del }) : ""}${deadlineNote(m)}</div>
             </div>
             <div class="acc-actions">
               <button class="btn btn-sm btn-ghost" data-info="${escapeHtml(m.member_id)}" type="button">${t("panel.fullInfo")}</button>
@@ -633,7 +664,32 @@
     };
   }
 
+  // ---------- Reports: watch links (reportlinks) + channels (channel_reports) + the Market (market_reports) ----------
   async function viewReports(main) {
+    const tab = ["channels", "market"].includes(state.reportTab) ? state.reportTab : "links";
+    main.innerHTML = `
+      <p class="eyebrow">${t("panel.nav.reports")}</p>
+      <h1>${t("panel.reportsTitle")}</h1>
+      <div class="tabs follow-tabs" role="tablist">
+        <button type="button" role="tab" class="follow-tab${tab === "links" ? " active" : ""}" aria-selected="${tab === "links"}" data-rtab="links">${t("panel.chr.tabLinks")}</button>
+        <button type="button" role="tab" class="follow-tab${tab === "channels" ? " active" : ""}" aria-selected="${tab === "channels"}" data-rtab="channels">${t("panel.chr.tabChannels")}<span class="follow-count" id="chr-open-count" hidden></span></button>
+        <button type="button" role="tab" class="follow-tab${tab === "market" ? " active" : ""}" aria-selected="${tab === "market"}" data-rtab="market">${t("panel.mkr.tab")}<span class="follow-count" id="mkr-open-count" hidden></span></button>
+      </div>
+      <div class="follow-pane" id="rp-pane"></div>`;
+    main.onclick = (e) => {
+      const btn = e.target.closest("[data-rtab]");
+      if (!btn || btn.dataset.rtab === tab) return;
+      state.reportTab = btn.dataset.rtab;
+      viewReports(main);
+    };
+    const pane = main.querySelector("#rp-pane");
+    if (tab === "channels") await viewChannelReports(pane);
+    else if (tab === "market") await viewMarketReports(pane);
+    else await viewLinkReports(pane);
+    refreshChannelReportCount();
+  }
+
+  async function viewLinkReports(pane) {
     const res = await supabaseRequest("/rest/v1/reportlinks?select=*&order=reported_at.desc&limit=300");
     const rows = res.ok && Array.isArray(res.data) ? res.data : [];
     const subjects = {
@@ -644,9 +700,7 @@
       bad: t("dash.rpt.bad"),
       indirect: t("dash.rpt.indirect"),
     };
-    main.innerHTML = `
-      <p class="eyebrow">${t("panel.nav.reports")}</p>
-      <h1>${t("panel.reportsTitle")}</h1>
+    pane.innerHTML = `
       <p class="muted">${t("panel.reportsLead")}</p>
       ${rows.map((r) => `
         <div class="mini-card" style="margin-bottom:10px">
@@ -660,7 +714,7 @@
             <button class="btn btn-sm btn-ghost" data-verdict="ended" data-url="${escapeHtml(r.watch_url)}" data-sub="${escapeHtml(r.subject)}" type="button">${t("panel.ended")}</button>
           </div>
         </div>`).join("") || `<p class="empty">${t("dash.noReportsIn")}</p>`}`;
-    main.onclick = async (e) => {
+    pane.onclick = async (e) => {
       const btn = e.target.closest("[data-verdict]");
       if (!btn) return;
       const verdict = btn.dataset.verdict;
@@ -672,13 +726,389 @@
       );
       if (!patch.ok) return toast(t("panel.actFail"));
       toast(t("panel.verdictApplied"));
-      viewReports(main);
+      viewLinkReports(pane);
     };
+  }
+
+  // Open channel reports and open Market reports: the badge in the side menu (both) and the
+  // counts on their tabs.
+  async function refreshChannelReportCount() {
+    const [n, m] = await Promise.all([
+      window.CineAura.countRows("/rest/v1/channel_reports?status=eq.open&select=id").catch(() => 0),
+      marketReportCount(),
+    ]);
+    const nav = $('#panel-root .side-nav [data-section="reports"]');
+    if (nav) {
+      nav.querySelector(".crp-badge")?.remove();
+      if (n + m) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge">${n + m > 99 ? "99+" : n + m}</span>`);
+    }
+    [["#chr-open-count", n], ["#mkr-open-count", m]].forEach(([sel, v]) => {
+      const el = $(sel);
+      if (!el) return;
+      el.textContent = String(v);
+      el.hidden = !v;
+    });
+  }
+  // (0 when sql/market.sql is not run, or the account has no Reports section)
+  async function marketReportCount() {
+    const r = await window.CineAura.rpc("market_reports_count", { p_token: state.staff?.token || "" }).catch(() => null);
+    return r?.ok && Number.isFinite(Number(r.data)) ? Number(r.data) : 0;
+  }
+
+  // ---------- Reports > Market (sql/market.sql): the Report button of the store and product
+  // pages. Reports on the same store / product form one card; the team marks them handled, or
+  // suspends the product / the whole store (with a reason the seller reads), and restores it.
+  const MKR_REASONS = ["fake", "scam", "prohibited", "misleading", "offensive", "no_delivery", "other"];
+  async function viewMarketReports(pane) {
+    const filter = ["open", "closed", "all"].includes(state.mkrFilter) ? state.mkrFilter : "open";
+    // a filter clicked while an action redraws the list: the last one asked is drawn
+    const seq = (state.mkrSeq = (state.mkrSeq || 0) + 1);
+    const res = await window.CineAura.rpc("market_reports_admin", { p_token: state.staff?.token || "", p_filter: filter, p_limit: 600 }).catch(() => null);
+    if (seq !== state.mkrSeq || !pane.isConnected) return;
+    const chip = (k) => `<button type="button" class="crp-filter${filter === k ? " active" : ""}" data-mkr-filter="${k}">${t(`panel.chr.${k}`)}</button>`;
+    const head = `
+      <p class="muted">${t("panel.mkr.lead")}</p>
+      <div class="crp-bar"><div class="crp-filters">${chip("open")}${chip("closed")}${chip("all")}</div></div>`;
+    if (!res?.ok || !res.data?.ok) {
+      const raw = JSON.stringify(res?.data || {});
+      const key = /staff_auth/.test(raw) ? "pza.errAuth"
+        : /staff_forbidden/.test(raw) ? "panel.mkr.forbidden"
+        : res?.status === 404 || /PGRST202|42883|schema cache|does not exist/i.test(raw) ? "panel.mkr.setup" : "panel.actFail";
+      pane.innerHTML = `${head}<div class="form-alert show warn">${t(key)}</div>`;
+      pane.onclick = (e) => onMarketReportClick(e, pane, []);
+      return;
+    }
+    const groups = [];
+    const byKey = new Map();
+    (res.data.items || []).forEach((r) => {
+      const key = `${r.kind}:${r.target_id}`;
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, kind: r.kind, id: r.target_id, store: r.store, product: r.product, owner: r.owner, items: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      g.items.push(r);
+    });
+    const reasonText = (r) => t(MKR_REASONS.includes(r) ? `mkt.rp.r.${r}` : r);
+    const statusOf = (g) => (g.items.some((x) => x.status === "open") ? "open" : g.items.every((x) => x.status === "dismissed") ? "dismissed" : "resolved");
+    const card = (g, i) => {
+      const status = statusOf(g);
+      const isStore = g.kind === "store";
+      const st = g.store || {};
+      const pr = g.product || {};
+      const name = isStore ? st.name || g.id : pr.title || g.id;
+      const img = isStore ? st.logo : pr.image;
+      const gone = isStore ? !g.store : !g.product || pr.status === "deleted";
+      const suspended = isStore ? Boolean(st.suspended) : pr.status === "suspended";
+      const why = isStore ? st.suspended_reason : pr.suspended_reason;
+      const href = isStore ? `./Market.html?Store=${encodeURIComponent(g.id)}` : `./Market.html?Product=${encodeURIComponent(g.id)}`;
+      const counts = {};
+      g.items.forEach((x) => { counts[x.reason] = (counts[x.reason] || 0) + 1; });
+      const reasons = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      return `
+        <article class="crp-card mkr-card ${status}" data-mkr="${i}">
+          <div class="crp-top">
+            <span class="crp-logo mkr-img"><img src="${escapeHtml(img || initialsAvatar(name || "CA"))}" alt="" loading="lazy" /></span>
+            <div class="crp-title">
+              <h3>${gone ? escapeHtml(name) : `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`}</h3>
+              <p>${t(isStore ? "panel.mkr.kindStore" : "panel.mkr.kindProduct")} · <span dir="ltr">${escapeHtml(g.id)}</span>${!isStore && st.name ? ` · ${t("panel.mkr.inStore")} <strong>${escapeHtml(st.name)}</strong>` : ""} · ${t("mkt.seller")}: <strong>@${escapeHtml(g.owner?.username || "")}</strong></p>
+              <p>${t("panel.chr.last", { date: escapeHtml(fmtWhen(g.items[0].created_at)) })}</p>
+            </div>
+            <span class="crp-count">${t("panel.chr.reports", { n: g.items.length })}</span>
+          </div>
+          <div class="crp-tags">
+            <span class="crp-tag st-${status}">${t(`panel.chr.st.${status}`)}</span>
+            ${suspended ? `<span class="crp-tag mkr-susp">${t(isStore ? "panel.mkr.storeSuspended" : "panel.mkr.productSuspended")}</span>` : ""}
+            ${!isStore && st.suspended && !suspended ? `<span class="crp-tag mkr-susp">${t("panel.mkr.storeSuspended")}</span>` : ""}
+            ${!isStore && pr.status === "hidden" ? `<span class="crp-tag">${t("panel.mkr.hidden")}</span>` : ""}
+            ${gone ? `<span class="crp-tag">${t("panel.mkr.gone")}</span>` : ""}
+            ${reasons.map(([r, n]) => `<span class="crp-tag">${escapeHtml(reasonText(r))} × ${n}</span>`).join("")}
+          </div>
+          ${suspended && why ? `<p class="mkr-why">${t("panel.mkr.why")} <q>${escapeHtml(why)}</q></p>` : ""}
+          <details class="crp-details">
+            <summary>${t("panel.chr.reporters")} (${g.items.length})</summary>
+            <ul class="crp-items">${g.items.map((x) => `
+              <li class="crp-item">
+                <strong>@${escapeHtml(x.reporter?.username || x.reporter?.id || "")}</strong>
+                <span class="muted"> · ${escapeHtml(x.reporter?.id || "")} · ${escapeHtml(reasonText(x.reason))} · ${escapeHtml(fmtWhen(x.created_at))} · ${t(`panel.chr.st.${x.status}`)}</span>
+                ${x.note ? `<p>${escapeHtml(x.note)}</p>` : ""}
+                ${x.handled_by && x.status !== "open" ? `<p class="muted">${escapeHtml(x.handled_by)} · ${escapeHtml(fmtWhen(x.handled_at))}</p>` : ""}
+              </li>`).join("")}
+            </ul>
+          </details>
+          <div class="crp-actions">
+            ${gone ? "" : suspended
+              ? `<button class="btn btn-sm btn-primary" type="button" data-mkr-restore="${g.kind}">${t(isStore ? "panel.mkr.restoreStore" : "panel.mkr.restoreProduct")}</button>`
+              : `<button class="btn btn-sm btn-danger" type="button" data-mkr-suspend="${g.kind}">${t(isStore ? "panel.mkr.suspendStore" : "panel.mkr.suspendProduct")}</button>`}
+            ${!isStore && g.store ? (st.suspended
+              ? `<button class="btn btn-sm btn-ghost" type="button" data-mkr-restore="store">${t("panel.mkr.restoreStore")}</button>`
+              : `<button class="btn btn-sm btn-ghost" type="button" data-mkr-suspend="store">${t("panel.mkr.suspendStore")}</button>`) : ""}
+            ${status === "open" ? `
+              <button class="btn btn-sm btn-ghost" type="button" data-mkr-set="resolved">${t("panel.mkr.handled")}</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-mkr-set="dismissed">${t("panel.chr.dismiss")}</button>` : `
+              <button class="btn btn-sm btn-ghost" type="button" data-mkr-set="open">${t("panel.chr.reopen")}</button>`}
+            <button class="btn btn-sm btn-danger" type="button" data-mkr-delete>${t("panel.chr.delete")}</button>
+          </div>
+          <div data-mkr-slot></div>
+        </article>`;
+    };
+    pane.innerHTML = `${head}<div class="crp-list">${groups.map(card).join("") || `<p class="empty">${t("panel.mkr.none")}</p>`}</div>`;
+    pane.onclick = (e) => onMarketReportClick(e, pane, groups);
+    pane.onsubmit = (e) => onMarketSuspend(e, pane, groups);
+  }
+
+  const mkrDone = (pane, msg) => {
+    toast(msg);
+    viewMarketReports(pane).then(refreshChannelReportCount);
+  };
+  const mkrFail = (r) => {
+    const raw = JSON.stringify(r?.data || {});
+    const why = r?.data?.reason;
+    toast(t(/staff_auth/.test(raw) ? "pza.errAuth" : /staff_forbidden/.test(raw) ? "panel.mkr.forbidden"
+      : why === "store" ? "panel.mkr.errStore" : why === "reason" ? "panel.mkr.errReason" : "panel.actFail"));
+  };
+
+  async function onMarketReportClick(e, pane, groups) {
+    const f = e.target.closest("[data-mkr-filter]");
+    if (f) {
+      state.mkrFilter = f.dataset.mkrFilter;
+      viewMarketReports(pane);
+      return;
+    }
+    const btn = e.target.closest("[data-mkr-set], [data-mkr-delete], [data-mkr-suspend], [data-mkr-restore], [data-mkr-cancel]");
+    const cardEl = btn?.closest("[data-mkr]");
+    const g = cardEl && groups[Number(cardEl.dataset.mkr)];
+    if (!g) return;
+    const rpc = (fn, args) => window.CineAura.rpc(fn, { p_token: state.staff?.token || "", ...args }).catch(() => null);
+    const ok = (r) => r?.ok && r.data?.ok;
+    if (btn.hasAttribute("data-mkr-cancel")) {
+      cardEl.querySelector("[data-mkr-slot]").innerHTML = "";
+      return;
+    }
+    if (btn.hasAttribute("data-mkr-set")) {
+      const status = btn.dataset.mkrSet;
+      const items = status === "open" ? g.items.filter((x) => x.status !== "open") : g.items.filter((x) => x.status === "open");
+      if (!items.length) return;
+      const r = await rpc("market_reports_set", { p_ids: items.map((x) => x.id), p_status: status });
+      if (!ok(r)) return mkrFail(r);
+      mkrDone(pane, t("panel.chr.updated"));
+      return;
+    }
+    if (btn.hasAttribute("data-mkr-delete")) {
+      if (!confirm(t("panel.chr.deleteAsk"))) return;
+      const r = await rpc("market_reports_delete", { p_ids: g.items.map((x) => x.id) });
+      if (!ok(r)) return mkrFail(r);
+      mkrDone(pane, t("panel.chr.deleted"));
+      return;
+    }
+    const kind = btn.dataset.mkrSuspend || btn.dataset.mkrRestore;
+    const id = kind === "store" ? g.store?.id || (g.kind === "store" ? g.id : "") : g.id;
+    if (!id) return;
+    if (btn.hasAttribute("data-mkr-restore")) {
+      if (!confirm(t(kind === "store" ? "panel.mkr.restoreStoreAsk" : "panel.mkr.restoreProductAsk"))) return;
+      btn.disabled = true;
+      const r = await rpc("market_moderate", { p_kind: kind, p_id: id, p_action: "restore", p_reason: "" });
+      btn.disabled = false;
+      if (!ok(r)) return mkrFail(r);
+      mkrDone(pane, t(kind === "store" ? "panel.mkr.storeRestored" : "panel.mkr.productRestored"));
+      return;
+    }
+    // suspend: the reason the seller reads first
+    const slot = cardEl.querySelector("[data-mkr-slot]");
+    slot.innerHTML = `
+      <form class="mkr-suspend" data-mkr-form data-kind="${kind}" data-id="${escapeHtml(id)}">
+        <label><span>${t(kind === "store" ? "panel.mkr.reasonStore" : "panel.mkr.reasonProduct")}</span>
+          <textarea name="reason" rows="2" maxlength="300" required placeholder="${escapeHtml(t("panel.mkr.reasonPh"))}"></textarea></label>
+        <p class="muted">${t(kind === "store" ? "panel.mkr.storeEffect" : "panel.mkr.productEffect")}</p>
+        <div class="acc-actions">
+          <button class="btn btn-sm btn-danger" type="submit">${t(kind === "store" ? "panel.mkr.suspendStore" : "panel.mkr.suspendProduct")}</button>
+          <button class="btn btn-sm btn-ghost" type="button" data-mkr-cancel>${t("common.cancel")}</button>
+        </div>
+      </form>`;
+    slot.querySelector("textarea").focus();
+  }
+
+  async function onMarketSuspend(e, pane) {
+    const form = e.target.closest("[data-mkr-form]");
+    if (!form) return;
+    e.preventDefault();
+    const reason = form.reason.value.trim();
+    if (reason.length < 3) {
+      toast(t("panel.mkr.errReason"));
+      form.reason.focus();
+      return;
+    }
+    const kind = form.dataset.kind;
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    const r = await window.CineAura.rpc("market_moderate", { p_token: state.staff?.token || "", p_kind: kind, p_id: form.dataset.id, p_action: "suspend", p_reason: reason }).catch(() => null);
+    btn.disabled = false;
+    if (!r?.ok || !r.data?.ok) return mkrFail(r);
+    mkrDone(pane, t(kind === "store" ? "panel.mkr.storeSuspendedDone" : "panel.mkr.productSuspendedDone"));
+  }
+
+  const chrKey = (r) => `${String(r.package_name || "").trim().toLowerCase()}\n${String(r.channel_name || "").trim().toLowerCase()}`;
+
+  // Reports on the same channel (package + name) form one card; an action on
+  // the card applies to every report inside it.
+  async function viewChannelReports(pane) {
+    const filter = ["open", "closed", "all"].includes(state.chrFilter) ? state.chrFilter : "open";
+    const where = filter === "open" ? "&status=eq.open" : filter === "closed" ? "&status=neq.open" : "";
+    const res = await supabaseRequest(`/rest/v1/channel_reports?select=*${where}&order=reported_at.desc&limit=600`);
+    const chip = (k) => `<button type="button" class="crp-filter${filter === k ? " active" : ""}" data-chr-filter="${k}">${t(`panel.chr.${k}`)}</button>`;
+    const head = `
+      <p class="muted">${t("panel.chr.lead")}</p>
+      <div class="crp-bar"><div class="crp-filters">${chip("open")}${chip("closed")}${chip("all")}</div></div>`;
+    if (!res.ok) {
+      const raw = JSON.stringify(res.data || {});
+      const setup = /PGRST205|42P01|schema cache|does not exist/i.test(raw);
+      pane.innerHTML = `${head}<div class="form-alert show warn">${t(setup ? "panel.chr.setup" : "panel.actFail")}</div>`;
+      pane.onclick = (e) => onChannelReportClick(e, pane, []);
+      return;
+    }
+    const groups = [];
+    const byKey = new Map();
+    (Array.isArray(res.data) ? res.data : []).forEach((r) => {
+      const key = chrKey(r);
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, package_name: r.package_name, channel_name: r.channel_name, group_name: r.group_name, logo_url: r.logo_url, stream_url: r.stream_url, channel_id: r.channel_id, items: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      g.items.push(r);
+      if (!g.logo_url && r.logo_url) g.logo_url = r.logo_url;
+      if (!g.stream_url && r.stream_url) g.stream_url = r.stream_url;
+    });
+    const P = window.CineAuraChannels;
+    const reasonText = (r) => t(`chan.rpt.${r}`);
+    const statusOf = (g) => (g.items.some((x) => x.status === "open") ? "open" : g.items.every((x) => x.status === "dismissed") ? "dismissed" : "resolved");
+    const card = (g, i) => {
+      const status = statusOf(g);
+      const counts = {};
+      g.items.forEach((x) => { counts[x.reason] = (counts[x.reason] || 0) + 1; });
+      const reasons = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      return `
+        <article class="crp-card ${status}" data-crp="${i}">
+          <div class="crp-top">
+            ${P ? P.logoHtml(g, "crp-logo") : ""}
+            <div class="crp-title">
+              <h3>${escapeHtml(g.channel_name)}</h3>
+              <p>${t("panel.chr.package")}: <strong>${escapeHtml(g.package_name)}</strong>${g.group_name ? ` · ${escapeHtml(g.group_name)}` : ""}</p>
+              <p>${t("panel.chr.last", { date: escapeHtml(fmtWhen(g.items[0].reported_at)) })}</p>
+            </div>
+            <span class="crp-count">${t("panel.chr.reports", { n: g.items.length })}</span>
+          </div>
+          <div class="crp-tags">
+            <span class="crp-tag st-${status}">${t(`panel.chr.st.${status}`)}</span>
+            ${reasons.map(([r, n]) => `<span class="crp-tag">${escapeHtml(reasonText(r))} × ${n}</span>`).join("")}
+          </div>
+          <div class="crp-url" title="${escapeHtml(g.stream_url || "")}">${escapeHtml(g.stream_url || t("panel.chr.noUrl"))}</div>
+          <details class="crp-details">
+            <summary>${t("panel.chr.reporters")} (${g.items.length})</summary>
+            <ul class="crp-items">${g.items.map((x) => `
+              <li class="crp-item">
+                <strong>${escapeHtml(x.reporter_name ? `@${x.reporter_name}` : x.reporter_id)}</strong>
+                <span class="muted">${x.reporter_name ? ` · ${escapeHtml(x.reporter_id)}` : ""} · ${escapeHtml(reasonText(x.reason))} · ${escapeHtml(fmtWhen(x.reported_at))} · ${t(`panel.chr.st.${x.status}`)}</span>
+                ${x.note ? `<p>${escapeHtml(x.note)}</p>` : ""}
+                ${x.error_detail ? `<code>${t("panel.chr.error")}: ${escapeHtml(x.error_detail)}</code>` : ""}
+                ${x.handled_by && x.status !== "open" ? `<p class="muted">${escapeHtml(x.handled_by)} · ${escapeHtml(fmtWhen(x.handled_at))}</p>` : ""}
+              </li>`).join("")}
+            </ul>
+          </details>
+          <div class="crp-actions">
+            ${P ? `<button class="btn btn-sm btn-ghost" type="button" data-crp-test>${t("panel.chr.test")}</button>` : ""}
+            ${status === "open" ? `
+              <button class="btn btn-sm btn-primary" type="button" data-crp-set="resolved">${t("panel.chr.fixed")}</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-crp-set="dismissed">${t("panel.chr.dismiss")}</button>
+              <button class="btn btn-sm btn-danger" type="button" data-crp-remove>${t("panel.chr.remove")}</button>` : `
+              <button class="btn btn-sm btn-ghost" type="button" data-crp-set="open">${t("panel.chr.reopen")}</button>`}
+            <button class="btn btn-sm btn-danger" type="button" data-crp-delete>${t("panel.chr.delete")}</button>
+          </div>
+        </article>`;
+    };
+    pane.innerHTML = `${head}<div class="crp-list">${groups.map(card).join("") || `<p class="empty">${t("panel.chr.none")}</p>`}</div>`;
+    pane.onclick = (e) => onChannelReportClick(e, pane, groups);
+  }
+
+  async function onChannelReportClick(e, pane, groups) {
+    const f = e.target.closest("[data-chr-filter]");
+    if (f) {
+      state.chrFilter = f.dataset.chrFilter;
+      viewChannelReports(pane);
+      return;
+    }
+    const btn = e.target.closest("[data-crp-test], [data-crp-set], [data-crp-remove], [data-crp-delete]");
+    const g = btn && groups[Number(btn.closest("[data-crp]")?.dataset.crp)];
+    if (!g) return;
+    const ids = (list) => list.map((x) => Number(x.id)).filter(Boolean).join(",");
+    const stamp = () => ({ handled_by: state.staff?.username || roleLabel(state.staff?.role) || "", handled_at: new Date().toISOString() });
+    const done = (msg) => {
+      toast(msg);
+      viewChannelReports(pane).then(refreshChannelReportCount);
+    };
+    if (btn.hasAttribute("data-crp-test")) {
+      btn.disabled = true;
+      const [row, acc] = await Promise.all([
+        supabaseRequest(`/rest/v1/listchannels?package_name=eq.${restValue(g.package_name)}&channel_name=eq.${restValue(g.channel_name)}&select=*&limit=1`),
+        supabaseRequest(`/rest/v1/iptv?name=eq.${restValue(g.package_name)}&select=*`),
+      ]).catch(() => [{}, {}]);
+      btn.disabled = false;
+      const live = row?.ok && Array.isArray(row.data) ? row.data[0] : null;
+      const channel = live || { id: g.channel_id, package_name: g.package_name, channel_name: g.channel_name, group_name: g.group_name, logo_url: g.logo_url, channel_type: "live", stream_url: g.stream_url };
+      if (!channel.stream_url && g.stream_url) channel.stream_url = g.stream_url;
+      window.CineAuraChannels.open([channel], 0, { report: false, accounts: acc?.ok && Array.isArray(acc.data) ? acc.data : undefined });
+      return;
+    }
+    if (btn.hasAttribute("data-crp-set")) {
+      const status = btn.dataset.crpSet;
+      const items = status === "open" ? g.items.filter((x) => x.status !== "open") : g.items.filter((x) => x.status === "open");
+      if (!items.length) return;
+      const body = status === "open" ? { status, handled_by: "", handled_at: null } : { status, ...stamp() };
+      const r = await supabaseRequest(`/rest/v1/channel_reports?id=in.(${ids(items)})`, { method: "PATCH", body: JSON.stringify(body) });
+      if (!r.ok) return toast(t("panel.actFail"));
+      done(t("panel.chr.updated"));
+      return;
+    }
+    if (btn.hasAttribute("data-crp-remove")) {
+      if (!confirm(t("panel.chr.removeAsk", { name: g.channel_name, pkg: g.package_name }))) return;
+      const del = await supabaseRequest(
+        `/rest/v1/listchannels?package_name=eq.${restValue(g.package_name)}&channel_name=eq.${restValue(g.channel_name)}`,
+        { method: "DELETE" }
+      );
+      if (!del.ok) return toast(t("panel.actFail"));
+      const open = g.items.filter((x) => x.status === "open");
+      if (open.length) {
+        await supabaseRequest(`/rest/v1/channel_reports?id=in.(${ids(open)})`, { method: "PATCH", body: JSON.stringify({ status: "resolved", ...stamp() }) });
+      }
+      done(t("panel.chr.removed"));
+      return;
+    }
+    if (btn.hasAttribute("data-crp-delete")) {
+      if (!confirm(t("panel.chr.deleteAsk"))) return;
+      const r = await supabaseRequest(`/rest/v1/channel_reports?id=in.(${ids(g.items)})`, { method: "DELETE" });
+      if (!r.ok) return toast(t("panel.actFail"));
+      done(t("panel.chr.deleted"));
+    }
   }
 
   // Prizes: three tabs (add / manage / statistics) live in js/panel-prizes.js.
   async function viewPrizes(main) {
-    await window.PanelPrizes.render(main, { staff: state.staff });
+    await window.PanelPrizes.render(main, { staff: state.staff, refreshClaims: refreshClaimCount });
+  }
+
+  // Prize claims waiting for the team (Claim submitted + Claim under review,
+  // sql/prize_claims.sql): the badge on Prizes in the side menu. Prizes > Prize
+  // claims passes the new count after every change.
+  async function refreshClaimCount(known) {
+    const n = Number.isFinite(known)
+      ? known
+      : await window.CineAura.countRows("/rest/v1/prize_claims?status=in.(submitted,review)&select=id").catch(() => 0);
+    const nav = $('#panel-root .side-nav [data-section="prizes"]');
+    if (!nav) return;
+    nav.querySelector(".crp-badge")?.remove();
+    if (n) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge" title="${escapeHtml(t("pzc.pendingN", { n }))}">${n > 99 ? "99+" : n}</span>`);
   }
 
   // ---------- Messages: admin team chat + member requests ----------
@@ -1199,35 +1629,7 @@
   }
 
   // ---------- M3U import -> public.listchannels ----------
-  function parseM3U(text) {
-    const out = [];
-    let cur = null;
-    String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).forEach((raw) => {
-      const line = raw.trim();
-      if (!line) return;
-      if (/^#EXTINF/i.test(line)) {
-        const attrs = {};
-        const stripped = line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ""; });
-        const name = stripped.slice(stripped.indexOf(",") + 1).trim() || attrs["tvg-name"] || "";
-        cur = { name, group: (attrs["group-title"] || "").trim() || "General", logo: attrs["tvg-logo"] || "" };
-      } else if (/^#EXTGRP:/i.test(line) && cur) {
-        cur.group = line.slice(8).trim() || cur.group;
-      } else if (!line.startsWith("#")) {
-        if (cur && cur.name) {
-          const u = line.toLowerCase();
-          const type = u.includes("/movie/") ? "movie" : u.includes("/series/") ? "series" : "live";
-          // "Animation;Kids;Religious" => the channel is added once inside each of those groups.
-          const groups = [...new Set(cur.group.split(";").map((g) => g.trim()).filter(Boolean))];
-          (groups.length ? groups : ["General"]).forEach((g) => {
-            out.push({ channel_name: cur.name.slice(0, 200), group_name: g.slice(0, 120), logo_url: /^https?:\/\//i.test(cur.logo) ? cur.logo : "", channel_type: type });
-          });
-        }
-        cur = null;
-      }
-    });
-    return out;
-  }
-
+  // The parser lives in js/common.js (CineAura.parseM3U): the channel player uses it too.
   async function readM3uText({ url, file }) {
     if (file) {
       if (file.size > 30 * 1024 * 1024) throw new Error("too large");
@@ -1243,38 +1645,240 @@
     return r2.text();
   }
 
-  async function importChannels(pkg, source, replace) {
+  // Columns added by sql/iptv.sql and sql/channels.sql. A database that has not
+  // run them yet keeps working: the write goes again without the column, and the
+  // panel says which file to run.
+  const OPTIONAL_COLS = { iptv: ["epg_url", "assigned_at", "expires_at"], listchannels: ["stream_url", "epg_id"] };
+  const missingCols = new Set();
+
+  function missingColumn(res) {
+    const raw = JSON.stringify(res?.data || {});
+    if (!/PGRST204|42703|schema cache|does not exist/i.test(raw)) return "";
+    const m = /'([a-z_]+)' column/i.exec(raw) || /column "?(?:[a-z_]+\.)?([a-z_]+)"? (?:of relation \S+ )?does not exist/i.exec(raw);
+    return m ? m[1] : "";
+  }
+
+  async function writeTolerant(path, method, body, optional) {
+    const many = Array.isArray(body);
+    const payload = many ? body.map((r) => ({ ...r })) : { ...body };
+    const strip = (col) => (many ? payload.forEach((r) => delete r[col]) : delete payload[col]);
+    optional.filter((c) => missingCols.has(c)).forEach(strip);
+    for (let i = 0; i <= optional.length; i += 1) {
+      const res = await supabaseRequest(path, { method, body: JSON.stringify(payload) });
+      if (res.ok) return res;
+      const col = missingColumn(res);
+      if (!col || !optional.includes(col) || missingCols.has(col)) return res;
+      missingCols.add(col);
+      strip(col);
+    }
+    return { ok: false, data: null };
+  }
+
+  // A playlist names its programme guide in its first line (#EXTM3U url-tvg="…"):
+  // keep it with the account when the account has none yet.
+  async function saveHeaderEpg(account, text) {
+    const epg = window.CineAura.m3uHeaderEpg(text);
+    if (!epg || !account?.id || String(account.epg_url || "").trim() || missingCols.has("epg_url")) return "";
+    const r = await writeTolerant(`/rest/v1/iptv?id=eq.${encodeURIComponent(account.id)}`, "PATCH", { epg_url: epg }, OPTIONAL_COLS.iptv);
+    if (!r.ok || missingCols.has("epg_url")) return "";
+    account.epg_url = epg;
+    return epg;
+  }
+
+  async function importChannels(pkg, source, replace, account = null) {
     let text;
     try { text = await readM3uText(source); } catch { toast(t("panel.iptv.impFail")); return 0; }
-    const rows = parseM3U(text).slice(0, 20000).map((r) => ({ package_name: pkg, ...r }));
+    const rows = window.CineAura.parseM3U(text).slice(0, 20000).map((r) => ({ package_name: pkg, ...r }));
     if (!rows.length) { toast(t("panel.iptv.impEmpty")); return 0; }
     if (replace) await supabaseRequest(`/rest/v1/listchannels?package_name=eq.${encodeURIComponent(pkg)}`, { method: "DELETE" });
     for (let i = 0; i < rows.length; i += 500) {
-      const r = await supabaseRequest("/rest/v1/listchannels", { method: "POST", body: JSON.stringify(rows.slice(i, i + 500)) });
+      // without sql/channels.sql the channels come in without their links / guide ids
+      const r = await writeTolerant("/rest/v1/listchannels", "POST", rows.slice(i, i + 500), OPTIONAL_COLS.listchannels);
       if (!r.ok) { toast(t("panel.actFail")); return i; }
     }
-    toast(t("panel.iptv.imported", { n: rows.length }));
+    const epg = await saveHeaderEpg(account, text).catch(() => "");
+    const key = missingCols.has("stream_url") ? "panel.iptv.noStreamCol" : missingCols.has("epg_id") ? "panel.iptv.noEpgCol" : epg ? "panel.iptv.importedEpg" : "panel.iptv.imported";
+    toast(t(key, { n: rows.length }));
     return rows.length;
+  }
+
+  // ---------- IPTV: who gets a premium account ----------
+  // The member directory holds the newest 400 members, loaded when the panel
+  // opened. Anyone else (an older member, or one who signed up since) is looked
+  // up in the database by member ID or username.
+  const ID_RE = /^id\d{1,20}$/i;
+  const memberKey = (v) => String(v || "").trim().replace(/^@/, "").toLowerCase();
+
+  function knownMember(value) {
+    const q = memberKey(value);
+    if (!q) return null;
+    const same = (m) => memberKey(m.member_id) === q || memberKey(m.username) === q;
+    return state.members.find(same) || state.extraMembers.find(same) || null;
+  }
+
+  function rememberMembers(list) {
+    list.forEach((m) => {
+      if (m?.member_id && !knownMember(m.member_id)) state.extraMembers.push(m);
+    });
+  }
+
+  async function resolveMember(value) {
+    const raw = String(value || "").trim().replace(/^@/, "");
+    if (!raw) return null;
+    const local = knownMember(raw);
+    if (local) return local;
+    const q = raw.toLowerCase();
+    const filters = [];
+    if (ID_RE.test(raw)) filters.push(`member_id=eq.${encodeURIComponent(`ID${raw.slice(2)}`)}`);
+    // ilike ignores case; it also treats "_" as a wildcard, so the name is checked exactly below
+    if (/^[A-Za-z0-9._]{2,40}$/.test(raw)) filters.push(`username=ilike.${encodeURIComponent(raw)}`);
+    for (const filter of filters) {
+      const res = await supabaseRequest(`/rest/v1/members?${filter}&select=member_id,full_name,username,status&limit=5`);
+      const hit = (res.ok && Array.isArray(res.data) ? res.data : []).find((m) => memberKey(m.member_id) === q || memberKey(m.username) === q);
+      if (hit) {
+        rememberMembers([hit]);
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  // owners of premium accounts who are not in the directory: fetch their names once
+  // (owner_id is a member id; a row typed by hand may hold a username instead)
+  async function loadOwners(rows) {
+    const owners = [...new Set(rows.map((r) => String(r.owner_id || "").trim().replace(/^@/, "")).filter((v) => v && !knownMember(v)))];
+    const ids = owners.filter((v) => ID_RE.test(v));
+    const names = owners.filter((v) => !ID_RE.test(v) && /^[A-Za-z0-9._]{2,40}$/.test(v));
+    const select = "select=member_id,full_name,username,status";
+    for (let i = 0; i < ids.length; i += 80) {
+      const part = ids.slice(i, i + 80).map((v) => encodeURIComponent(`"${v}"`)).join(",");
+      const res = await supabaseRequest(`/rest/v1/members?member_id=in.(${part})&${select}`);
+      if (res.ok && Array.isArray(res.data)) rememberMembers(res.data);
+    }
+    // usernames in any case (ilike); knownMember compares them exactly afterwards
+    for (let i = 0; i < names.length; i += 30) {
+      const part = names.slice(i, i + 30).map((v) => `username.ilike.${encodeURIComponent(`"${v}"`)}`).join(",");
+      const res = await supabaseRequest(`/rest/v1/members?or=(${part})&${select}&limit=90`);
+      if (res.ok && Array.isArray(res.data)) rememberMembers(res.data);
+    }
+  }
+
+  // The member hears of it in their notifications (bell + Notifications page),
+  // which open Dashboard > IPTV. The title is shown in the member's language
+  // (CineAura.noteTitle); the stored one is for anything else that reads the row.
+  async function notifyIptvOwner(member, account, renewed = false) {
+    if (!member?.member_id) return false;
+    const res = await supabaseRequest("/rest/v1/notifications", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({
+        member_id: member.member_id,
+        kind: renewed ? "iptv_renew" : "iptv",
+        title: renewed ? "Your premium IPTV account was renewed" : "You received a premium IPTV account",
+        body: String(account?.name || "").slice(0, 200),
+        href: "./dashboard.html#iptv",
+        from_id: "",
+        from_username: "",
+      }),
+    }).catch(() => ({ ok: false }));
+    return Boolean(res.ok);
+  }
+
+  const memberLabel = (m) => (m.username ? `@${m.username} · ${m.member_id}` : m.member_id);
+  const DURATIONS = ["1 month", "3 months", "6 months", "12 months", "unlimited"];
+
+  // given now, valid for the account's duration ("1 month", "unlimited", …)
+  function assignment(duration) {
+    const now = new Date();
+    return { assigned_at: now.toISOString(), expires_at: window.CineAura.iptvExpiry(now, duration)?.toISOString() || null };
+  }
+
+  function validityText(r) {
+    const CA = window.CineAura;
+    if (CA.iptvIsFree(r) || !String(r.owner_id || "").trim()) return "";
+    const tm = CA.iptvTiming(r);
+    const parts = [];
+    if (tm.start) parts.push(t("panel.iptv.givenOn", { date: fmtWhen(tm.start) }));
+    if (tm.exp) parts.push(t(tm.left > 0 ? "panel.iptv.until" : "panel.iptv.endedOn", { date: fmtWhen(tm.exp) }));
+    return parts.join(" · ");
+  }
+
+  function bindMemberHint(input, out) {
+    let run = 0;
+    input.addEventListener("input", () => {
+      const mine = ++run;
+      const value = input.value.trim();
+      clearTimeout(out._t);
+      out.textContent = "";
+      out.classList.remove("bad");
+      if (!value) return;
+      out._t = setTimeout(async () => {
+        const m = await resolveMember(value).catch(() => null);
+        if (mine !== run) return;
+        const tick = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+        out.innerHTML = m ? `${tick}<bdi>${escapeHtml(`${m.full_name ? `${m.full_name} · ` : ""}${memberLabel(m)}`)}</bdi>` : escapeHtml(t("panel.iptv.noMember", { q: value }));
+        out.classList.toggle("bad", !m);
+      }, 350);
+    });
+  }
+
+  function editEpg(main, row) {
+    const CA = window.CineAura;
+    const m3u = CA.iptvKind(row) === "m3u";
+    const ov = overlay(`
+      <h2>${t("panel.iptv.epgTitle")}</h2>
+      <p class="muted">${escapeHtml(row.name)}</p>
+      <div class="stack">
+        <input id="ep-url" type="url" dir="ltr" inputmode="url" value="${escapeHtml(row.epg_url || "")}" placeholder="https://…/epg.xml.gz" />
+        <p class="muted ipx-hint">${t(m3u ? "panel.iptv.epgHintM" : "panel.iptv.epgHintX")}</p>
+        <div class="toolbar">
+          <button class="btn btn-sm btn-primary" id="ep-save" type="button">${t("common.save")}</button>
+          ${m3u ? `<button class="btn btn-sm btn-ghost" id="ep-find" type="button">${t("panel.iptv.epgFind")}</button>` : ""}
+          <button class="btn btn-sm btn-ghost" data-close type="button">${t("common.close")}</button>
+        </div>
+      </div>`);
+    const input = ov.querySelector("#ep-url");
+    input.focus();
+    ov.querySelector("#ep-find")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        const epg = CA.m3uHeaderEpg(await readM3uText({ url: row.m3u_url }));
+        if (epg) input.value = epg;
+        toast(t(epg ? "panel.iptv.epgFound" : "panel.iptv.epgNone"));
+      } catch {
+        toast(t("panel.iptv.impFail"));
+      }
+      btn.disabled = false;
+    });
+    ov.querySelector("#ep-save").onclick = async () => {
+      const value = input.value.trim();
+      if (value && !/^https?:\/\/\S+$/i.test(value)) return toast(t("panel.iptv.needEpg"));
+      const res = await writeTolerant(`/rest/v1/iptv?id=eq.${encodeURIComponent(row.id)}`, "PATCH", { epg_url: value }, OPTIONAL_COLS.iptv);
+      if (!res.ok) return toast(t("panel.actFail"));
+      if (missingCols.has("epg_url")) return toast(t("panel.iptv.noIptvCols"));
+      ov.remove();
+      toast(t(value ? "panel.iptv.epgSaved" : "panel.iptv.epgCleared"));
+      viewIptv(main);
+    };
   }
 
   async function viewIptv(main) {
     if (!state.members.length) await loadDirectory();
     const res = await supabaseRequest("/rest/v1/iptv?select=*&order=id.desc");
     const rows = res.ok && Array.isArray(res.data) ? res.data : [];
-    const isFree = (r) => String(r.type || "").toLowerCase() === "free";
+    await loadOwners(rows).catch(() => null);
+    const CA = window.CineAura;
+    const isFree = (r) => CA.iptvIsFree(r);
     const kindOf = (r) => r.kind || (r.xstream_user ? "xtream" : "m3u");
     const filter = state.iptvFilter || "all";
     const shown = rows.filter((r) => filter === "all" || (filter === "free") === isFree(r));
     const who = (id) => {
-      const m = state.members.find((x) => x.member_id === id);
-      return m ? `@${m.username} · ${id}` : id || "—";
-    };
-    const findMember = (v) => {
-      const q = String(v || "").trim().replace(/^@/, "").toLowerCase();
-      if (!q) return null;
-      return state.members.find((m) => String(m.member_id).toLowerCase() === q || String(m.username || "").toLowerCase() === q) || null;
+      const m = knownMember(id);
+      return m ? memberLabel(m) : id || "—";
     };
     const tab = (k, label) => `<button type="button" class="follow-tab${filter === k ? " active" : ""}" data-ipf="${k}">${label}</button>`;
+    const colsHint = missingCols.has("epg_url") || missingCols.has("assigned_at") || missingCols.has("expires_at") ? `<p class="muted ipx-hint">${t("panel.iptv.noIptvCols")}</p>` : "";
     main.innerHTML = `
       <p class="eyebrow">${t("panel.nav.iptv")}</p>
       <h1>${t("panel.iptv.title")}</h1>
@@ -1289,12 +1893,19 @@
           <div class="form-row"><input id="ip-user" dir="ltr" autocomplete="off" placeholder="${t("panel.iptv.user")}" /><input id="ip-pass" dir="ltr" autocomplete="off" placeholder="${t("panel.iptv.pass")}" /></div>
         </div>
         <div id="ip-m3" class="stack" style="display:none"><input id="ip-url" dir="ltr" placeholder="https://.../playlist.m3u" /></div>
+        <div class="stack ip-epg">
+          <label class="ipx-flabel" for="ip-epg">${t("iptv.epgLong")}</label>
+          <input id="ip-epg" type="url" dir="ltr" inputmode="url" placeholder="https://…/epg.xml.gz" />
+          <p class="muted ipx-hint" id="ip-epg-hint">${t("panel.iptv.epgHintX")}</p>
+        </div>
         <div class="form-row">
           <select id="ip-access"><option value="free">${t("panel.iptv.free")}</option><option value="premium">${t("panel.iptv.paid")}</option></select>
-          <input id="ip-dur" placeholder="${t("panel.iptv.duration")}" />
+          <input id="ip-dur" list="ip-durs" dir="auto" placeholder="${t("panel.iptv.duration")}" />
+          <datalist id="ip-durs">${DURATIONS.map((d) => `<option value="${d}">${escapeHtml(CA.durationLabel(d))}</option>`).join("")}</datalist>
         </div>
-        <div id="ip-own" style="display:none">
-          <input id="ip-member" list="ip-members" placeholder="${t("panel.iptv.memberPh")}" />
+        <div id="ip-own" class="stack" style="display:none">
+          <input id="ip-member" list="ip-members" dir="auto" autocomplete="off" placeholder="${t("panel.iptv.memberPh")}" />
+          <p class="muted ipx-hint ipx-who" id="ip-member-who" aria-live="polite"></p>
           <datalist id="ip-members">${state.members.map((m) => `<option value="${escapeHtml(m.member_id)}">@${escapeHtml(m.username || "")}</option>`).join("")}</datalist>
         </div>
         <div class="stack" style="border-top:1px solid var(--line);padding-top:12px">
@@ -1310,9 +1921,10 @@
         <button class="btn btn-sm btn-primary" id="ip-add" type="button">${t("panel.iptv.add")}</button>
       </div>
       <div class="tabs follow-tabs">${tab("all", t("panel.iptv.all"))}${tab("free", t("panel.iptv.free"))}${tab("paid", t("panel.iptv.paid"))}</div>
+      ${colsHint}
       <div class="ipx-grid" id="ip-list">${shown.map((r) => {
         const free = isFree(r);
-        const CA = window.CineAura;
+        const valid = validityText(r);
         return `
         <article class="ipx-card">
           <header class="ipx-head">
@@ -1320,17 +1932,20 @@
             <div class="ipx-badges">
               <span class="ipx-badge ${free ? "free" : "paid"}">${free ? t("panel.iptv.free") : t("panel.iptv.paid")}</span>
               <span class="ipx-badge">${CA.iptvKind(r) === "m3u" ? "M3U" : "Xtream"}</span>
-              <span class="ipx-badge">${t("common.duration")}: ${escapeHtml(r.duration || t("common.unlimited"))}</span>
+              <span class="ipx-badge">${t("common.duration")}: ${escapeHtml(CA.durationLabel(r.duration))}</span>
+              ${CA.iptvEpgUrl(r) ? `<span class="ipx-badge epg">${t("iptv.epg")}</span>` : ""}
               ${free ? "" : `<span class="ipx-badge">${t("panel.iptv.member")}: ${escapeHtml(who(r.owner_id))}</span>`}
             </div>
+            ${valid ? `<p class="ipx-valid">${escapeHtml(valid)}</p>` : ""}
           </header>
           <div class="ipx-rows">${CA.iptvDetailRows(r)}</div>
           <footer class="ipx-actions">
             ${CA.iptvActionsHtml(r)}
             <button class="btn btn-sm btn-ghost" data-imp="${r.id}" type="button">${t("panel.iptv.importBtn")}</button>
+            <button class="btn btn-sm btn-ghost" data-epg="${r.id}" type="button">${t("panel.iptv.epgBtn")}</button>
             <button class="btn btn-sm btn-danger" data-del="${r.id}" type="button">${t("common.remove")}</button>
           </footer>
-          ${free ? "" : `<div class="ipx-assign"><input data-asg-in="${r.id}" list="ip-members" placeholder="${t("panel.iptv.memberPh")}" /><button class="btn btn-sm btn-primary" data-asg="${r.id}" type="button">${t("panel.iptv.assign")}</button></div>`}
+          ${free ? "" : `<div class="ipx-assign"><input data-asg-in="${r.id}" list="ip-members" dir="auto" autocomplete="off" placeholder="${t("panel.iptv.memberPh")}" /><button class="btn btn-sm btn-primary" data-asg="${r.id}" type="button">${t("panel.iptv.assign")}</button></div>`}
         </article>`;
       }).join("") || `<p class="empty">${t("common.none")}</p>`}</div>`;
     window.CineAura.bindIptvActions($("#ip-list"), (id) => rows.find((x) => String(x.id) === id));
@@ -1338,6 +1953,7 @@
       const m3 = $("#ip-kind").value === "m3u";
       $("#ip-xt").style.display = m3 ? "none" : "";
       $("#ip-m3").style.display = m3 ? "" : "none";
+      $("#ip-epg-hint").textContent = t(m3 ? "panel.iptv.epgHintM" : "panel.iptv.epgHintX");
       $("#ip-own").style.display = $("#ip-access").value === "premium" ? "" : "none";
     };
     $("#ip-kind").onchange = sync;
@@ -1347,6 +1963,7 @@
       $("#ip-imp-url").style.display = v === "link" ? "" : "none";
       $("#ip-imp-file").style.display = v === "file" ? "" : "none";
     };
+    bindMemberHint($("#ip-member"), $("#ip-member-who"));
     $("#ip-add").onclick = async () => {
       const name = $("#ip-name").value.trim();
       const kind = $("#ip-kind").value;
@@ -1362,29 +1979,48 @@
         body.xstream_password = $("#ip-pass").value.trim();
         if (!/^https?:\/\//i.test(body.xstream_server) || !body.xstream_user || !body.xstream_password) return toast(t("panel.iptv.needXtream"));
       }
-      if (access === "premium") {
-        const m = findMember($("#ip-member").value);
-        if (!m) return toast(t("panel.iptv.needMember"));
-        body.owner_id = m.member_id;
+      body.epg_url = $("#ip-epg").value.trim();
+      if (body.epg_url && !/^https?:\/\/\S+$/i.test(body.epg_url)) return toast(t("panel.iptv.needEpg"));
+      const add = $("#ip-add");
+      add.disabled = true;
+      try {
+        let owner = null;
+        if (access === "premium") {
+          const typed = $("#ip-member").value.trim();
+          if (!typed) return toast(t("panel.iptv.needMember"));
+          owner = await resolveMember(typed);
+          if (!owner) return toast(t("panel.iptv.noMember", { q: typed }));
+          Object.assign(body, { owner_id: owner.member_id }, assignment(body.duration));
+        }
+        const ins = await writeTolerant("/rest/v1/iptv", "POST", body, OPTIONAL_COLS.iptv);
+        if (!ins.ok) return toast(t("panel.actFail"));
+        const saved = (Array.isArray(ins.data) ? ins.data[0] : ins.data) || null;
+        const notified = owner ? await notifyIptvOwner(owner, body) : false;
+        toast(owner ? t(notified ? "panel.iptv.addedFor" : "panel.iptv.addedNoNote", { who: memberLabel(owner) }) : t("panel.iptv.added"));
+        const mode = $("#ip-imp").value;
+        if (mode !== "none") {
+          let source = null;
+          if (mode === "file") source = { file: $("#ip-imp-file").files?.[0] };
+          else source = { url: $("#ip-imp-url").value.trim() || (kind === "m3u" ? body.m3u_url : "") };
+          if (source.file || source.url) await importChannels(name, source, true, saved);
+          else toast(t("panel.iptv.impFail"));
+        }
+        viewIptv(main);
+      } finally {
+        add.disabled = false;
       }
-      const ins = await supabaseRequest("/rest/v1/iptv", { method: "POST", body: JSON.stringify(body) });
-      if (!ins.ok) return toast(t("panel.actFail"));
-      toast(t("panel.iptv.added"));
-      const mode = $("#ip-imp").value;
-      if (mode !== "none") {
-        let source = null;
-        if (mode === "file") source = { file: $("#ip-imp-file").files?.[0] };
-        else source = { url: $("#ip-imp-url").value.trim() || (kind === "m3u" ? body.m3u_url : "") };
-        if (source.file || source.url) await importChannels(name, source, true);
-        else toast(t("panel.iptv.impFail"));
-      }
-      viewIptv(main);
     };
     main.onclick = async (e) => {
       const f = e.target.closest("[data-ipf]");
       const asg = e.target.closest("[data-asg]");
       const del = e.target.closest("[data-del]");
       if (f) { state.iptvFilter = f.dataset.ipf; viewIptv(main); return; }
+      const epgBtn = e.target.closest("[data-epg]");
+      if (epgBtn) {
+        const row = rows.find((x) => String(x.id) === epgBtn.dataset.epg);
+        if (row) editEpg(main, row);
+        return;
+      }
       const imp = e.target.closest("[data-imp]");
       if (imp) {
         const row = rows.find((x) => String(x.id) === imp.dataset.imp);
@@ -1407,19 +2043,37 @@
           if (!file && !url) return toast(t("panel.iptv.impFail"));
           const go = ov.querySelector("#im-go");
           go.disabled = true;
-          const n = await importChannels(row.name, file ? { file } : { url }, ov.querySelector("#im-rep").checked);
+          const hadEpg = Boolean(String(row.epg_url || "").trim());
+          const n = await importChannels(row.name, file ? { file } : { url }, ov.querySelector("#im-rep").checked, row);
           go.disabled = false;
-          if (n) ov.remove();
+          if (n) {
+            ov.remove();
+            if (!hadEpg && row.epg_url) viewIptv(main); // the playlist named its guide: show it on the card
+          }
         };
         return;
       }
       if (asg) {
-        const m = findMember(main.querySelector(`[data-asg-in="${asg.dataset.asg}"]`)?.value);
-        if (!m) return toast(t("panel.iptv.needMember"));
-        const r = await supabaseRequest(`/rest/v1/iptv?id=eq.${asg.dataset.asg}`, { method: "PATCH", body: JSON.stringify({ owner_id: m.member_id }) });
-        if (!r.ok) return toast(t("panel.actFail"));
-        toast(t("panel.iptv.assigned"));
-        viewIptv(main);
+        const row = rows.find((x) => String(x.id) === asg.dataset.asg);
+        const typed = String(main.querySelector(`[data-asg-in="${asg.dataset.asg}"]`)?.value || "").trim();
+        if (!row) return;
+        if (!typed) return toast(t("panel.iptv.needMember"));
+        asg.disabled = true;
+        try {
+          const m = await resolveMember(typed);
+          if (!m) return toast(t("panel.iptv.noMember", { q: typed }));
+          // giving it to its owner again starts a new period: a renewal
+          const renewed = CA.iptvOwnedBy(row, m);
+          const r = await writeTolerant(`/rest/v1/iptv?id=eq.${encodeURIComponent(row.id)}`, "PATCH", { owner_id: m.member_id, ...assignment(row.duration) }, OPTIONAL_COLS.iptv);
+          if (!r.ok) return toast(t("panel.actFail"));
+          const notified = await notifyIptvOwner(m, row, renewed);
+          const key = renewed ? (notified ? "panel.iptv.renewedFor" : "panel.iptv.renewedNoNote") : notified ? "panel.iptv.assignedFor" : "panel.iptv.assignedNoNote";
+          toast(t(key, { who: memberLabel(m) }));
+          viewIptv(main);
+        } finally {
+          asg.disabled = false;
+        }
+        return;
       }
       if (del) {
         await supabaseRequest(`/rest/v1/iptv?id=eq.${del.dataset.del}`, { method: "DELETE" });
@@ -1501,6 +2155,137 @@
     };
   }
 
+  // ---------- Apps: the download cards of the home page ("Get the app") ----------
+  // One row per platform in app_downloads (sql/apps.sql). Saving goes through the
+  // staff RPC staff_app_save, which checks the panel session and the Apps section:
+  // the table cannot be written with the public key.
+  const APP_GROUPS = ["CineAura PC", "CineAura Mobile", "CineAura TV"];
+  const APP_PLACEHOLDER = {
+    windows: "https://…/CineAura-PC-1.0.exe",
+    linux: "https://…/CineAura-PC-1.0.AppImage",
+    macos: "https://…/CineAura-PC-1.0.dmg",
+    android: "https://…/CineAura-Mobile-1.0.apk",
+    ios: "https://apps.apple.com/…",
+    androidtv: "https://…/CineAura-TV-1.0.apk",
+  };
+
+  function appRowHtml(p, row, locked) {
+    const C = window.CineAura;
+    const url = String(row?.url || "");
+    const live = C.appDownloadUrl(url);
+    const version = row ? String(row.version ?? "") : "1.0";
+    const changed = row?.updated_by && row?.updated_at ? t("panel.apps.changed", { who: row.updated_by, date: formatDate(row.updated_at) }) : "";
+    const off = locked ? " disabled" : "";
+    return `
+      <form class="mini-card apx-row" data-app="${p.key}" novalidate>
+        <div class="apx-head">
+          <span class="app-os-logo apx-logo" aria-hidden="true">${p.logo}</span>
+          <div class="apx-name"><strong dir="ltr">${escapeHtml(p.os)}</strong><small dir="ltr">${escapeHtml(p.app)}</small></div>
+          <span class="apx-state${live ? " on" : ""}">${escapeHtml(live ? t("home.apps.available") : t("home.app.soon"))}</span>
+        </div>
+        <div class="apx-fields">
+          <label class="apx-field">
+            <span>${t("panel.apps.link")}</span>
+            <input name="url" type="url" dir="ltr" inputmode="url" autocomplete="off" spellcheck="false" maxlength="1000" value="${escapeHtml(url)}" placeholder="${escapeHtml(APP_PLACEHOLDER[p.key] || "https://…")}"${off} />
+          </label>
+          <label class="apx-field apx-ver">
+            <span>${t("panel.apps.version")}</span>
+            <input name="version" dir="ltr" autocomplete="off" spellcheck="false" maxlength="20" value="${escapeHtml(version)}" placeholder="1.0"${off} />
+          </label>
+        </div>
+        <div class="apx-actions">
+          <button class="btn btn-sm btn-primary" type="submit"${off}>${t("common.save")}</button>
+          ${live ? `<a class="btn btn-sm btn-ghost" href="${escapeHtml(live)}" target="_blank" rel="noopener noreferrer">${t("common.open")}</a>` : ""}
+          ${url && !locked ? `<button class="btn btn-sm btn-ghost" type="button" data-app-clear>${t("panel.apps.remove")}</button>` : ""}
+          ${changed ? `<small class="muted apx-changed">${escapeHtml(changed)}</small>` : ""}
+        </div>
+      </form>`;
+  }
+
+  function bindAppRow(form) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      saveApp(form, false);
+    });
+    form.querySelector("[data-app-clear]")?.addEventListener("click", () => saveApp(form, true));
+  }
+
+  async function saveApp(form, clear) {
+    const C = window.CineAura;
+    const p = C.APP_PLATFORMS.find((x) => x.key === form.dataset.app);
+    if (!p) return;
+    const url = clear ? "" : form.elements.url.value.trim();
+    const version = form.elements.version.value.trim();
+    if (url && !C.appDownloadUrl(url)) {
+      toast(t("panel.apps.badUrl"));
+      form.elements.url.focus();
+      return;
+    }
+    const buttons = [...form.querySelectorAll("button")];
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+    let error = "";
+    let row = null;
+    try {
+      const res = await C.rpc("staff_app_save", { p_token: state.staff?.token || "", p_platform: p.key, p_url: url, p_version: version });
+      const msg = String(res.data?.message || "");
+      if (res.ok && res.data?.ok) row = res.data.row;
+      else if (res.ok) error = res.data?.error || "fail";
+      else if (msg.includes("staff_auth")) error = "auth";
+      else if (msg.includes("staff_forbidden")) error = "forbidden";
+      else if (res.status === 404) error = "sql"; // sql/apps.sql not run yet
+      else error = "fail";
+    } catch {
+      error = "fail";
+    }
+    if (!row) {
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
+      const key = {
+        bad_url: "panel.apps.badUrl",
+        bad_version: "panel.apps.badVersion",
+        auth: "pza.errAuth",
+        forbidden: "panel.apps.forbidden",
+        sql: "panel.apps.noTable",
+      }[error];
+      toast(t(key || "panel.actFail"));
+      return;
+    }
+    toast(t(row.url ? "panel.apps.saved" : "panel.apps.cleared", { os: p.os }));
+    const fresh = document.createElement("div");
+    fresh.innerHTML = appRowHtml(p, row, false);
+    const next = fresh.firstElementChild;
+    form.replaceWith(next);
+    bindAppRow(next);
+    next.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
+  }
+
+  async function viewApps(main) {
+    const C = window.CineAura;
+    const res = await supabaseRequest("/rest/v1/app_downloads?select=*");
+    const missing = !res.ok || !Array.isArray(res.data); // sql/apps.sql not run yet
+    const rows = new Map((missing ? [] : res.data).map((r) => [r.platform, r]));
+    main.innerHTML = `
+      <p class="eyebrow">${t("panel.nav.apps")}</p>
+      <h1>${t("panel.apps.title")}</h1>
+      <p class="muted">${t("panel.apps.lead")}</p>
+      ${missing ? `<div class="form-alert show warn apx-alert">${t("panel.apps.noTable")}</div>` : ""}
+      <div class="apx-groups">
+        ${APP_GROUPS.map(
+          (app) => `
+          <section class="apx-group">
+            <h2 dir="ltr">${escapeHtml(app)}</h2>
+            ${C.APP_PLATFORMS.filter((p) => p.app === app)
+              .map((p) => appRowHtml(p, rows.get(p.key), missing))
+              .join("")}
+          </section>`
+        ).join("")}
+      </div>`;
+    main.querySelectorAll("form.apx-row").forEach(bindAppRow);
+  }
+
   async function viewSettings(main) {
     await loadSettings();
     const s = state.settings;
@@ -1519,7 +2304,34 @@
         <label class="lang-chip"><input type="checkbox" id="sh-mem" ${s.show_member ? "checked" : ""} /> ${t("panel.showMember")}</label>
         <p class="muted">${t("panel.superAlways")}</p>
         ${state.staff.role === "super" ? `<button class="btn btn-sm btn-primary" id="sh-save" type="button">${t("common.save")}</button>` : ""}
+        <hr />
+        <p class="muted"><b>${t("panel.patreonTitle")}</b><br />${t("panel.patreonHint")}</p>
+        <label class="field-label" for="pl-points">${t("panel.patreonPoints")}</label>
+        <input id="pl-points" type="url" inputmode="url" maxlength="1000" placeholder="${escapeHtml(window.CineAura.PATREON_DEFAULT)}" dir="ltr" />
+        <label class="field-label" for="pl-plans">${t("panel.patreonPlans")}</label>
+        <input id="pl-plans" type="url" inputmode="url" maxlength="1000" placeholder="${escapeHtml(window.CineAura.PATREON_DEFAULT)}" dir="ltr" />
+        <button class="btn btn-sm btn-primary" id="pl-save" type="button">${t("common.save")}</button>
       </div>`;
+    // Patreon links (sql/point_codes.sql, site_links): read by everyone, saved by staff only
+    supabaseRequest("/rest/v1/site_links?select=key,url").then((res) => {
+      const rows = res.ok && Array.isArray(res.data) ? res.data : [];
+      const get = (k) => rows.find((r) => r.key === k)?.url || "";
+      if ($("#pl-points")) $("#pl-points").value = get("patreon_points");
+      if ($("#pl-plans")) $("#pl-plans").value = get("patreon_plans");
+    });
+    $("#pl-save").onclick = async () => {
+      const links = { patreon_points: $("#pl-points").value.trim(), patreon_plans: $("#pl-plans").value.trim() };
+      if (Object.values(links).some((u) => u && !/^https:\/\/[^\s<>"'`]+$/i.test(u))) return toast(t("panel.patreonBad"));
+      for (const [key, url] of Object.entries(links)) {
+        const res = await window.CineAura.rpc("staff_site_link_save", { p_token: state.staff.token, p_key: key, p_url: url });
+        if (!res.ok) {
+          const missing = res.status === 404 || res.data?.code === "PGRST202";
+          return toast(t(missing ? "panel.patreonSql" : String(res.data?.message || "").includes("forbidden") ? "panel.patreonForbidden" : "panel.actFail"));
+        }
+        if (res.data?.ok === false) return toast(t(res.data.error === "bad_url" ? "panel.patreonBad" : "panel.actFail"));
+      }
+      toast(t("panel.saved"));
+    };
     $("#np-save").onclick = async () => {
       const a = $("#np1").value;
       const b = $("#np2").value;
@@ -1561,6 +2373,36 @@
     );
     renderShell();
   }
+
+  // Coming back to the Panel (another tab, the browser's Back): the session is
+  // read again, so sections given back by the Super Admin appear at once, and a
+  // staff account that was removed meanwhile returns to the sign-in form.
+  let sessionCheckAt = 0;
+  async function recheckSession(force = false) {
+    if (!state.staff?.token || !document.querySelector("#panel-root .dash-layout")) return;
+    if (!force && Date.now() - sessionCheckAt < 10000) return;
+    sessionCheckAt = Date.now();
+    const res = await window.CineAura.rpc("staff_session", { p_token: state.staff.token }).catch(() => null);
+    if (!res || !res.ok) return; // offline or a server error: keep going
+    const row = res.data;
+    if (!row || !row.id) {
+      clearPanel();
+      toast(t("panel.sessionEnded"));
+      boot();
+      return;
+    }
+    const changed = row.role !== state.staff.role || String(row.sections || "") !== String(state.staff.sections || "");
+    if (!changed) return;
+    setPanel({ ...state.staff, ...row }, Boolean(localStorage.getItem(PANEL_KEY)), state.staff.token);
+    renderShell();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") recheckSession();
+  });
+  window.addEventListener("focus", () => recheckSession());
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted) recheckSession(true);
+  });
 
   async function boot() {
     setupChrome();

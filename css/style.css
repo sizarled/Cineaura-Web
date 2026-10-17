@@ -1528,16 +1528,81 @@ html[dir="rtl"] .bubble.mine {
   animation: pulse 2s infinite;
 }
 
+/* Title on top, the rows scroll in between, "View all" stays at the bottom. */
 .header-bell-panel {
   position: absolute;
   right: 0;
   top: 46px;
   width: min(380px, 88vw);
   max-height: 440px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   z-index: 60;
-  padding: 12px;
+  padding: 0;
   border-radius: 16px;
+}
+
+.header-bell-panel[hidden] {
+  display: none;
+}
+
+.header-bell-panel .hnote-head {
+  flex: none;
+  padding: 12px 16px 8px;
+  font-size: 16px;
+}
+
+.header-bell-panel .hnote-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px;
+}
+
+.header-bell-panel .hnote-sub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.header-bell-panel .hnote-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 16px 0;
+}
+
+.header-bell-panel .hnote-foot {
+  flex: none;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* Not a .btn: phones hide every .btn of the header (they move to the menu). */
+.header-bell-panel .hnote-all {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--cyan);
+  background: var(--sub-bg, rgba(255, 255, 255, 0.06));
+  transition: background 0.15s;
+}
+
+.header-bell-panel .hnote-all:hover {
+  background: rgba(24, 119, 242, 0.14);
+}
+
+.header-bell-panel .hnote-all:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
 }
 
 .header-bell-panel .hnote-row {
@@ -1723,6 +1788,305 @@ html[dir="rtl"] .prof-side nav button .sec-badge {
   font-size: 13.5px;
 }
 
+/* ── Most watched channels (home page, IPTV section) ───────────────────────
+   Filled by js/home-channels.js. Scrolls sideways like Featured Movies; each
+   card says Free ("Watch Now": the channel list, playing) or Premium
+   ("Premium membership required": Dashboard > IPTV). */
+.tch {
+  margin-bottom: 34px;
+}
+
+.tch[data-state="empty"] {
+  display: none;
+}
+
+.tch-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+  margin-bottom: 14px;
+}
+
+.tch-head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.tch-head p {
+  margin: 0;
+  max-width: 520px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.tch-wrap {
+  padding-top: 4px; /* room for the focus ring */
+}
+
+.tch-card {
+  position: relative;
+  flex: 0 0 auto;
+  width: 168px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  text-decoration: none;
+  scroll-snap-align: start;
+  transition: box-shadow 0.2s ease;
+}
+
+.tch-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.tch-card:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.tch-media {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 112px;
+  overflow: hidden;
+  background: radial-gradient(120% 95% at 50% 30%, #23364c 0%, #0b1520 72%);
+}
+
+.tch-logo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 68px;
+}
+
+.tch-logo img {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+}
+
+.tch-letters {
+  color: #e4e6eb;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.tch-live {
+  position: absolute;
+  top: 8px;
+  inset-inline-start: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tch-live i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff4d4d;
+  animation: pulse 1.6s infinite;
+}
+
+.tch-badge {
+  position: absolute;
+  top: 8px;
+  inset-inline-end: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.is-free .tch-badge {
+  background: #5dd879;
+  color: #05290f;
+}
+
+.is-prem .tch-badge {
+  background: linear-gradient(90deg, #ffd66b, #f5a524);
+  color: #3a2600;
+}
+
+.tch-play {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.6));
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.tch-card:hover .tch-play,
+.tch-card:focus-visible .tch-play {
+  opacity: 1;
+}
+
+.tch-card.is-prem .play-orb {
+  background: linear-gradient(90deg, #ffd66b, #f5a524);
+  color: #3a2600;
+}
+
+.tch-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 12px;
+}
+
+.tch-name {
+  display: -webkit-box;
+  min-height: 35px;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.tch-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tch-sub > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tch-views {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tch-cta {
+  margin-top: auto;
+  display: grid;
+  place-items: center;
+  min-height: 40px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  background: rgba(66, 183, 42, 0.14);
+  color: #6fdc84;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.tch-cta svg {
+  display: inline-block;
+  margin-inline-end: 4px;
+  vertical-align: -2px;
+}
+
+.tch-card.is-prem .tch-cta {
+  background: rgba(245, 165, 36, 0.14);
+  color: #f7c35c;
+}
+
+html[data-theme="day"] .tch-cta {
+  color: #1d7a33;
+}
+
+html[data-theme="day"] .tch-card.is-prem .tch-cta {
+  color: #9a5b00;
+}
+
+/* while the row loads */
+.tch-card.is-skel {
+  pointer-events: none;
+}
+
+.tch-card.is-skel .tch-media {
+  background: var(--sub-bg);
+}
+
+.tch-card.is-skel i {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--sub-bg);
+}
+
+.tch-card.is-skel i:nth-child(2) {
+  width: 60%;
+}
+
+.tch-card.is-skel i:nth-child(3) {
+  height: 26px;
+  margin-top: 6px;
+}
+
+@media (max-width: 640px) {
+  .tch-card {
+    width: 144px;
+  }
+
+  .tch-media {
+    height: 96px;
+  }
+
+  .tch-logo {
+    width: 96px;
+    height: 58px;
+  }
+
+  .tch-head h3 {
+    font-size: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tch-live i {
+    animation: none;
+  }
+}
+
 body.is-logged-in .guest-only {
   display: none;
 }
@@ -1765,6 +2129,13 @@ body.is-logged-in .guest-only {
   font-weight: 600;
   cursor: pointer;
   transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+/* Signed-in members keep these settings in Dashboard > Settings: the header
+   button (and its burger-menu entry) is for guests only. */
+body.is-logged-in .settings-btn,
+body.is-logged-in .mobile-menu [data-open-settings] {
+  display: none !important;
 }
 
 .settings-btn:hover,
@@ -2199,12 +2570,117 @@ html.sset-lock {
 }
 .pt-foot b { color: var(--text); font-variant-numeric: tabular-nums; }
 
+/* Level (LV0 … LV Max) at the top of a points box, then the tables of levels and
+   country rates (sql/point_levels.sql). */
+.pt-level {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.pt-lv-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 58px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--cyan), var(--green));
+  color: #04131f;
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(1, 180, 228, 0.25);
+}
+.pt-lv-main { display: grid; gap: 7px; min-width: 0; }
+.pt-lv-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.pt-lv-top b { font-size: 14.5px; font-weight: 700; color: var(--text); }
+.pt-lv-next { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.pt-lv-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(145, 196, 220, 0.14);
+  overflow: hidden;
+}
+.pt-lv-bar > span {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--cyan), var(--green));
+}
+[dir="rtl"] .pt-lv-bar > span { background: linear-gradient(270deg, var(--cyan), var(--green)); }
+.pt-exact { color: var(--cyan-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.pt-rules {
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.pt-rules > summary {
+  cursor: pointer;
+  color: var(--cyan-2);
+  font-weight: 650;
+  padding: 2px 0;
+}
+.pt-rules-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.pt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.pt-table caption {
+  text-align: start;
+  font-weight: 700;
+  color: var(--text);
+  padding-bottom: 6px;
+}
+.pt-table th,
+.pt-table td {
+  text-align: start;
+  padding: 5px 6px;
+  border-bottom: 1px dashed var(--line);
+  vertical-align: top;
+}
+.pt-table th { color: var(--muted); font-weight: 600; font-size: 11.5px; }
+.pt-table td small { color: var(--muted); font-size: 11px; }
+.pt-table tr.is-you td { background: rgba(1, 180, 228, 0.1); color: var(--text); font-weight: 650; }
+.pt-countries { font-size: 11.5px; line-height: 1.5; word-break: break-word; }
+.pt-table td.pt-rate { white-space: nowrap; }
+.pt-you {
+  display: inline-block;
+  margin-inline-start: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--cyan);
+  color: #04131f;
+  font-size: 10.5px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+.pt-rules-note { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
 @media (max-width: 480px) {
   .pt-src small { font-size: 11.5px; }
   .pt-count, .pt-pts { min-width: 34px; }
+  .pt-lv-badge { min-width: 50px; height: 40px; font-size: 14px; }
 }
 
-/* ── Mobile app section (home page) ───────────────────────────────────── */
+/* ── Apps section (home page) ─────────────────────────────────────────── */
 .app-card {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
@@ -2233,74 +2709,203 @@ html.sset-lock {
   margin-bottom: 26px;
 }
 
-.store-row {
+/* Download cards, one per platform (filled by js/main.js from Panel > Apps).
+   data-state: loading | available (Available, version, Download) | soon.
+   Three per row leaves room for "Coming soon" beside the logo in every language. */
+.app-platforms {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.app-os {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 18px 12px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  text-align: center;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.app-os[data-state="available"] {
+  border-color: rgba(144, 206, 161, 0.32);
+  background:
+    radial-gradient(120% 70% at 50% 0%, rgba(144, 206, 161, 0.12), transparent 70%),
+    var(--card-bg);
+}
+
+.app-os[data-state="available"]:hover {
+  transform: translateY(-3px);
+  border-color: rgba(144, 206, 161, 0.6);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+}
+
+.app-os-top {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 58px;
 }
 
-.store-btn {
-  position: relative;
+.app-os-logo {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.app-os-logo svg {
+  width: 30px;
+  height: 30px;
+}
+
+.app-os-name {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.app-os-app {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.app-os-ok {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  min-width: 190px;
-  padding: 10px 18px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(4, 14, 24, 0.55);
-  color: var(--text);
-  text-decoration: none;
-  transition: transform 0.15s ease, border-color 0.15s ease;
-}
-
-.store-btn:hover {
-  transform: translateY(-2px);
-  border-color: var(--cyan);
-}
-
-.store-txt {
-  display: grid;
-  line-height: 1.15;
-  text-align: start;
-}
-
-.store-txt small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.store-txt b {
-  font-size: 17px;
-  font-weight: 650;
-}
-
-/* No store address yet (see APP_LINKS in js/main.js): the button says so. */
-.store-soon {
-  display: none;
-  position: absolute;
-  inset-block-start: -9px;
-  inset-inline-end: 12px;
-  padding: 1px 9px;
+  gap: 7px;
+  margin: 10px 0 2px;
+  padding: 3px 11px;
   border-radius: 999px;
-  background: var(--green);
-  color: #06210f;
-  font-size: 10.5px;
-  font-weight: 800;
+  background: rgba(144, 206, 161, 0.14);
+  color: var(--green);
+  font-size: 12.5px;
+  font-weight: 700;
 }
 
-.store-btn.is-soon {
-  cursor: default;
-  opacity: 0.85;
+.app-os-ok i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px rgba(144, 206, 161, 0.2);
 }
 
-.store-btn.is-soon:hover {
-  transform: none;
-  border-color: var(--line);
+.app-os-ver {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
-.store-btn.is-soon .store-soon {
-  display: inline-block;
+.app-os-dl {
+  width: 100%;
+  max-width: 230px;
+  margin-top: auto;
+  justify-content: center;
+  gap: 7px;
+}
+
+/* Coming soon: the logo, with the word next to it */
+.app-os[data-state="soon"] {
+  justify-content: center;
+}
+
+.app-os[data-state="soon"] .app-os-logo {
+  opacity: 0.6;
+  filter: grayscale(1);
+}
+
+.app-os[data-state="soon"] .app-os-name {
+  color: var(--muted);
+}
+
+.app-os-soon {
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px dashed rgba(155, 176, 194, 0.45);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* while the links load: a quiet placeholder where the button goes */
+.app-os-wait {
+  width: 100%;
+  height: 34px;
+  margin-top: auto;
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+  background-size: 200% 100%;
+  animation: app-os-wait 1.4s ease-in-out infinite;
+}
+
+@keyframes app-os-wait {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-os-wait { animation: none; }
+  .app-os { transition: none; }
+}
+
+html[data-theme="day"] .app-os-logo {
+  background: rgba(13, 37, 63, 0.04);
+}
+
+html[data-theme="day"] .app-os-ok {
+  color: #2f7a4a;
+}
+
+html[data-theme="day"] .app-os-wait {
+  background-image: linear-gradient(90deg, rgba(13, 37, 63, 0.04), rgba(13, 37, 63, 0.09), rgba(13, 37, 63, 0.04));
+}
+
+@media (max-width: 700px) {
+  .app-platforms {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .app-os {
+    padding: 14px 10px 12px;
+  }
+
+  .app-os-top {
+    gap: 6px;
+  }
+
+  .app-os-logo {
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+  }
+
+  .app-os-logo svg {
+    width: 24px;
+    height: 24px;
+  }
+
+  .app-os-soon {
+    padding: 3px 8px;
+    font-size: 12px;
+  }
 }
 
 /* Two phones drawn in CSS: no image to load. */
@@ -2454,11 +3059,72 @@ html.sset-lock {
     grid-template-columns: 1fr;
   }
 
-  .app-phones {
-    min-height: 340px;
+  /* one column: the download cards come right after the text, the drawing last */
+  .app-platforms {
+    order: 1;
   }
 
-  .store-btn {
-    flex: 1 1 100%;
+  .app-phones {
+    order: 2;
+    min-height: 340px;
   }
+}
+
+/* ── Activation deadline (js/common.js, sql/account_deadline.sql) ─────────────
+   A signed-in member whose account waits to be activated / re-activated sees the
+   day of the automatic ban at the bottom of every page; a member the rule banned
+   sees why. */
+.acct-due {
+  position: fixed;
+  z-index: 70;
+  inset-inline: 12px;
+  bottom: 12px;
+  max-width: 780px;
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 12px 14px;
+  border-radius: 12px;
+  background: var(--surface, #242526);
+  color: var(--text, #e4e6eb);
+  border: 1px solid rgba(245, 165, 36, 0.6);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+}
+html[dir="rtl"] .acct-due { padding: 12px 14px 12px 12px; }
+.acct-due.is-banned { border-color: rgba(255, 107, 112, 0.7); }
+.acct-due-ico { flex: none; display: grid; color: #f5a524; }
+.acct-due.is-banned .acct-due-ico { color: var(--red, #ff6b70); }
+.acct-due-txt { flex: 1; min-width: 0; margin: 0; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.acct-due-acts { flex: none; display: flex; align-items: center; gap: 6px; }
+.acct-due-x {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted, #b0b3b8);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.acct-due-x:hover,
+.acct-due-x:focus-visible { background: var(--sub-bg, #3a3b3c); color: var(--text, #e4e6eb); }
+/* the same sentence on the dashboard gate and the activation page */
+.acct-gate-due {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 165, 36, 0.45);
+  background: rgba(245, 165, 36, 0.12);
+  color: var(--text, #e4e6eb);
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: start;
+}
+.acct-panel-due { color: #f5a524; font-weight: 600; }
+@media (max-width: 560px) {
+  .acct-due { inset-inline: 8px; bottom: 8px; flex-wrap: wrap; gap: 8px 10px; }
+  .acct-due-txt { flex-basis: calc(100% - 34px); font-size: 13.5px; }
+  .acct-due-acts { width: 100%; justify-content: flex-end; }
 }

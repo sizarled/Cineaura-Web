@@ -203,6 +203,13 @@ html[data-theme="night"] .form-alert.ok, html:not([data-theme="day"]) .form-aler
 .side-nav button, .side-nav a, .side-lists button, .side-lists a, .prof-side nav button { border-radius: 8px; font-weight: 600; color: var(--text); }
 .side-nav button:hover, .side-nav a:hover, .side-lists button:hover, .side-lists a:hover, .prof-side nav button:hover { background: var(--sub-bg); color: var(--text); }
 .side-nav button.active, .prof-side nav button.active { background: rgba(24, 119, 242, 0.12); color: var(--cyan); }
+/* Menu icons (CineAura.navIcon): the icon, then the label; a count badge goes last */
+.side-nav button, .side-nav a, .prof-side nav button { display: flex; align-items: center; gap: 10px; }
+.side-nav .nav-ico, .prof-side nav .nav-ico { flex: none; width: 18px; height: 18px; opacity: 0.8; }
+.side-nav button.active .nav-ico, .prof-side nav button.active .nav-ico,
+.side-nav button:hover .nav-ico, .side-nav a:hover .nav-ico, .prof-side nav button:hover .nav-ico { opacity: 1; }
+.side-nav button > span, .side-nav a > span:not(.crp-badge), .prof-side nav button > span { min-width: 0; }
+.side-nav .crp-badge { margin-inline-start: auto; }
 .side-label { font-size: 13px; font-weight: 600; color: var(--muted); }
 .table th { font-weight: 600; color: var(--muted); }
 .stat { background: var(--sub-bg); }
@@ -443,6 +450,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
   scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
   scrollbar-width: thin; scrollbar-color: var(--scroll) transparent;
   padding-bottom: 12px;
+  /* cards snap in line with the section title, not against the window edge */
+  scroll-padding-inline: max(16px, calc((100% - 1180px) / 2));
 }
 .marquee-wrap::-webkit-scrollbar { height: 8px; }
 .marquee-wrap::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: 8px; }
@@ -574,6 +583,14 @@ body.auth-locked a[href*="register.html"] {
   opacity: 1;
 }
 
+/* ... and the controls that only change what is read (.auth-allow: the tabs of a
+   profile, its Content section with its sorting and "Show more"). */
+html body.auth-locked .auth-allow:is(button, select),
+html body.auth-locked .auth-allow :is(button, select) {
+  pointer-events: auto;
+  opacity: 1;
+}
+
 .auth-gate-note {
   display: flex;
   flex-wrap: wrap;
@@ -616,3 +633,18 @@ html[dir="rtl"] .auth-gate-note { text-align: right; }
 .prof-layout.side-collapsed { grid-template-columns: minmax(0, 1fr); }
 .dash-layout.side-collapsed > aside,
 .prof-layout.side-collapsed > aside { display: none; }
+
+/* Header row that does not fit (js/common.js fitHeader): first the menu links move
+   closer together, then they go into the burger menu, as on tablets. */
+html.nav-tight .header .nav { gap: 0; margin-inline: 4px; }
+html.nav-tight .header .nav a { padding: 8px 9px; font-size: 13px; }
+html.nav-tighter .header .nav { margin-inline: 2px; }
+html.nav-tighter .header .nav a { padding: 8px 6px; font-size: 12.5px; }
+html.nav-fold .header .nav { display: none; }
+html.nav-fold .header .hamburger { display: flex; flex: 0 0 auto; }
+html.nav-fold .header-inner .auth { margin-inline-start: auto; }
+html.nav-fold .mobile-menu { inset: 64px 14px auto auto; width: min(360px, calc(100% - 28px)); }
+html.nav-fold[dir="rtl"] .mobile-menu { inset: 64px auto auto 14px; }
+/* the page in the menu that is open */
+.nav a[aria-current="page"] { color: var(--text); background: var(--sub-bg); }
+.mobile-menu a[aria-current="page"] { color: var(--cyan); }
