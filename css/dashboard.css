@@ -1339,3 +1339,62 @@ html:not([data-theme="day"]) .ipx-badge.epg { color: #a996ff; }
 
 .set-site select { max-width: 420px; }
 .set-site .sset-link { justify-self: start; }
+
+/* Profile picture: upload a photo or paste an image link
+   (Dashboard > Settings > Profile, the profile page's Settings, activation) */
+.avf {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  text-align: start;
+}
+
+.avf-img {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--input-bg);
+  border: 2px solid var(--line);
+  transition: opacity 0.2s ease;
+}
+
+.avf.busy .avf-img { opacity: 0.5; }
+.avf-body { display: grid; gap: 8px; min-width: 0; }
+.avf-label { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.avf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.avf-pick { display: inline-flex; align-items: center; gap: 8px; }
+.avf-pick svg { flex: 0 0 auto; }
+.avf-pick:disabled { opacity: 0.65; cursor: progress; }
+.avf-or { color: var(--muted); font-size: 13px; }
+.avf-url { width: 100%; }
+.avf-hint { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.avf-status { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+.avf-status:empty { display: none; }
+.avf-status.ok { color: var(--green); }
+.avf-status.bad { color: var(--red, #fa383e); }
+
+@media (max-width: 560px) {
+  .avf { grid-template-columns: 1fr; justify-items: start; }
+  .avf-body { width: 100%; }
+}
+
+/* Dashboard > Settings > Account & security: the plan, "Upgrade" while it is Free */
+.set-plan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.set-plan-line { margin: 0; }
+.set-upgrade { display: inline-flex; align-items: center; gap: 8px; padding: 0 18px; }
+.set-upgrade svg { flex: 0 0 auto; }

@@ -697,6 +697,231 @@
     });
   }
 
+  // ---------- Profile picture: an uploaded photo or an image link ----------
+  // Uploads go to Supabase Storage, bucket IPTV, folder Avatar, named after the
+  // member id (Avatar/ID123.jpg) and sent with x-upsert: a new photo replaces the
+  // old one under the same name. sql/avatar_storage.sql holds the Storage policies
+  // that let the public key write exactly that file and nothing else.
+  const AVATAR_BUCKET = "IPTV";
+  const AVATAR_FOLDER = "Avatar";
+  const AVATAR_PX = 512; // the stored photo is a square of at most 512 x 512
+  const AVATAR_MAX_BYTES = 10 * 1024 * 1024; // the file picked, before it is made smaller
+  const AVATAR_ERRORS = {
+    member: "avatar.errMember",
+    type: "avatar.errType",
+    big: "avatar.errBig",
+    decode: "avatar.errDecode",
+    setup: "avatar.errSetup",
+    network: "avatar.errNetwork",
+    failed: "avatar.errFailed",
+  };
+  const UPLOAD_ICON =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>';
+
+  function avatarObjectPath(memberId) {
+    return `${AVATAR_FOLDER}/${memberId}.jpg`;
+  }
+
+  // The file keeps its name from one upload to the next, so ?v= changes with each
+  // upload: browsers and the Storage CDN fetch the new photo instead of the old one.
+  function avatarPublicUrl(memberId, version = Date.now()) {
+    return `${SUPABASE_URL}/storage/v1/object/public/${AVATAR_BUCKET}/${avatarObjectPath(memberId)}?v=${version}`;
+  }
+
+  function loadImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => resolve({ img, url });
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("decode"));
+      };
+      img.src = url;
+    });
+  }
+
+  // Centre square of the photo (turned the way the camera held it), at most
+  // AVATAR_PX wide, as a JPEG. A transparent background becomes white.
+  async function squareAvatar(file, px = AVATAR_PX) {
+    const { img, url } = await loadImageFile(file);
+    try {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) throw new Error("decode");
+      const side = Math.min(w, h);
+      const out = Math.max(1, Math.min(px, side));
+      const canvas = document.createElement("canvas");
+      canvas.width = out;
+      canvas.height = out;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, out, out);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, out, out);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+      if (!blob) throw new Error("decode");
+      return blob;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  // -> { ok: true, url } | { ok: false, reason: member | type | big | decode | setup | network | failed }
+  async function uploadAvatar(memberId, file) {
+    const id = String(memberId || "");
+    // only the member signed in on this browser (not one signed out, or switched, in another tab)
+    if (!/^ID[0-9]{1,20}$/.test(id) || String(getSession()?.member_id || "") !== id) return { ok: false, reason: "member" };
+    if (!file) return { ok: false, reason: "type" };
+    // some phones give no type for their photos: those are tried, and refused if they don't decode
+    if (file.type && !/^image\//i.test(file.type)) return { ok: false, reason: "type" };
+    if (file.size > AVATAR_MAX_BYTES) return { ok: false, reason: "big" };
+    let blob;
+    try {
+      blob = await squareAvatar(file);
+    } catch {
+      return { ok: false, reason: "decode" };
+    }
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/storage/v1/object/${AVATAR_BUCKET}/${avatarObjectPath(id)}`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "image/jpeg",
+          "x-upsert": "true",
+          // browsers keep a picture for a day; every upload has a new ?v= link anyway
+          // (without this header a REST upload is stored as no-cache)
+          "cache-control": "max-age=86400",
+        },
+        body: blob,
+      });
+    } catch {
+      return { ok: false, reason: "network" };
+    }
+    if (res.ok) return { ok: true, url: avatarPublicUrl(id), bytes: blob.size };
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      /* not JSON */
+    }
+    const message = String(body?.message || body?.error || "");
+    const status = Number(body?.statusCode) || res.status;
+    let reason = "failed";
+    if (status === 413 || /maximum allowed size|too large/i.test(message)) reason = "big";
+    // no policy yet (row-level security), no bucket, or a bucket that refuses JPEG files
+    else if ([401, 403, 404, 415].includes(status) || /row-level security|bucket not found|mime/i.test(message)) reason = "setup";
+    if (reason === "setup") {
+      console.warn(`[CineAura] Avatar upload refused (${status} ${message}). Run sql/avatar_storage.sql in the Supabase SQL editor; bucket ${AVATAR_BUCKET} must exist and accept image/jpeg.`);
+    }
+    return { ok: false, reason, status, message };
+  }
+
+  // The profile picture field: preview, "Upload a photo" (when the member is known)
+  // and the image link input, which keeps the id the page saves from.
+  function avatarFieldHtml({ id, value = "", name = "", memberId = "" } = {}) {
+    const v = String(value || "");
+    const canUpload = /^ID[0-9]{1,20}$/.test(String(memberId || ""));
+    return `
+      <div class="avf" data-avf>
+        <img class="avf-img" data-avf-img src="${escapeHtml(v || initialsAvatar(name || "CA"))}" alt="" width="84" height="84" />
+        <div class="avf-body">
+          <label class="avf-label" for="${escapeHtml(id)}">${escapeHtml(t("avatar.label"))}</label>
+          ${canUpload ? `
+          <div class="avf-row">
+            <button class="btn btn-sm btn-primary avf-pick" type="button" data-avf-pick>${UPLOAD_ICON}<span>${escapeHtml(t("avatar.upload"))}</span></button>
+            <input type="file" accept="image/*" hidden data-avf-file />
+            <span class="avf-or">${escapeHtml(t("avatar.or"))}</span>
+          </div>` : ""}
+          <input id="${escapeHtml(id)}" class="avf-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" dir="ltr" value="${escapeHtml(v)}" placeholder="${escapeHtml(t("avatar.urlPh"))}" />
+          <p class="avf-hint">${escapeHtml(t(canUpload ? "avatar.hint" : "avatar.hintLink"))}</p>
+          <p class="avf-status" data-avf-status role="status" aria-live="polite"></p>
+        </div>
+      </div>`;
+  }
+
+  // save(url) -> true | false: stores a new upload on the profile at once (the old
+  // file is already replaced). Without it the page saves the link with its form.
+  // uploaded(url) hears about every upload that went through.
+  function wireAvatarField(root, { memberId = "", name = "", save = null, uploaded = null } = {}) {
+    const box = root?.querySelector?.("[data-avf]");
+    if (!box) return null;
+    const img = box.querySelector("[data-avf-img]");
+    const input = box.querySelector(".avf-url");
+    const pick = box.querySelector("[data-avf-pick]");
+    const file = box.querySelector("[data-avf-file]");
+    const status = box.querySelector("[data-avf-status]");
+    const fallback = initialsAvatar(name || "CA");
+    const say = (text, kind = "") => {
+      status.textContent = text || "";
+      status.className = `avf-status${kind ? ` ${kind}` : ""}`;
+    };
+    const show = (url) => {
+      img.onerror = null;
+      if (!url) {
+        img.src = fallback;
+        return;
+      }
+      img.onerror = () => {
+        img.onerror = null;
+        img.src = fallback;
+        // only about the link in the field now, not one typed before
+        if (input.value.trim() === url) say(t("avatar.badLink"), "bad");
+      };
+      img.src = url;
+    };
+    show(input.value.trim());
+    let timer = 0;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        say("");
+        show(input.value.trim());
+      }, 350);
+    });
+    if (pick && file) {
+      pick.addEventListener("click", () => file.click());
+      file.addEventListener("change", async () => {
+        const chosen = file.files?.[0];
+        file.value = ""; // picking the same file again fires change again
+        if (!chosen || pick.disabled) return;
+        pick.disabled = true;
+        box.classList.add("busy");
+        say(t("avatar.uploading"));
+        try {
+          const res = await uploadAvatar(memberId, chosen);
+          if (!res.ok) {
+            say(t(AVATAR_ERRORS[res.reason] || "avatar.errFailed"), "bad");
+            if (res.reason === "member" && !getSession()?.member_id) sessionWriteBlocked();
+            return;
+          }
+          clearTimeout(timer);
+          input.value = res.url;
+          show(res.url);
+          if (typeof uploaded === "function") uploaded(res.url);
+          if (typeof save === "function") {
+            let saved = false;
+            try {
+              saved = await save(res.url);
+            } catch {
+              saved = false;
+            }
+            say(t(saved ? "avatar.saved" : "avatar.errSave"), saved ? "ok" : "bad");
+          } else {
+            say(t("avatar.uploadedNext"), "ok");
+          }
+        } finally {
+          pick.disabled = false;
+          box.classList.remove("busy");
+        }
+      });
+    }
+    return { show, say };
+  }
+
   // Staff (Super Admin / Admin / Moderator) rows, safe when sql/panel.sql is not installed yet.
   async function fetchStaff(columns = "id,role,member_id,username") {
     const pick = String(columns).split(",").map((c) => c.trim()).filter(Boolean);
@@ -1813,6 +2038,13 @@
   // option only decides whether minutes are counted).
   const PREMIUM_ADS_BY_DEFAULT = true;
   const membershipCache = {};
+  // A members row on a paid plan that hasn't ended.
+  function planIsPremium(row) {
+    if (!row) return false;
+    const paid = ["Silver", "Gold", "Diamond"].includes(row.membership_type);
+    const active = !row.membership_expires_at || new Date(row.membership_expires_at).getTime() > Date.now();
+    return paid && active;
+  }
   function membership() {
     const session = getSession();
     if (!session?.member_id) return Promise.resolve({ guest: true, premium: false });
@@ -1824,9 +2056,7 @@
         .then((res) => {
           const row = res.ok ? res.data?.[0] : null;
           if (!row) return { guest: false, premium: false, unknown: true };
-          const paid = ["Silver", "Gold", "Diamond"].includes(row.membership_type);
-          const active = !row.membership_expires_at || new Date(row.membership_expires_at).getTime() > Date.now();
-          return { guest: false, premium: paid && active, type: row.membership_type };
+          return { guest: false, premium: planIsPremium(row), type: row.membership_type };
         })
         .catch(() => ({ guest: false, premium: false, unknown: true }));
     }
@@ -3756,6 +3986,11 @@
     primeAvatars,
     hydrateAvatars,
     refreshAvatar,
+    uploadAvatar,
+    avatarPublicUrl,
+    avatarFieldHtml,
+    wireAvatarField,
+    planIsPremium,
     profilesByIds,
     profilesByUsernames,
     fetchStaff,

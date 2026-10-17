@@ -2664,6 +2664,24 @@
     };
   }
 
+  const UPGRADE_ICON =
+    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="m8 12 4-4 4 4"/><path d="M12 16V8"/></svg>';
+
+  // Settings > Account & security: the plan, and an "Upgrade" button while it is
+  // Free (a paid plan that has ended counts as Free). Paid plans keep the small
+  // "Upgrade / activate" link to renew or change.
+  function planBoxHtml(m, left) {
+    const line = t("dash.membershipLine", { plan: escapeHtml(tr(m.membership_type || "Free")), left: t("common.daysLeft", { n: left }) });
+    if (C.planIsPremium(m)) {
+      return `<p class="muted">${line}<a href="./activate.html">${t("common.upgrade")}</a></p>`;
+    }
+    return `
+      <div class="set-plan">
+        <p class="muted set-plan-line">${line.replace(/\s*·\s*$/, "")}</p>
+        <a class="btn btn-sm btn-primary set-upgrade" id="s-upgrade" href="./activate.html">${UPGRADE_ICON}<span>${escapeHtml(t("set.upgrade"))}</span></a>
+      </div>`;
+  }
+
   async function viewSettings(main) {
     const m = state.member;
     const p = state.profile || {};
@@ -2680,9 +2698,9 @@
       </div>
       <div class="stack">
         <div class="follow-pane stack" data-dpane="set0">
+          ${C.avatarFieldHtml({ id: "s-avatar", value: p.avatar_url || "", name: m.username, memberId: m.member_id })}
           <input id="s-name" value="${escapeHtml(m.full_name||"")}" placeholder="${t("common.displayName")}" />
           <textarea id="s-bio" placeholder="${t("common.bio")}">${escapeHtml(p.bio||"")}</textarea>
-          <input id="s-avatar" value="${escapeHtml(p.avatar_url||"")}" placeholder="${t("common.avatarUrl")}" />
           <div class="form-row">
             <input id="s-region" value="${escapeHtml(p.region||"")}" placeholder="${t("common.region")}" />
             <input id="s-country" value="${escapeHtml(p.country||m.country||"")}" placeholder="${t("common.country")}" />
@@ -2727,7 +2745,7 @@
           </div>
         </div>
         <div class="follow-pane stack" data-dpane="set2">
-          <p class="muted">${t("dash.membershipLine", { plan: escapeHtml(tr(m.membership_type||"Free")), left: t("common.daysLeft", { n: left }) })}<a href="./activate.html">${t("common.upgrade")}</a></p>
+          ${planBoxHtml(m, left)}
           <input id="s-email" value="${escapeHtml(m.email||"")}" placeholder="${t("common.email")}" />
           <input id="s-pass" type="password" placeholder="${t("common.newPassword")}" />
           <p class="muted">${t("common.recoveryCode")}: <strong id="s-rec">${escapeHtml(m.recovery_code||t("common.notStored"))}</strong>
@@ -2736,6 +2754,18 @@
         <button class="btn btn-lg btn-primary" id="s-save" type="button">${t("dash.settings.save")}</button>
       </div>`;
     wireTabs(main, "set");
+    // An uploaded photo replaces the old file at once, so the profile gets its link at once too.
+    C.wireAvatarField(main, {
+      memberId: m.member_id,
+      name: m.username,
+      save: async (url) => {
+        const res = await writeProfileSettings({ avatar_url: url });
+        if (!res.ok) return false;
+        if (state.profile) state.profile.avatar_url = url;
+        C.refreshAvatar(m.member_id, url);
+        return true;
+      },
+    });
     $("#s-theme").value = getTheme();
     $("#s-lang").value = getLang();
     $("#s-theme").onchange = () => saveAppearancePreference("theme", $("#s-theme").value);
@@ -2766,7 +2796,10 @@
           body: JSON.stringify(mem),
         }).catch(() => ({ ok: false, status: 0 })),
       ]);
-      if (profileResult.ok) Object.assign(state.profile, body);
+      if (profileResult.ok) {
+        Object.assign(state.profile, body);
+        C.refreshAvatar(m.member_id, body.avatar_url);
+      }
       if (memberResult.ok) Object.assign(state.member, mem);
       applyPrefs({ language: body.language, theme: body.theme, persist: true });
       toast(profileResult.ok && memberResult.ok ? t("dash.settings.saved") : t("dash.settings.saveFailed"));

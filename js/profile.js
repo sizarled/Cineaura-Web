@@ -3501,7 +3501,7 @@
       <h1>${t("prof.settings")}</h1>
       ${state.isOwner ? "" : `<p class="muted settings-note">${t("prof.settingsNote", { name: hostName })}</p>`}
       <div class="stack">
-        <input id="st-avatar" value="${escapeHtml(p.avatar_url || "")}" placeholder="${t("common.avatarUrl")}" />
+        ${window.CineAura.avatarFieldHtml({ id: "st-avatar", value: p.avatar_url || "", name: state.me.member.username, memberId: state.me.member.member_id })}
         <input id="st-name" value="${escapeHtml(p.display_name || "")}" placeholder="${t("common.displayName")}" />
         <textarea id="st-bio" placeholder="${t("common.bio")}">${escapeHtml(p.bio || "")}</textarea>
         <select id="st-follow">
@@ -3517,6 +3517,22 @@
         <button class="btn btn-lg btn-primary" id="st-save" type="button">${t("common.save")}</button>
       </div>`;
     $("#st-follow").value = p.follow_policy || "instant";
+    // An uploaded photo replaces the old file at once, so the profile gets its link at once too.
+    window.CineAura.wireAvatarField(main, {
+      memberId: state.me.member.member_id,
+      name: state.me.member.username,
+      save: async (url) => {
+        const res = await supabaseRequest(
+          `/rest/v1/profiles?member_id=eq.${restValue(state.me.member.member_id)}`,
+          { method: "PATCH", body: JSON.stringify({ avatar_url: url }) }
+        );
+        if (!res.ok) return false;
+        mine.avatar_url = url;
+        if (state.isOwner && state.host) state.host.avatar_url = url;
+        window.CineAura.refreshAvatar(state.me.member.member_id, url);
+        return true;
+      },
+    });
     $("#st-save").onclick = async () => {
       const body = {
         avatar_url: $("#st-avatar").value.trim(),

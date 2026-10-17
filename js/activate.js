@@ -295,11 +295,19 @@
         <div class="stack">
           <label class="muted">${t("reg.username")}<input value="${escapeHtml(state.member.username)}" disabled /></label>
           <label class="muted">${t("act.bio")}<textarea id="bio" placeholder="${t("act.bioPh")}">${escapeHtml(state.bio)}</textarea></label>
-          <label class="muted">${t("act.avatarUrl")}<input id="avatar" value="${escapeHtml(state.avatar)}" placeholder="https://..." /></label>
+          ${window.CineAura.avatarFieldHtml({ id: "avatar", value: state.avatar, name: state.member.username, memberId: state.member.member_id })}
           <button class="btn btn-lg btn-primary" id="next" type="button">${t("rest.continue")}</button>
           <button class="btn btn-sm btn-ghost" id="back" type="button">${t("act.back")}</button>
         </div>
       </section>`);
+    // An upload fills the link; "Continue" saves it with the rest of the profile.
+    window.CineAura.wireAvatarField($("#activate-root"), {
+      memberId: state.member.member_id,
+      name: state.member.username,
+      uploaded: (url) => {
+        state.avatar = url;
+      },
+    });
     $("#back").onclick = stepPlan;
     $("#next").onclick = async () => {
       state.bio = $("#bio").value.trim();
