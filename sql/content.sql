@@ -15,15 +15,19 @@
 --     yesterday, this week, this month, this year).
 --   * Content.html?idcontent=CT…: the player, title, description, publisher,
 --     recommend / don't recommend, share, add to a playlist, comments and
---     suggestions. Search.html finds videos.
+--     suggestions. Content.html alone: a search box and the 50 videos with the most
+--     watched minutes, recommendations or shares. Search.html finds videos.
 --
 -- Visibility
 --   public     everyone, visitors included
 --   exclusive  found by everyone; watched by signed-in members only, narrowed by
 --              the publisher to followers, premium members and / or countries
 --   private    only the members the publisher listed (and the publisher)
---   The age rating is checked against the member's birth date; visitors confirm
---   their age for 16+ and 18+ on the page.
+--   The age rating is checked against the member's birth date. A video rated 13+
+--   (13+, 16+, 18+) also asks for a watch code (sql/code_devices.sql), for everyone:
+--   content_get leaves its link out, content_unlock gives it for a valid code whose
+--   age tier reaches the rating. "Remember the code" keeps the code on the device
+--   (linked to it in Linked devices) so it is not asked again there.
 --
 -- Points (one "unit" = one watched minute, at the viewer's country tier and the
 -- level of whoever earns it, like the watch links of sql/point_levels.sql):
@@ -454,7 +458,7 @@ language sql stable security definer set search_path = public as $$
     'age', c.age_rating, 'visibility', c.visibility, 'country', c.country,
     'publish_at', c.publish_at, 'created_at', c.created_at,
     'views', c.views, 'likes', c.likes, 'dislikes', c.dislikes, 'comments', c.comments, 'minutes', c.watch_minutes,
-    'owner_id', c.owner_id, 'owner', c.owner_username,
+    'shares', c.shares, 'owner_id', c.owner_id, 'owner', c.owner_username,
     'owner_avatar', coalesce((select p.avatar_url from public.profiles p where p.member_id = c.owner_id), ''),
     'locked', case when coalesce(p_reason, 'ok') = 'ok' then null else p_reason end)
 $$;
@@ -631,7 +635,9 @@ $$;
 -- ------------------------------------------------------------------ 7. watching
 -- Content.html: the video, if the viewer may watch it.
 -- -> { ok: true, access: 'ok' | 'signin' | 'followers' | 'premium' | 'country' | 'age',
---      content: {..., url only when access = ok}, owner: {...}, my_vote, mine }
+--      content: {..., url only when access = ok and the video is rated under 13,
+--                code: true when it is rated 13+ (content_unlock gives the link)},
+--      owner: {...}, my_vote, mine }
 --    { ok: false, reason: not_found | private | scheduled | gone }
 create or replace function public.content_get(p_id text, p_member text default '') returns jsonb
 language plpgsql stable security definer set search_path = public as $$
@@ -650,7 +656,8 @@ begin
   return jsonb_build_object(
     'ok', true, 'access', why, 'mine', c.owner_id = btrim(coalesce(p_member, '')),
     'content', public._content_card(c, why) || jsonb_build_object(
-      'description', c.description, 'url', case when why = 'ok' then c.video_url else null end,
+      'description', c.description, 'url', case when why = 'ok' and c.age_rating < 13 then c.video_url else null end,
+      'code', c.age_rating >= 13,
       'shares', c.shares, 'playlists', c.playlists, 'excl_followers', c.excl_followers,
       'excl_premium', c.excl_premium, 'excl_countries', c.excl_countries),
     'owner', jsonb_build_object('id', c.owner_id, 'username', coalesce(o.username, c.owner_username),
@@ -658,8 +665,42 @@ begin
     'my_vote', coalesce(v, 0));
 end $$;
 
+-- Content.html, a video rated 13+: its link for a watch code (sql/code_devices.sql,
+-- code_use: the code's state, its age tier against the rating, one device per code).
+--   p_silent  the code remembered on this device (not typed): only while it is still
+--             linked to this device
+--   p_link    "Remember the code" ticked: the code is linked to this device
+-- -> { ok: true, url, age, linked, kept, ip, freed, ... }   (the answer of code_use)
+--    { ok: false, reason: no_video | access (+ access) | setup | the refusals of
+--      code_use: invalid | device | not_found (the code) | expired | disabled | banned |
+--      age (+ age_rating) | other_device (+ device_tail) | unlinked }
+create or replace function public.content_unlock(
+  p_id text, p_member text default '', p_code text default '', p_mac text default '',
+  p_name text default '', p_ip text default '', p_silent boolean default false, p_link boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare c public.content; why text; res jsonb;
+begin
+  select * into c from public.content where content_id = btrim(coalesce(p_id, ''));
+  if not found then return jsonb_build_object('ok', false, 'reason', 'no_video'); end if;
+  why := public._content_access(c, p_member);
+  if why <> 'ok' then return jsonb_build_object('ok', false, 'reason', 'access', 'access', why); end if;
+  if c.age_rating < 13 then
+    return jsonb_build_object('ok', true, 'url', c.video_url, 'age', c.age_rating, 'code', false);
+  end if;
+  if to_regprocedure('public.code_use(text, text, text, text, integer, boolean, text, boolean)') is null then
+    return jsonb_build_object('ok', false, 'reason', 'setup');
+  end if;
+  res := public.code_use(btrim(coalesce(p_code, '')), p_mac, coalesce(p_name, ''), coalesce(p_ip, ''),
+                         c.age_rating::int, coalesce(p_silent, false), 'web', coalesce(p_link, false));
+  if not coalesce((res ->> 'ok')::boolean, false) then
+    return res;
+  end if;
+  return res || jsonb_build_object('url', c.video_url, 'age', c.age_rating, 'code', true);
+end $$;
+
 -- Search.html and the search box of Content.html.
---   p_sort: relevance | views | recs | date | az | za
+--   p_sort: relevance | views | recs | date | az | za, and for the 50 videos of
+--           Content.html: minutes (watched minutes) | shares (recs = most recommended)
 --   p_lang (language), p_country (region of the video), p_age (3 6 13 16 18), p_owner (username), p_tag
 -- Public and exclusive videos, and the private ones the member was given; never
 -- scheduled ones, those of banned publishers, or a rating above a member's age.
@@ -676,7 +717,7 @@ begin
     select replace(replace(replace(lower(x), '\', '\\'), '%', '\%'), '_', '\_') as x
     from regexp_split_to_table(q, '\s+') as x where x <> '' limit 8
   ) s;
-  if srt not in ('relevance', 'views', 'recs', 'date', 'az', 'za') then srt := case when q = '' then 'date' else 'relevance' end; end if;
+  if srt not in ('relevance', 'views', 'recs', 'date', 'az', 'za', 'minutes', 'shares') then srt := case when q = '' then 'date' else 'relevance' end; end if;
   with base as (
     select c as r, public._content_access(c, p_member) as why
     from public.content c
@@ -701,9 +742,11 @@ begin
              case when srt = 'views' then (s.r).views end desc,
              case when srt = 'recs' then (s.r).likes end desc,
              case when srt = 'recs' then (s.r).likes - (s.r).dislikes end desc,
+             case when srt = 'minutes' then (s.r).watch_minutes end desc,
+             case when srt = 'shares' then (s.r).shares end desc,
              case when srt = 'az' then lower((s.r).title) end asc,
              case when srt = 'za' then lower((s.r).title) end desc,
-             case when srt in ('relevance') then (s.r).views end desc,
+             case when srt in ('relevance', 'minutes', 'shares') then (s.r).views end desc,
              (s.r).publish_at desc, (s.r).content_id) as rn
            from seen s
            order by rn
@@ -1062,6 +1105,7 @@ begin
   foreach f in array array[
     'public.content_create(text, jsonb)', 'public.content_publish_now(text, text)', 'public.content_delete(text, text)',
     'public.content_mine(text)', 'public.content_get(text, text)',
+    'public.content_unlock(text, text, text, text, text, text, boolean, boolean)',
     'public.content_search(text, text, text, text, text, int, text, text, int, int)',
     'public.content_suggest(text, text, int)', 'public.content_track(text[], text, text, text, text)',
     'public.content_minute(text, text, text)', 'public.content_vote(text, text, int, text)',
