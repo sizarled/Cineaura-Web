@@ -434,7 +434,37 @@
     });
   }
 
+  // "Find" (./index.html#search) and every other link to a part of this page: scroll
+  // there, also when the page was opened as "/" (the browser would load it again).
+  function samePageLinks() {
+    const page = (path) => path.replace(/\/index\.html$/i, "/");
+    document.addEventListener("click", (e) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target.closest("a[href]");
+      if (!a || (a.target && a.target !== "_self")) return;
+      let url;
+      try {
+        url = new URL(a.getAttribute("href"), location.href);
+      } catch {
+        return;
+      }
+      if (!url.hash || url.origin !== location.origin || page(url.pathname) !== page(location.pathname)) return;
+      let el = null;
+      try {
+        el = document.getElementById(decodeURIComponent(url.hash.slice(1)));
+      } catch {
+        el = null;
+      }
+      if (!el) return;
+      e.preventDefault();
+      if (location.hash !== url.hash) history.pushState(null, "", url.hash);
+      const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      el.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+    });
+  }
+
   async function init() {
+    samePageLinks();
     if (window.CineAura?.setupChrome) {
       window.CineAura.setupChrome();
     } else {

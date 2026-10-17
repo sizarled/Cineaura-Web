@@ -633,3 +633,16 @@ html[dir="rtl"] .auth-gate-note { text-align: right; }
 .prof-layout.side-collapsed { grid-template-columns: minmax(0, 1fr); }
 .dash-layout.side-collapsed > aside,
 .prof-layout.side-collapsed > aside { display: none; }
+
+/* Header row that does not fit (js/common.js fitHeader): first the menu links move
+   closer together, then they go into the burger menu, as on tablets. */
+html.nav-tight .header .nav { gap: 0; margin-inline: 4px; }
+html.nav-tight .header .nav a { padding: 8px 9px; font-size: 13px; }
+html.nav-fold .header .nav { display: none; }
+html.nav-fold .header .hamburger { display: flex; flex: 0 0 auto; }
+html.nav-fold .header-inner .auth { margin-inline-start: auto; }
+html.nav-fold .mobile-menu { inset: 64px 14px auto auto; width: min(360px, calc(100% - 28px)); }
+html.nav-fold[dir="rtl"] .mobile-menu { inset: 64px auto auto 14px; }
+/* the page in the menu that is open */
+.nav a[aria-current="page"] { color: var(--text); background: var(--sub-bg); }
+.mobile-menu a[aria-current="page"] { color: var(--cyan); }

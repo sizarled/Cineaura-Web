@@ -1798,6 +1798,8 @@
     message: "prof.newMsg",
     iptv: "notif.iptv",
     iptv_renew: "notif.iptvRenew",
+    // a member shared a private IPTV list (sql/iptv_lists.sql); the body is its name
+    iptv_list: "notif.iptvList",
     // the review of a prize claim (sql/prize_claims.sql)
     prize_claim_review: "notif.claimReview",
     prize_claim_accepted: "notif.claimAccepted",
@@ -2489,20 +2491,67 @@
     translateDom(inner);
     if (menu) translateDom(menu);
 
-    // Show the name next to the icon only while the header has room for it.
-    let fitTimer = 0;
-    const fit = () => {
-      btn.classList.remove("compact");
-      if (inner.scrollWidth > inner.clientWidth + 1) btn.classList.add("compact");
-    };
-    const refit = () => {
-      clearTimeout(fitTimer);
-      fitTimer = setTimeout(fit, 60);
-    };
-    window.addEventListener("resize", refit);
-    document.addEventListener("cineaura:prefs", refit);
-    document.fonts?.ready?.then(refit);
-    refit();
+    // the header keeps every item in sight (fitHeader)
+    watchHeaderFit();
+  }
+
+  /* ---------- The header row never spills over ----------
+     Logo, menu links, the bell, the avatar and the buttons share one row. When they
+     don't fit (a long language, a member's buttons, a mid-size screen), the header
+     gives up room step by step, and checks again whenever the row changes:
+       1. the Site Settings button shows its icon only (.compact)
+       2. the menu links get closer together (html.nav-tight)
+       3. the menu links move into the burger menu, as on tablets (html.nav-fold) */
+  let headerFitTimer = 0;
+  function fitHeader() {
+    const inner = document.querySelector("#site-header .header-inner");
+    if (!inner) return;
+    const root = document.documentElement;
+    const btn = inner.querySelector(".settings-btn");
+    const over = () => inner.scrollWidth > inner.clientWidth + 1;
+    btn?.classList.remove("compact");
+    root.classList.remove("nav-tight", "nav-fold");
+    if (!over()) return;
+    if (btn && btn.offsetParent) {
+      btn.classList.add("compact");
+      if (!over()) return;
+    }
+    const nav = inner.querySelector("nav.nav");
+    if (!nav || !nav.offsetParent) return; // the burger menu already holds the links
+    root.classList.add("nav-tight");
+    if (!over()) return;
+    root.classList.add("nav-fold");
+  }
+
+  function refitHeader() {
+    clearTimeout(headerFitTimer);
+    headerFitTimer = setTimeout(fitHeader, 60);
+  }
+
+  let headerFitWatched = false;
+  function watchHeaderFit() {
+    if (headerFitWatched) return refitHeader();
+    const inner = document.querySelector("#site-header .header-inner");
+    if (!inner) return;
+    headerFitWatched = true;
+    window.addEventListener("resize", refitHeader);
+    document.addEventListener("cineaura:prefs", refitHeader);
+    document.fonts?.ready?.then(refitHeader);
+    // the buttons change once the member is known (avatar, bell, Dashboard / Log Out)
+    if (typeof ResizeObserver === "function") {
+      let last = "";
+      const ro = new ResizeObserver(() => {
+        const key = [...inner.children].map((el) => el.offsetWidth).join(",");
+        if (key !== last) {
+          last = key;
+          refitHeader();
+        }
+      });
+      [...inner.children].forEach((el) => {
+        if (!el.matches("nav.nav")) ro.observe(el);
+      });
+    }
+    refitHeader();
   }
 
   // The member videos (Search.html, Content.html) get a place in the header menu of every
@@ -2695,6 +2744,7 @@
     pollSectionBadges();
     hydratePrefsFromProfile();
     addVideosNav();
+    watchHeaderFit();
     showAccountDeadline().catch(() => {});
     const header = $("#site-header");
     if (header) {
@@ -3012,6 +3062,31 @@
     const r2 = await fetch(`/api/m3u?url=${encodeURIComponent(url)}`);
     if (!r2.ok) throw new Error("fetch failed");
     return r2.text();
+  }
+
+  // cyrb53: a short, stable 53-bit key (base 36) of a text.
+  function cyrb53(str) {
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    const text = String(str || "");
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 2654435761);
+      h2 = Math.imul(h2 ^ c, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+    h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+    h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  }
+
+  // The id of a playlist row on Listchannels.html (&channel=<id>): its stream link (else
+  // its name) and its group. The members' IPTV lists keep the same id with each channel,
+  // so a result of Search.html > Channels opens that very channel.
+  function m3uRowId(row) {
+    const name = String(row?.channel_name || "").trim().toLowerCase().replace(/\s+/g, " ");
+    return `m${cyrb53(`${row?.stream_url || name}\n${row?.group_name}`)}`;
   }
 
   // M3U playlist -> public.listchannels rows (Panel > IPTV import, channel player).
@@ -4182,6 +4257,10 @@
     durationLabel,
     fetchPlaylistText,
     parseM3U,
+    cyrb53,
+    m3uRowId,
+    LANG_NAMES,
+    fitHeader,
     iptvDetailRows,
     iptvActionsHtml,
     bindIptvActions,
