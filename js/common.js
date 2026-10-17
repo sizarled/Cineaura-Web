@@ -2565,7 +2565,15 @@
   async function accountCheck({ fresh = false } = {}) {
     const s = getSession();
     if (!s?.member_id) return null;
-    if (!fresh) {
+    if (fresh) {
+      // the answer kept so far is dropped at once: a page opened before the new answer
+      // arrives (right after activating) asks again instead of showing the old banner
+      try {
+        sessionStorage.removeItem(ACCT_KEY);
+      } catch {
+        /* nothing kept */
+      }
+    } else {
       try {
         const hit = JSON.parse(sessionStorage.getItem(ACCT_KEY) || "null");
         if (hit && hit.id === s.member_id && Date.now() - hit.at < 10 * 60 * 1000) return hit.data;
