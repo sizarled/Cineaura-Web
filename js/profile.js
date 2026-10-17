@@ -778,7 +778,7 @@
       return;
     }
     if (!state.me) {
-      box.innerHTML = `<a class="btn btn-sm btn-primary" href="./login.html">Sign in</a>`;
+      box.innerHTML = `<a class="btn btn-sm btn-primary" href="./login.html">${escapeHtml(t("common.signin"))}</a>`;
       return;
     }
     const f = state.followRow;
