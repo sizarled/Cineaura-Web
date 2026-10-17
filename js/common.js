@@ -1805,6 +1805,11 @@
     prize_claim_unblocked: "notif.claimUnblocked",
     // a watched minute took the member to a new level (sql/point_levels.sql); the body is "LV2 · ×2"
     points_level: "notif.levelUp",
+    // a points code was used (sql/point_codes.sql); the body is "+500"
+    points_code: "notif.pointsCode",
+    // videos (sql/content.sql): a followed member published one; somebody commented on yours
+    content: "notif.newVideo",
+    content_comment: "notif.videoComment",
   };
 
   function noteTitle(n) {
@@ -2500,6 +2505,53 @@
     refit();
   }
 
+  // The member videos (Search.html, Content.html) get a place in the header menu of every
+  // page, after Series, and in the phone menu.
+  function addVideosNav() {
+    const here = /\/(search|content)(\.html)?$/i.test(location.pathname);
+    const make = () => {
+      const a = document.createElement("a");
+      a.href = "./Search.html";
+      a.dataset.i18n = "nav.videos";
+      a.dataset.videosNav = "1";
+      a.textContent = t("nav.videos");
+      if (here) a.setAttribute("aria-current", "page");
+      return a;
+    };
+    const nav = document.querySelector("#site-header nav.nav");
+    if (nav && !nav.querySelector("[data-videos-nav]")) {
+      const series = [...nav.querySelectorAll("a")].find((x) => /#series$/.test(x.getAttribute("href") || ""));
+      if (series) series.after(make());
+      else nav.appendChild(make());
+    }
+    const menu = document.querySelector("#mobile-menu");
+    if (menu && !menu.querySelector("[data-videos-nav]")) {
+      const series = [...menu.querySelectorAll(":scope > a")].find((x) => /#series$/.test(x.getAttribute("href") || ""));
+      const auth = menu.querySelector(":scope > div");
+      if (series) series.after(make());
+      else if (auth) auth.before(make());
+      else menu.appendChild(make());
+    }
+  }
+
+  /* Links the staff set in Panel > Settings (sql/point_codes.sql, site_links):
+       patreon_points  Dashboard > Points > Buy points
+       patreon_plans   the premium codes of the activation page
+     Read once per page; until the table exists (or while a link is empty) the
+     Patreon home page is used. */
+  const PATREON_DEFAULT = "https://www.patreon.com/";
+  let siteLinksReq = null;
+  async function siteLink(key, fallback = PATREON_DEFAULT) {
+    siteLinksReq =
+      siteLinksReq ||
+      supabaseRequest("/rest/v1/site_links?select=key,url")
+        .then((res) => (res.ok && Array.isArray(res.data) ? res.data : []))
+        .catch(() => []);
+    const rows = await siteLinksReq;
+    const url = String(rows.find((r) => r.key === key)?.url || "").trim();
+    return /^https:\/\/[^\s<>"'`]+$/i.test(url) ? url : fallback;
+  }
+
   function setupChrome() {
     applyPrefs({ persist: false });
     initSettingsMenu();
@@ -2513,6 +2565,7 @@
     initHeaderBell();
     pollSectionBadges();
     hydratePrefsFromProfile();
+    addVideosNav();
     const header = $("#site-header");
     if (header) {
       const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 8);
@@ -3026,6 +3079,7 @@
     apps: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
     staff: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><circle cx="12" cy="10.5" r="2.3"/><path d="M8.3 16.2a4.2 4.2 0 0 1 7.4 0"/>',
   };
+  NAV_ICONS.content = '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10.5 9.3v5.4l4.5-2.7z"/>';
   NAV_ICONS.notifications = '<path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>';
 
   function navIcon(name) {
@@ -3076,6 +3130,10 @@
        10 public or exclusive playlists                = 1 point
        50 public or exclusive recommendations          = 1 point
        100 comments                                    = 1 point
+       your videos (sql/content.sql): each counted minute, share, comment and
+         positive recommendation — yours on other members' videos, or other
+         members' on yours — is worth one watched minute (country tier x level)
+       points codes (sql/point_codes.sql): the points of every package serial used
 
      Fractions are dropped (12 referred registrations are worth 2 points, not 2.4). What a
      member can spend is what they earned minus what they already spent
@@ -3095,13 +3153,19 @@
      ════════════════════════════════════════════════════════════════════ */
   const POINT_RATES = [
     { key: "minutes", per: 1, src: "points.src.minutes", rate: "points.rate.minutes" },
+    // stored by the server: profiles.content_points (sql/content.sql), counted in content_units
+    { key: "videos", per: 1, src: "points.src.videos", rate: "points.rate.videos" },
     { key: "shares", per: 5, src: "points.src.shares", rate: "points.rate.shares" },
     { key: "links", per: 500, src: "points.src.links", rate: "points.rate.links" },
     { key: "downloads", per: 1000, src: "points.src.downloads", rate: "points.rate.downloads" },
     { key: "playlists", per: 10, src: "points.src.playlists", rate: "points.rate.playlists" },
     { key: "recommendations", per: 50, src: "points.src.recs", rate: "points.rate.recs" },
     { key: "comments", per: 100, src: "points.src.comments", rate: "points.rate.comments" },
+    // stored by the server: profiles.code_points (sql/point_codes.sql), counted in code_count
+    { key: "codes", per: 1, src: "points.src.codes", rate: "points.rate.codes" },
   ];
+  // Columns of profiles that hold points the server credits (absent until their SQL file ran).
+  const STORED_POINT_COLUMNS = ["watch_points", "content_points", "content_units", "code_points", "code_count"];
 
   const WATCH_TIERS = [
     { tier: 1, minutes: 1, countries: ["US", "CA", "GB"] },
@@ -3180,7 +3244,10 @@
     const id = restValue(memberId);
     const minutes = Number(profile.private_minutes || 0) + Number(profile.public_minutes || 0);
     // profiles.watch_points (sql/point_levels.sql): null on a database without the column
-    const watchPoints = profile.watch_points == null || profile.watch_points === "" ? null : Number(profile.watch_points);
+    const stored = (v) => (v == null || v === "" ? null : Number(v));
+    const watchPoints = stored(profile.watch_points);
+    const videoPoints = stored(profile.content_points);
+    const codePoints = stored(profile.code_points);
     const [shares, playlists, recommendations, comments, movieLinks, tvLinks, movieDl, tvDl] =
       await Promise.all([
         countRows(`/rest/v1/post_events?kind=eq.share&network=eq.referral&member_id=eq.${id}&select=id`),
@@ -3197,6 +3264,10 @@
     return {
       minutes,
       watchPoints: Number.isFinite(watchPoints) ? watchPoints : null,
+      videos: Number(profile.content_units || 0),
+      videoPoints: Number.isFinite(videoPoints) ? videoPoints : null,
+      codes: Number(profile.code_count || 0),
+      codePoints: Number.isFinite(codePoints) ? codePoints : null,
       shares,
       playlists,
       recommendations,
@@ -3210,10 +3281,17 @@
   // Watch minutes give the stored watch points (whole points) once sql/point_levels.sql
   // is in place, 1 point a minute before.
   function pointBreakdown(parts) {
+    const storedOf = { minutes: parts?.watchPoints, videos: parts?.videoPoints, codes: parts?.codePoints };
     return POINT_RATES.map((r) => {
       const count = Number(parts?.[r.key] || 0);
-      const stored = r.key === "minutes" && parts?.watchPoints != null;
-      const points = stored ? Math.floor(Number(parts.watchPoints) + 1e-9) : Math.floor(count / r.per);
+      let points;
+      if (r.key in storedOf) {
+        const v = storedOf[r.key];
+        // watch minutes give 1 point a minute until sql/point_levels.sql stores them
+        points = v != null ? Math.floor(Number(v) + 1e-9) : r.key === "minutes" ? Math.floor(count / r.per) : 0;
+      } else {
+        points = Math.floor(count / r.per);
+      }
       return { key: r.key, per: r.per, src: r.src, rate: r.rate, count, points };
     });
   }
@@ -3238,12 +3316,18 @@
 
   async function memberPoints(memberId, profile = {}) {
     let prof = profile || {};
-    // Callers that loaded only some columns: read the stored watch points (absent on a
-    // database that never ran sql/point_levels.sql — the minutes count then, as before).
-    if (memberId && !("watch_points" in prof)) {
+    // Callers that loaded only some columns: read the stored points (absent on a database
+    // that never ran their SQL file — the minutes count then, as before, and the rest is 0).
+    if (memberId && STORED_POINT_COLUMNS.some((c) => !(c in prof))) {
       const res = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(memberId)}&select=*`).catch(() => null);
       const row = res?.ok && Array.isArray(res.data) ? res.data[0] : null;
-      if (row && "watch_points" in row) prof = { ...prof, watch_points: row.watch_points };
+      if (row) {
+        const add = {};
+        STORED_POINT_COLUMNS.forEach((c) => {
+          if (c in row) add[c] = row[c];
+        });
+        prof = { ...prof, ...add };
+      }
     }
     const parts = await pointParts(memberId, prof);
     const breakdown = pointBreakdown(parts);
@@ -3259,6 +3343,9 @@
         watch.exact = Number(parts.watchPoints);
       }
     }
+    // videos: hundredths kept, like the watch minutes
+    const vids = breakdown.find((r) => r.key === "videos");
+    if (vids && parts.videoPoints != null) vids.exact = Number(parts.videoPoints);
     return {
       parts,
       breakdown,
@@ -4049,6 +4136,9 @@
     sha256,
     supabaseRequest,
     POINT_RATES,
+    STORED_POINT_COLUMNS,
+    siteLink,
+    PATREON_DEFAULT,
     countRows,
     pointParts,
     pointBreakdown,

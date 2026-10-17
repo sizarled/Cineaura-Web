@@ -2072,7 +2072,34 @@
         <label class="lang-chip"><input type="checkbox" id="sh-mem" ${s.show_member ? "checked" : ""} /> ${t("panel.showMember")}</label>
         <p class="muted">${t("panel.superAlways")}</p>
         ${state.staff.role === "super" ? `<button class="btn btn-sm btn-primary" id="sh-save" type="button">${t("common.save")}</button>` : ""}
+        <hr />
+        <p class="muted"><b>${t("panel.patreonTitle")}</b><br />${t("panel.patreonHint")}</p>
+        <label class="field-label" for="pl-points">${t("panel.patreonPoints")}</label>
+        <input id="pl-points" type="url" inputmode="url" maxlength="1000" placeholder="${escapeHtml(window.CineAura.PATREON_DEFAULT)}" dir="ltr" />
+        <label class="field-label" for="pl-plans">${t("panel.patreonPlans")}</label>
+        <input id="pl-plans" type="url" inputmode="url" maxlength="1000" placeholder="${escapeHtml(window.CineAura.PATREON_DEFAULT)}" dir="ltr" />
+        <button class="btn btn-sm btn-primary" id="pl-save" type="button">${t("common.save")}</button>
       </div>`;
+    // Patreon links (sql/point_codes.sql, site_links): read by everyone, saved by staff only
+    supabaseRequest("/rest/v1/site_links?select=key,url").then((res) => {
+      const rows = res.ok && Array.isArray(res.data) ? res.data : [];
+      const get = (k) => rows.find((r) => r.key === k)?.url || "";
+      if ($("#pl-points")) $("#pl-points").value = get("patreon_points");
+      if ($("#pl-plans")) $("#pl-plans").value = get("patreon_plans");
+    });
+    $("#pl-save").onclick = async () => {
+      const links = { patreon_points: $("#pl-points").value.trim(), patreon_plans: $("#pl-plans").value.trim() };
+      if (Object.values(links).some((u) => u && !/^https:\/\/[^\s<>"'`]+$/i.test(u))) return toast(t("panel.patreonBad"));
+      for (const [key, url] of Object.entries(links)) {
+        const res = await window.CineAura.rpc("staff_site_link_save", { p_token: state.staff.token, p_key: key, p_url: url });
+        if (!res.ok) {
+          const missing = res.status === 404 || res.data?.code === "PGRST202";
+          return toast(t(missing ? "panel.patreonSql" : String(res.data?.message || "").includes("forbidden") ? "panel.patreonForbidden" : "panel.actFail"));
+        }
+        if (res.data?.ok === false) return toast(t(res.data.error === "bad_url" ? "panel.patreonBad" : "panel.actFail"));
+      }
+      toast(t("panel.saved"));
+    };
     $("#np-save").onclick = async () => {
       const a = $("#np1").value;
       const b = $("#np2").value;

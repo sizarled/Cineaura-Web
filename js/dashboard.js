@@ -275,7 +275,7 @@
             <span>${escapeHtml(m.member_id)}</span>
           </a>
           <nav class="side-nav">
-            ${["overview","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"].map((s) =>
+            ${SECTIONS.map((s) =>
               `<button type="button" data-section="${s}" class="${state.section===s?"active":""}">${C.navIcon(s)}<span>${t("dash.nav."+s)}</span></button>`
             ).join("")}
             ${state.panelVisible ? `<a href="./Panel.html" data-panel-link>${C.navIcon("panel")}<span>${t("nav.panel")}</span></a>` : ""}
@@ -330,6 +330,7 @@
     main.onclick = null;
     const map = {
       overview: viewOverview,
+      points: viewPoints,
       playlists: viewPlaylists,
       links: viewLinks,
       reports: viewReports,
@@ -451,7 +452,10 @@
       <section class="ov-block" aria-labelledby="ov-points-h">
         <div class="ov-head">
           <h2 id="ov-points-h">${t("points.title")}</h2>
-          <button class="btn btn-sm btn-ghost" type="button" data-section="prizes">${t("dash.ov.toPrizes")}</button>
+          <div class="ov-head-btns">
+            <button class="btn btn-sm btn-primary" type="button" data-section="points">${t("points.earnBtn")}</button>
+            <button class="btn btn-sm btn-ghost" type="button" data-section="prizes">${t("dash.ov.toPrizes")}</button>
+          </div>
         </div>
         <div class="stat-row ov-points">
           <div class="stat ov-accent"><b data-pt="available">…</b><span>${t("points.available")}</span></div>
@@ -2682,6 +2686,255 @@
       </div>`;
   }
 
+  // ---------- Points (moved here from the profile) ----------
+  // Balance, level, where the points came from and where they went, plus three ways on:
+  //   Earn points   a points code — the serial of a points package (sql/point_codes.sql) —
+  //                 adds the points stored with it, once
+  //   Buy points    Patreon (the link is set in Panel > Settings)
+  //   Earn prizes   Prize.html, where points enter the prizes
+  const PT_ICONS = {
+    earn: '<path d="M3.5 8.5V6A1.5 1.5 0 0 1 5 4.5h14A1.5 1.5 0 0 1 20.5 6v2.5a2.5 2.5 0 0 0 0 5V16a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 16v-2.5a2.5 2.5 0 0 0 0-5z"/><path d="M14 4.5v13" stroke-dasharray="2 2"/><path d="M8 9.5l1 2 2 .3-1.5 1.4.4 2L8 14.2l-1.9 1 .4-2L5 11.8l2-.3z"/>',
+    buy: '<circle cx="14.5" cy="9.5" r="5.5"/><path d="M4.5 4v16"/>',
+    prizes: '<rect x="3.5" y="8" width="17" height="4.5" rx="1"/><path d="M5 12.5V20.5h14v-8M12 8v12.5"/><path d="M12 8C10.5 4.5 6.5 4 6.5 6.3S9.5 8 12 8zM12 8c1.5-3.5 5.5-4 5.5-1.7S14.5 8 12 8z"/>',
+  };
+  const ptIcon = (k) => `<svg class="pts-act-ico" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PT_ICONS[k]}</svg>`;
+
+  function pointsSpendsHtml(spends) {
+    const modeLabel = {
+      gift: t("prize.mode.gift"),
+      challenge: t("prize.mode.challenge"),
+      lottery: t("prize.mode.lottery"),
+      claim: t("points.mode.claim"),
+      // taken by the prize team when a claim was rejected (sql/prize_claims.sql)
+      penalty: t("points.mode.penalty"),
+      reset: t("points.mode.reset"),
+    };
+    const rows = spends.rows.map((r) => {
+      const when = String(r.created_at || "").slice(0, 10);
+      const mode = modeLabel[r.mode] || "";
+      return `
+        <li class="pt-row">
+          <span class="pt-src">
+            <b>${escapeHtml(r.prize_title || t("points.unnamedPrize"))}</b>
+            <small>${escapeHtml([mode, when].filter(Boolean).join(" · "))}</small>
+          </span>
+          <span class="pt-pts">−${Number(r.amount || 0)}</span>
+        </li>`;
+    });
+    if (spends.earlier > 0) {
+      rows.push(`
+        <li class="pt-row">
+          <span class="pt-src"><b>${escapeHtml(t("points.earlier"))}</b></span>
+          <span class="pt-pts">−${spends.earlier}</span>
+        </li>`);
+    }
+    return rows.length
+      ? `<ul class="pt-list">${rows.join("")}</ul>`
+      : `<p class="muted">${escapeHtml(t("points.noSpent"))}</p>`;
+  }
+
+  function pointCodesHtml(list) {
+    if (list === null) return `<p class="muted">${escapeHtml(t("points.codesSetup"))}</p>`;
+    if (!list.length) return `<p class="muted">${escapeHtml(t("points.codesNone"))}</p>`;
+    return `<ul class="pt-list">${list
+      .map(
+        (c) => `
+        <li class="pt-row">
+          <span class="pt-src">
+            <b dir="ltr" class="pts-serial">${escapeHtml(c.code)}</b>
+            <small>${escapeHtml([c.note, c.used_at ? whenText(Date.parse(c.used_at)) : ""].filter(Boolean).join(" · "))}</small>
+          </span>
+          <span class="pt-pts">+${Number(c.points || 0)}</span>
+        </li>`
+      )
+      .join("")}</ul>`;
+  }
+
+  async function viewPoints(main) {
+    main.innerHTML = `
+      <p class="eyebrow">${t("dash.nav.points")}</p>
+      <h1>${t("points.title")}</h1>
+      <p class="muted">${t("points.intro")}</p>
+      <div class="pts-top">
+        <div class="stat-row pts-stats">
+          <div class="stat ov-accent"><b data-pt="available">…</b><span>${t("points.available")}</span></div>
+          <div class="stat"><b data-pt="earned">…</b><span>${t("points.earned")}</span></div>
+          <div class="stat"><b data-pt="spent">…</b><span>${t("points.spent")}</span></div>
+          <div class="stat ov-level" data-pt-level hidden><b><bdi dir="ltr" data-pt="level"></bdi></b><span data-pt="mult"></span></div>
+        </div>
+        <div class="pts-actions">
+          <button class="btn btn-lg btn-primary pts-act" id="pt-earn" type="button">${ptIcon("earn")}<span><b>${t("points.earnBtn")}</b><small>${t("points.earnSub")}</small></span></button>
+          <a class="btn btn-lg btn-ghost pts-act" id="pt-buy" href="${escapeHtml(C.PATREON_DEFAULT)}" target="_blank" rel="noopener noreferrer">${ptIcon("buy")}<span><b>${t("points.buyBtn")}</b><small>${t("points.buySub")}</small></span></a>
+          <a class="btn btn-lg btn-ghost pts-act" id="pt-prizes" href="./Prize.html">${ptIcon("prizes")}<span><b>${t("points.prizesBtn")}</b><small>${t("points.prizesSub")}</small></span></a>
+        </div>
+      </div>
+      <div id="pt-body"><p class="muted">${t("points.loading")}</p></div>`;
+    C.siteLink("patreon_points").then((url) => {
+      main.querySelectorAll("#pt-buy").forEach((a) => { a.href = url; });
+    });
+    main.querySelector("#pt-earn").onclick = () => openEarnPoints(main);
+    await drawPointsBody(main);
+  }
+
+  async function drawPointsBody(main) {
+    const me = state.member.member_id;
+    let mp;
+    let spends;
+    let codes = null;
+    try {
+      // the server changes the stored points (codes, videos, minutes): read the row again
+      const prof = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(me)}&select=*`);
+      if (prof.ok && Array.isArray(prof.data) && prof.data[0]) state.profile = { ...(state.profile || {}), ...prof.data[0] };
+      mp = await C.memberPoints(me, state.profile || {});
+      const [sp, hist] = await Promise.all([
+        C.memberSpends(me, mp.spent),
+        C.rpc("points_code_history", { p_member: me }).catch(() => null),
+      ]);
+      spends = sp;
+      codes = hist?.ok && Array.isArray(hist.data) ? hist.data : null;
+    } catch {
+      const body = main.querySelector("#pt-body");
+      if (body) body.innerHTML = `<p class="empty">${t("points.loadFail")}</p>`;
+      return;
+    }
+    if (!main.isConnected || state.section !== "points") return;
+    ["available", "earned", "spent"].forEach((k) => {
+      const el = main.querySelector(`[data-pt="${k}"]`);
+      if (el) el.textContent = String(Number(mp[k] || 0));
+    });
+    const lvStat = main.querySelector("[data-pt-level]");
+    if (lvStat && mp.levels && mp.level) {
+      lvStat.querySelector('[data-pt="level"]').textContent = mp.level.name;
+      lvStat.querySelector('[data-pt="mult"]').textContent = t("points.levelMult", { n: mp.level.multiplier });
+      lvStat.hidden = false;
+    }
+    const codeRow = mp.breakdown.find((r) => r.key === "codes");
+    main.querySelector("#pt-body").innerHTML = `
+      <div class="pts-cols">
+        <section class="pt-box">
+          <div class="pt-head"><span>${escapeHtml(t("points.earned"))}</span><b class="pt-total">${mp.earned}</b></div>
+          ${C.levelHtml(mp)}
+          <p class="muted pts-sub">${escapeHtml(t("points.earnedFrom"))}</p>
+          <ul class="pt-list">${mp.breakdown.map(C.pointRowHtml).join("")}</ul>
+        </section>
+        <section class="pt-box">
+          <div class="pt-head"><span>${escapeHtml(t("points.spent"))}</span><b class="pt-total">${mp.spent}</b></div>
+          <p class="muted pts-sub">${escapeHtml(t("points.spentOn"))}</p>
+          ${pointsSpendsHtml(spends)}
+        </section>
+      </div>
+      <section class="pt-box pts-codes" aria-labelledby="pt-codes-h">
+        <div class="pt-head"><span id="pt-codes-h">${escapeHtml(t("points.codesTitle"))}</span><b class="pt-total">+${Number(codeRow?.points || 0)}</b></div>
+        ${pointCodesHtml(codes)}
+      </section>`;
+  }
+
+  const POINT_CODE_ERRORS = {
+    invalid: "points.err.invalid",
+    not_found: "points.err.notFound",
+    used: "points.err.used",
+    used_mine: "points.err.usedMine",
+    other: "points.err.other",
+    expired: "points.err.expired",
+    locked: "points.err.locked",
+    banned: "points.err.banned",
+    member: "points.err.member",
+  };
+
+  // "Earn points": the serial of a points package; the points stored with it are added.
+  function openEarnPoints(main) {
+    const ov = document.createElement("div");
+    ov.className = "modal-overlay pts-overlay";
+    ov.innerHTML = `
+      <section class="glass modal-card pts-dlg" role="dialog" aria-modal="true" aria-labelledby="pt-dlg-h" tabindex="-1">
+        <div class="pts-dlg-head">
+          <span class="pts-dlg-ico">${ptIcon("earn")}</span>
+          <h2 id="pt-dlg-h">${t("points.earnTitle")}</h2>
+          <button class="pts-x" type="button" data-close aria-label="${escapeHtml(t("common.close"))}">×</button>
+        </div>
+        <div id="pt-dlg-body">
+          <p class="muted">${t("points.earnLead")}</p>
+          <form class="stack pts-form" id="pt-form" novalidate>
+            <label class="field-label" for="pt-code">${t("points.codeLabel")}</label>
+            <input id="pt-code" class="pts-code-input" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="80" placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" />
+            <div class="form-alert" id="pt-alert" role="alert"></div>
+            <button class="btn btn-lg btn-primary" id="pt-submit" type="submit">${t("points.addBtn")}</button>
+          </form>
+          <p class="muted pts-dlg-foot">${t("points.noCode")} <a id="pt-dlg-buy" href="${escapeHtml(C.PATREON_DEFAULT)}" target="_blank" rel="noopener noreferrer">${t("points.buyBtn")}</a></p>
+        </div>
+      </section>`;
+    const prevFocus = document.activeElement;
+    let changed = false;
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      ov.remove();
+      try { prevFocus?.focus?.(); } catch { /* gone */ }
+      if (changed && state.section === "points" && main.isConnected) drawPointsBody(main);
+    };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    ov.addEventListener("click", (e) => {
+      if (e.target === ov || e.target.closest("[data-close]")) close();
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(ov);
+    C.siteLink("patreon_points").then((url) => {
+      const a = ov.querySelector("#pt-dlg-buy");
+      if (a) a.href = url;
+    });
+    const input = ov.querySelector("#pt-code");
+    const alertBox = ov.querySelector("#pt-alert");
+    const showError = (text) => {
+      alertBox.className = "form-alert show error";
+      alertBox.textContent = text;
+      input.setAttribute("aria-invalid", "true");
+      input.focus();
+    };
+    input.focus();
+    input.addEventListener("input", () => {
+      alertBox.className = "form-alert";
+      alertBox.textContent = "";
+      input.removeAttribute("aria-invalid");
+    });
+    ov.querySelector("#pt-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const code = input.value.trim();
+      if (code.replace(/[^A-Za-z0-9]/g, "").length < 4) return showError(t("points.err.invalid"));
+      const btn = ov.querySelector("#pt-submit");
+      btn.disabled = true;
+      btn.textContent = t("points.adding");
+      let cc = "";
+      try { cc = (await C.detectGeo()) || ""; } catch { cc = ""; }
+      const res = await C.rpc("points_code_redeem", { p_member: state.member.member_id, p_code: code, p_country: cc }).catch(() => null);
+      btn.disabled = false;
+      btn.textContent = t("points.addBtn");
+      if (!res) return showError(t("points.err.network"));
+      if (!res.ok) {
+        const missing = res.status === 404 || ["PGRST202", "42883"].includes(res.data?.code);
+        if (missing) console.warn("CineAura: points_code_redeem() is missing — run sql/point_codes.sql in the Supabase SQL editor.");
+        return showError(t(missing ? "points.err.setup" : "points.err.network"));
+      }
+      const r = res.data || {};
+      if (!r.ok) {
+        let text = t(POINT_CODE_ERRORS[r.reason] || "points.err.network");
+        if (r.reason === "not_found" && Number.isFinite(Number(r.left)) && Number(r.left) <= 3) text += ` ${t("points.err.left", { n: Number(r.left) })}`;
+        return showError(text);
+      }
+      changed = true;
+      ov.querySelector("#pt-dlg-body").innerHTML = `
+        <div class="pts-ok" role="status">
+          <div class="pts-ok-num">+${Number(r.points || 0)}</div>
+          <p><b>${t("points.added", { n: Number(r.points || 0) })}</b></p>
+          ${r.level_up ? `<p class="pts-ok-level">${t("points.newLevel", { level: escapeHtml(r.level_name || ""), n: Number(r.multiplier || 1) })}</p>` : ""}
+          <div class="pts-ok-actions">
+            <button class="btn btn-lg btn-primary" type="button" data-close>${t("points.done")}</button>
+            <a class="btn btn-lg btn-ghost" href="./Prize.html">${t("points.prizesBtn")}</a>
+          </div>
+        </div>`;
+      ov.querySelector(".pts-ok [data-close]").focus();
+      toast(t("points.added", { n: Number(r.points || 0) }));
+    });
+  }
+
   async function viewSettings(main) {
     const m = state.member;
     const p = state.profile || {};
@@ -2806,7 +3059,8 @@
     };
   }
 
-  const SECTIONS = ["overview","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"];
+  // "points" (Earn points / Buy points / Earn prizes, the sources and the spends) moved here from the profile
+  const SECTIONS = ["overview","points","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"];
   // dashboard.html#claims: Prizes > Prize claims (where the claim notifications lead)
   // dashboard.html#devices: Codes > Linked devices (named by the watch page)
   const HASH_ALIASES = {

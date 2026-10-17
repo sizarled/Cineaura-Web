@@ -31,9 +31,6 @@
     translateDom,
     getLocale,
     memberPoints,
-    pointRowHtml,
-    levelHtml,
-    memberSpends,
   } = window.CineAura;
 
   // Reads always go through; writes need a live session. A member who signed out
@@ -147,10 +144,10 @@
     const age = accountAge(state.hostMember?.created_at);
     return `
       <div class="stat-row prof-stats">
-        <div class="stat">
+        <a class="stat prof-stat-link" href="./dashboard.html#points" title="${escapeHtml(t("dash.nav.points"))}">
           <b data-own-points>${escapeHtml(state.ownPoints ?? "…")}</b>
           <span>${escapeHtml(t("prof.pointsAvail"))}</span>
-        </div>
+        </a>
         <div class="stat">
           <b class="prof-age">${escapeHtml(accountAgeText(age))}</b>
           <span>${escapeHtml(t("prof.accountAge"))}</span>
@@ -504,7 +501,9 @@
   // Sidebar entries. Every one of them reads or writes the signed-in member's
   // own rows, so a signed-out visitor gets no sidebar at all — only the public
   // home of the profile being visited.
-  const NAV_SECTIONS = ["home", "create", "posts", "points", "messages", "search", "following", "blocked", "settings"];
+  // Points live in Dashboard > Points; "Your content" (js/content-studio.js) holds the
+  // member's videos: Create, Manage, Statistics.
+  const NAV_SECTIONS = ["home", "create", "posts", "content", "messages", "search", "following", "blocked", "settings"];
 
   function signedIn() {
     return Boolean(state.me?.member?.member_id);
@@ -558,6 +557,9 @@
       const sec = e.target.closest("[data-sec]");
       if (sec) {
         state.section = sec.dataset.sec;
+        if (state.section !== "content" && /^#content/.test(location.hash)) {
+          history.replaceState(history.state, "", `${location.pathname}${location.search}`);
+        }
         renderShell();
       }
     };
@@ -610,7 +612,7 @@
       home: viewHome,
       create: viewCreate,
       posts: viewManagePosts,
-      points: viewPoints,
+      content: viewContent,
       messages: viewMessages,
       search: viewSearch,
       following: viewFollowing,
@@ -3383,84 +3385,13 @@
     </div>`;
   }
 
-  // ---------- Points (signed-in member's own account, like the other sections) ----------
-  // Earned and spent points, each with its sources and the points every source gives.
-  // Available = earned - spent. The rates and counts come from CineAura.memberPoints.
-  function pointsSpendsHtml(spends) {
-    const modeLabel = {
-      gift: t("prize.mode.gift"),
-      challenge: t("prize.mode.challenge"),
-      lottery: t("prize.mode.lottery"),
-      claim: t("points.mode.claim"),
-      // taken by the prize team when a claim was rejected (sql/prize_claims.sql)
-      penalty: t("points.mode.penalty"),
-      reset: t("points.mode.reset"),
-    };
-    const rows = spends.rows.map((r) => {
-      const when = String(r.created_at || "").slice(0, 10);
-      const mode = modeLabel[r.mode] || "";
-      return `
-        <li class="pt-row">
-          <span class="pt-src">
-            <b>${escapeHtml(r.prize_title || t("points.unnamedPrize"))}</b>
-            <small>${escapeHtml([mode, when].filter(Boolean).join(" · "))}</small>
-          </span>
-          <span class="pt-pts">−${Number(r.amount || 0)}</span>
-        </li>`;
-    });
-    if (spends.earlier > 0) {
-      rows.push(`
-        <li class="pt-row">
-          <span class="pt-src">
-            <b>${escapeHtml(t("points.earlier"))}</b>
-          </span>
-          <span class="pt-pts">−${spends.earlier}</span>
-        </li>`);
-    }
-    return rows.length
-      ? `<ul class="pt-list">${rows.join("")}</ul>`
-      : `<p class="muted">${escapeHtml(t("points.noSpent"))}</p>`;
-  }
-
-  function pointsEarnedHtml(mp) {
-    return `<ul class="pt-list">${mp.breakdown.map(pointRowHtml).join("")}</ul>`;
-  }
-
-  async function viewPoints(main) {
-    const me = state.me?.member?.member_id;
-    if (!me) return;
-    main.innerHTML = `<p class="eyebrow">${escapeHtml(t("prof.points"))}</p><h1>${escapeHtml(t("prof.points"))}</h1><p class="muted">${escapeHtml(t("points.loading"))}</p>`;
-    let mp;
-    let spends;
-    try {
-      mp = await memberPoints(me, state.me.profile || {});
-      spends = await memberSpends(me, mp.spent);
-    } catch {
-      main.innerHTML = `<p class="eyebrow">${escapeHtml(t("prof.points"))}</p><h1>${escapeHtml(t("prof.points"))}</h1><p class="empty">${escapeHtml(t("points.loadFail"))}</p>`;
+  // ---------- Your content (the member's videos, js/content-studio.js) ----------
+  function viewContent(main) {
+    if (!window.CineAuraStudio) {
+      main.innerHTML = `<p class="empty">${escapeHtml(t("vid.setup"))}</p>`;
       return;
     }
-    main.innerHTML = `
-      <p class="eyebrow">${escapeHtml(t("prof.points"))}</p>
-      <h1>${escapeHtml(t("prof.points"))}</h1>
-      <p class="muted">${escapeHtml(t("points.intro"))}</p>
-      <div class="stat-row prof-stats">
-        <div class="stat"><b>${mp.earned}</b><span>${escapeHtml(t("points.earned"))}</span></div>
-        <div class="stat"><b>${mp.spent}</b><span>${escapeHtml(t("points.spent"))}</span></div>
-        <div class="stat"><b>${mp.available}</b><span>${escapeHtml(t("points.available"))}</span></div>
-      </div>
-      <div class="pts-cols">
-        <section class="pt-box">
-          <div class="pt-head"><span>${escapeHtml(t("points.earned"))}</span><b class="pt-total">${mp.earned}</b></div>
-          ${levelHtml(mp)}
-          <p class="muted pts-sub">${escapeHtml(t("points.earnedFrom"))}</p>
-          ${pointsEarnedHtml(mp)}
-        </section>
-        <section class="pt-box">
-          <div class="pt-head"><span>${escapeHtml(t("points.spent"))}</span><b class="pt-total">${mp.spent}</b></div>
-          <p class="muted pts-sub">${escapeHtml(t("points.spentOn"))}</p>
-          ${pointsSpendsHtml(spends)}
-        </section>
-      </div>`;
+    window.CineAuraStudio.render(main, { member: state.me.member });
   }
 
   async function viewBlocked(main) {
@@ -3639,6 +3570,8 @@
     if (state.isOwner && !host.profile) state.host = state.me.profile || ownSeed();
     await loadRelations();
     await loadHostStatus();
+    // Profile.html#content (and #content/manage, #content/stats) opens "Your content"
+    if (state.me && /^#content(\/|$)/.test(location.hash)) state.section = "content";
     renderShell();
     // A "?post=" link lands on the post itself, once the wall has drawn it.
     if (postId) focusSharedPost(postId);

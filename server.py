@@ -63,6 +63,13 @@ ROUTES = {
     "/help": "support.html",
     "/about": "about.html",
     "/about.html": "about.html",
+    # member videos (sql/content.sql): Content.html?idcontent=CT..., Search.html
+    "/Content": "content.html",
+    "/Content.html": "content.html",
+    "/content": "content.html",
+    "/Search": "search.html",
+    "/Search.html": "search.html",
+    "/search": "search.html",
 }
 
 

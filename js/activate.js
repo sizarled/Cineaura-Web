@@ -13,7 +13,12 @@
   } = window.CineAura;
 
   const LOCKER_ID = "13897974-6da6-11f1-a2d7-8a5fb7be40ea";
-  const PATREON_URL = "https://www.patreon.com/";
+  // The Patreon page of the premium codes is set in Panel > Settings (sql/point_codes.sql);
+  // the Patreon home page until then.
+  let PATREON_URL = window.CineAura.PATREON_DEFAULT || "https://www.patreon.com/";
+  window.CineAura.siteLink?.("patreon_plans").then((url) => {
+    PATREON_URL = url;
+  });
   const PLANS = {
     Free: { months: 1, duration: "1 month", price: "$0" },
     Silver: { months: 3, duration: "3 months", price: "$5" },

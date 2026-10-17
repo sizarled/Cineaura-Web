@@ -1398,3 +1398,88 @@ html:not([data-theme="day"]) .ipx-badge.epg { color: #a996ff; }
 .set-plan-line { margin: 0; }
 .set-upgrade { display: inline-flex; align-items: center; gap: 8px; padding: 0 18px; }
 .set-upgrade svg { flex: 0 0 auto; }
+
+/* ---------- Dashboard > Points (moved from the profile) ----------
+   The balance next to three ways on: Earn points (a points code), Buy points
+   (Patreon) and Earn prizes; then the sources, the spends and the codes used. */
+.pts-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.pts-cols .pt-box { margin-top: 0; }
+.pts-sub { margin: 8px 0 0; font-size: 13px; }
+.pts-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 320px);
+  gap: 16px;
+  align-items: start;
+  margin: 16px 0 18px;
+}
+.pts-stats { margin: 0; }
+.pts-actions { display: grid; gap: 10px; }
+.pts-act.btn {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  height: auto;
+  min-height: 58px;
+  padding: 10px 14px;
+  text-align: start;
+  white-space: normal;
+}
+.pts-act span { display: grid; gap: 1px; line-height: 1.25; }
+.pts-act b { font-size: 15px; }
+.pts-act small { font-size: 12px; font-weight: 500; opacity: 0.85; }
+.pts-act.btn-ghost { background: var(--sub-bg); color: var(--text); }
+.pts-act.btn-ghost:hover { background: rgba(45, 136, 255, 0.14); }
+.pts-act-ico { flex: none; }
+.pts-codes { margin-top: 16px; }
+.pts-serial { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.04em; }
+.ov-head-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.pts-dlg { width: min(460px, 100%); display: grid; gap: 12px; }
+.pts-dlg-head { display: flex; align-items: center; gap: 10px; }
+.pts-dlg-head h2 { flex: 1; font-size: 20px; margin: 0; }
+.pts-dlg-ico {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(45, 136, 255, 0.15);
+  color: var(--cyan);
+  flex: none;
+}
+.pts-x { width: 34px; height: 34px; border-radius: 50%; font-size: 22px; line-height: 1; color: var(--muted); }
+.pts-x:hover { background: var(--sub-bg); color: var(--text); }
+.pts-form { gap: 10px; }
+.pts-code-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+}
+.pts-code-input[aria-invalid="true"] { border-color: var(--red) !important; }
+.pts-dlg-foot { margin: 0; font-size: 13px; text-align: center; }
+.pts-dlg-foot a { color: var(--cyan); font-weight: 600; }
+.pts-ok { display: grid; justify-items: center; gap: 8px; text-align: center; padding: 6px 0 2px; }
+.pts-ok-num { font-size: 44px; font-weight: 800; color: var(--green); font-variant-numeric: tabular-nums; direction: ltr; }
+.pts-ok p { margin: 0; }
+.pts-ok-level { color: var(--cyan); font-weight: 700; }
+.pts-ok-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 8px; }
+
+@media (max-width: 900px) {
+  .pts-top { grid-template-columns: minmax(0, 1fr); }
+  .pts-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .pts-cols { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .pts-actions { grid-template-columns: minmax(0, 1fr); }
+}
+
