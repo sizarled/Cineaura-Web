@@ -822,6 +822,9 @@ html[data-theme] .vs-searchbar input { flex: 1; min-width: 0; border: 0; backgro
   white-space: nowrap;
 }
 html[dir="rtl"] .cx-offer-go svg { transform: scaleX(-1); }
+/* the narrow side column: the button under the text, so the text keeps the width */
+.cx-offers--side .cx-offer { grid-template-columns: 44px minmax(0, 1fr); align-items: start; }
+.cx-offers--side .cx-offer-go { grid-column: 2; justify-self: start; }
 
 /* ---------- Home page > Members' videos ---------- */
 .hv-track .vcard { width: 288px; flex: none; scroll-snap-align: start; }
