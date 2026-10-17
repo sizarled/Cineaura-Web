@@ -851,3 +851,70 @@ html[dir="rtl"] .cx-offer-go svg { transform: scaleX(-1); }
 @media (max-width: 420px) {
   .vh-tabs .follow-tab svg { display: none; }
 }
+
+/* ---------- visibility badges (a member's page, the updates feed) ---------- */
+.vbadge-vis { background: rgba(20, 24, 31, 0.8); }
+.vbadge-exclusive { background: rgba(108, 70, 220, 0.9); }
+
+/* ---------- a member's page > Content: videos and playlists (js/profile.js) ---------- */
+.pc { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
+.pc [hidden] { display: none !important; }
+.pc-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 6px 16px; border-bottom: 1px solid var(--line); }
+.pc-head .follow-tabs.pc-tabs { margin: 0; border-bottom: 0; flex-wrap: nowrap; min-width: 0; }
+.pc-tabs .follow-tab { gap: 7px; }
+.pc-tabs .follow-tab svg { flex: none; }
+.pc-own { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 8px; }
+.pc-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; }
+.pc-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
+.pc-note { margin: 0; flex: 1 1 280px; font-size: 13px; line-height: 1.5; }
+.pc-sort { display: inline-flex; align-items: center; gap: 8px; margin-inline-start: auto; color: var(--muted); font-size: 13.5px; font-weight: 600; }
+.pc-sort select { width: auto; min-width: 160px; margin: 0; padding: 8px 10px; }
+.pc-grid { list-style: none; margin: 0; padding: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+.pc-item { min-width: 0; display: grid; }
+.pc-wait,
+.pc-none { grid-column: 1 / -1; min-width: 0; }
+.pc-wait { min-height: 160px; display: grid; place-items: center; }
+.pc-wait .loader { position: static; }
+.pc-none { display: grid; justify-items: center; gap: 10px; }
+.pc-none p { margin: 0; }
+.pc-more { display: flex; justify-content: center; }
+/* a playlist: two cards stacked behind its picture, the number of videos on it */
+.pc-pl .pc-pl-thumb {
+  margin-top: 12px;
+  box-shadow: 0 -6px 0 -3px color-mix(in srgb, var(--muted) 55%, transparent), 0 -12px 0 -6px color-mix(in srgb, var(--muted) 30%, transparent);
+}
+.pc-pl-count { position: absolute; inset-block-end: 8px; inset-inline-end: 8px; display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.74); color: #fff; font-size: 12px; font-weight: 700; line-height: 1.6; }
+.pc-pl-open { font-size: 12.5px; font-weight: 700; color: var(--cyan); }
+.pc-pl:hover .pc-pl-open { text-decoration: underline; }
+/* one playlist */
+.pc-plhead { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px 16px; padding: 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--sub-bg); }
+.pc-plhead .pc-back { display: inline-flex; align-items: center; gap: 6px; }
+html[dir="rtl"] .pc-back svg { transform: scaleX(-1); }
+.pc-plinfo { display: grid; gap: 3px; min-width: 0; }
+.pc-plinfo h3 { margin: 0; font-size: 20px; line-height: 1.3; overflow-wrap: anywhere; }
+.pc-plinfo p { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.pc-plinfo a { color: inherit; }
+.pc-plshare { grid-column: 1 / -1; min-width: 0; }
+.pc-plshare .share-row { margin: 0; }
+
+/* ---------- Profile > Updates: a new video of somebody you follow ---------- */
+.upd-video .vcard { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); align-items: start; gap: 14px; }
+.upd-video .vcard-title { font-size: 16px; }
+.upd-more { display: flex; justify-content: center; margin: 4px 0 14px; }
+
+@media (max-width: 640px) {
+  .pc-head { align-items: stretch; }
+  .pc-head .follow-tabs.pc-tabs { width: 100%; }
+  /* two equal tabs; a long label goes on two lines instead of out of sight */
+  .pc-tabs .follow-tab { flex: 1 1 0; min-width: 0; justify-content: center; padding: 10px 6px; font-size: 13.5px; line-height: 1.25; white-space: normal; text-align: center; }
+  .pc-own { width: 100%; padding-block: 8px; }
+  .pc-own .btn { flex: 1 1 0; justify-content: center; }
+  .pc-sort { width: 100%; margin-inline-start: 0; }
+  .pc-sort select { flex: 1 1 auto; min-width: 0; }
+  .pc-plhead { grid-template-columns: minmax(0, 1fr); }
+  .pc-plhead .pc-back { justify-self: start; }
+  .upd-video .vcard { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+}
+@media (max-width: 420px) {
+  .pc-tabs .follow-tab svg { display: none; }
+}

@@ -69,6 +69,7 @@
     draft: null,
     ownPoints: null, // points the signed-in member can spend, once counted
     ownPointsReq: null,
+    pc: null, // the Content tab (pcState)
   };
 
   document.addEventListener("cineaura:prefs", () => {
@@ -560,6 +561,7 @@
         if (state.section !== "content" && /^#content/.test(location.hash)) {
           history.replaceState(history.state, "", `${location.pathname}${location.search}`);
         }
+        if (state.section !== "home" && pcFromHash()) replaceHash("");
         renderShell();
       }
     };
@@ -743,7 +745,8 @@
         <div class="prof-actions" id="prof-actions"></div>
       </div>
       <div class="tabs">
-        <button class="btn btn-sm ${state.homeTab==="activity"?"btn-primary":"btn-ghost"}" data-htab="activity" type="button">${t("prof.activity")}</button>
+        <button class="btn btn-sm auth-allow ${state.homeTab==="activity"?"btn-primary":"btn-ghost"}" data-htab="activity" type="button">${t("prof.activity")}</button>
+        <button class="btn btn-sm auth-allow ${state.homeTab==="content"?"btn-primary":"btn-ghost"}" data-htab="content" type="button">${t("prof.contentTab")}</button>
         ${state.isOwner ? `<button class="btn btn-sm ${state.homeTab==="updates"?"btn-primary":"btn-ghost"}" data-htab="updates" type="button">${t("prof.updates")}</button>` : ""}
       </div>
       <div id="home-body"></div>`;
@@ -754,12 +757,15 @@
     main.querySelectorAll("[data-htab]").forEach((b) => {
       b.onclick = () => {
         state.homeTab = b.dataset.htab;
+        // #videos / #playlists / #playlist/… belong to the Content tab only
+        if (state.homeTab !== "content" && pcFromHash()) replaceHash("");
         viewHome(main);
       };
     });
     main.querySelector("[data-people='followers']").onclick = () => openPeople("followers");
     main.querySelector("[data-people='following']").onclick = () => openPeople("following");
     if (state.homeTab === "updates") await drawUpdates();
+    else if (state.homeTab === "content") await drawContent();
     else await drawActivity();
     hydrateAvatars(main);
   }
@@ -1047,6 +1053,356 @@
     trackImpressions(body, visible);
   }
 
+  // ---------- Content: the member's videos and playlists (sql/content.sql) ----------
+  // A tab of every profile, for every visitor: the videos of the member the visitor
+  // may find (content_search with p_owner, newest / most watched / most liked / most
+  // shared) and the member's playlists (content_playlists_of), each one opening its
+  // videos (content_playlist_get). Profile.html?@name#videos, #playlists and
+  // #playlist/CPL123456789 open it straight away; the address bar follows the tab.
+  const PC_PAGE = 24;
+  const PC_SORTS = [
+    { key: "date", label: "vid.sort.date" },
+    { key: "minutes", label: "vid.hub.tab.minutes" },
+    { key: "recs", label: "vid.hub.tab.likes" },
+    { key: "shares", label: "vid.hub.tab.shares" },
+  ];
+  const PC_ICON = {
+    videos: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.2l5 2.8-5 2.8z"/>',
+    playlists: '<path d="M4 6h11M4 11h11M4 16h6"/><path d="M15.5 13.5l5 3-5 3z"/>',
+    back: '<path d="M15 6l-6 6 6 6"/>',
+  };
+  const pcIcon = (k, size = 16) =>
+    `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${PC_ICON[k]}</svg>`;
+  const pcWaitHtml = `<li class="pc-wait"><div class="loader" style="display:grid"><div class="spinner"></div></div></li>`;
+  const pcCount = (n) =>
+    Number(n) === 1 ? t("prof.pc.oneVideo") : t("vid.plCount", { n: window.CineAuraVideos.fmtNum(Number(n) || 0) });
+
+  // #videos | #playlists | #playlist/CPL… -> { tab, playlist }; null for any other hash
+  function pcFromHash(hash = location.hash) {
+    const h = String(hash || "");
+    if (h === "#videos") return { tab: "videos", playlist: "" };
+    if (h === "#playlists") return { tab: "playlists", playlist: "" };
+    const m = /^#playlist\/(CPL\d{9})$/.exec(h);
+    return m ? { tab: "playlists", playlist: m[1] } : null;
+  }
+
+  function replaceHash(hash) {
+    if ((location.hash || "") === hash) return;
+    history.replaceState(history.state, "", `${location.pathname}${location.search}${hash}`);
+  }
+
+  // What the tab knows about the member of this page (kept while the page is open).
+  function pcState() {
+    const host = state.hostMember?.member_id || "";
+    if (!state.pc || state.pc.host !== host) {
+      state.pc = {
+        host,
+        tab: "videos",
+        sort: "date",
+        playlist: "",
+        videos: null, // the cards loaded so far (pages of PC_PAGE)
+        total: 0,
+        vfail: "",
+        vreq: null,
+        vseq: 0,
+        lists: null, // the playlists
+        lfail: "",
+        lreq: null,
+        pseq: 0,
+      };
+    }
+    return state.pc;
+  }
+
+  function pcHash() {
+    const pc = pcState();
+    if (pc.playlist) return `#playlist/${pc.playlist}`;
+    return pc.tab === "playlists" ? "#playlists" : "#videos";
+  }
+
+  function pcLoadVideos({ more = false } = {}) {
+    const pc = pcState();
+    if (!more && pc.vreq) return pc.vreq;
+    const V = window.CineAuraVideos;
+    const seq = (pc.vseq += 1);
+    const offset = more && pc.videos ? pc.videos.length : 0;
+    const owner = String(state.hostMember?.username || "").trim();
+    // no name, no filter: the search would list everybody's videos
+    const ask = owner
+      ? V.call("content_search", { p_member: V.memberId(), p_owner: owner, p_sort: pc.sort, p_limit: PC_PAGE, p_offset: offset })
+      : Promise.resolve({ ok: true, data: { items: [], total: 0 } });
+    const req = ask.then((res) => {
+      if (seq !== pc.vseq) return; // another sort took over
+      if (!res.ok) {
+        pc.vfail = res.setup ? "setup" : "load";
+        return;
+      }
+      const items = Array.isArray(res.data?.items) ? res.data.items : [];
+      pc.vfail = "";
+      pc.videos = offset ? (pc.videos || []).concat(items) : items;
+      pc.total = Math.max(Number(res.data?.total) || 0, pc.videos.length);
+    });
+    if (!more) pc.vreq = req;
+    return req;
+  }
+
+  function pcLoadLists() {
+    const pc = pcState();
+    if (pc.lreq) return pc.lreq;
+    const V = window.CineAuraVideos;
+    pc.lreq = V.call("content_playlists_of", {
+      p_owner: state.hostMember?.member_id || "",
+      p_member: V.memberId(),
+    }).then((res) => {
+      if (!res.ok) {
+        pc.lfail = res.setup ? "setup" : "load";
+        return;
+      }
+      pc.lfail = "";
+      pc.lists = Array.isArray(res.data) ? res.data : [];
+    });
+    return pc.lreq;
+  }
+
+  // The numbers on the two tabs, once known.
+  function pcPaintCounts() {
+    const pc = pcState();
+    const V = window.CineAuraVideos;
+    const set = (k, n) => {
+      const el = document.querySelector(`[data-pc-count="${k}"]`);
+      if (!el) return;
+      el.hidden = n == null;
+      el.textContent = n == null ? "" : V.fmtNum(n);
+    };
+    set("videos", pc.videos ? pc.total : null);
+    set("playlists", pc.lists ? pc.lists.length : null);
+  }
+
+  function pcFailHtml(why) {
+    return `<li class="glass vs-none pc-none"><p>${escapeHtml(t(why === "setup" ? "vid.setup" : "vid.loadFail"))}</p></li>`;
+  }
+
+  // Reading, so open to signed-out visitors too: the section is .auth-allow (the
+  // signed-out gate of common.js only locks actions).
+  async function drawContent() {
+    const body = $("#home-body");
+    if (!body) return;
+    // the activity wall binds its click handler on #home-body
+    body.onclick = null;
+    if (!window.CineAuraVideos) {
+      body.innerHTML = `<p class="empty">${escapeHtml(t("vid.setup"))}</p>`;
+      return;
+    }
+    const pc = pcState();
+    const tabs = ["videos", "playlists"];
+    body.innerHTML = `
+      <section class="pc auth-allow" aria-label="${escapeHtml(t("prof.pc.tabsLabel"))}">
+        <div class="pc-head">
+          <div class="follow-tabs pc-tabs" role="tablist" aria-label="${escapeHtml(t("prof.pc.tabsLabel"))}">
+            ${tabs
+              .map(
+                (k) =>
+                  `<button type="button" role="tab" class="follow-tab" id="pc-tab-${k}" data-pctab="${k}" aria-controls="pc-pane" aria-selected="false">${pcIcon(k)}<span>${escapeHtml(t(`prof.pc.${k}`))}</span><span class="follow-count" data-pc-count="${k}" hidden></span></button>`
+              )
+              .join("")}
+          </div>
+          ${state.isOwner
+            ? `<div class="pc-own">
+                <a class="btn btn-sm btn-ghost" href="#content/manage">${escapeHtml(t("prof.pc.manage"))}</a>
+                <a class="btn btn-sm btn-primary" href="#content">${escapeHtml(t("vid.hub.create"))}</a>
+              </div>`
+            : ""}
+        </div>
+        <div class="pc-pane" id="pc-pane" role="tabpanel"></div>
+      </section>`;
+    const bar = body.querySelector(".pc-tabs");
+    bar.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-pctab]");
+      if (!b) return;
+      pc.tab = b.dataset.pctab;
+      pc.playlist = "";
+      pcShow();
+    });
+    // arrows move between the two tabs (the tab pattern)
+    bar.addEventListener("keydown", (e) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      const rtl = document.documentElement.dir === "rtl";
+      let i = tabs.indexOf(pc.tab);
+      if (e.key === "Home") i = 0;
+      else if (e.key === "End") i = tabs.length - 1;
+      else i = (i + ((e.key === "ArrowRight") !== rtl ? 1 : -1) + tabs.length) % tabs.length;
+      pc.tab = tabs[i];
+      pc.playlist = "";
+      pcShow();
+      bar.querySelector(`[data-pctab="${tabs[i]}"]`)?.focus();
+    });
+    // both numbers from the start, whichever tab is open
+    if (pc.vfail) Object.assign(pc, { vfail: "", vreq: null, videos: null });
+    if (pc.lfail) Object.assign(pc, { lfail: "", lreq: null, lists: null });
+    pcLoadVideos().then(pcPaintCounts);
+    pcLoadLists().then(pcPaintCounts);
+    pcPaintCounts();
+    await pcShow();
+  }
+
+  async function pcShow() {
+    const pc = pcState();
+    const pane = $("#pc-pane");
+    if (!pane) return;
+    document.querySelectorAll(".pc-tabs [data-pctab]").forEach((b) => {
+      const on = b.dataset.pctab === pc.tab;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    pane.setAttribute("aria-labelledby", `pc-tab-${pc.tab}`);
+    replaceHash(pcHash());
+    if (pc.playlist) return pcDrawPlaylist(pane);
+    if (pc.tab === "playlists") return pcDrawLists(pane);
+    return pcDrawVideos(pane);
+  }
+
+  function pcDrawVideos(pane) {
+    const pc = pcState();
+    pane.innerHTML = `
+      <div class="pc-bar">
+        ${state.isOwner ? `<p class="muted pc-note">${escapeHtml(t("prof.pc.ownerNote"))}</p>` : ""}
+        <label class="pc-sort">
+          <span>${escapeHtml(t("vid.sortBy"))}</span>
+          <select data-pc-sort>${PC_SORTS.map((x) => `<option value="${x.key}"${x.key === pc.sort ? " selected" : ""}>${escapeHtml(t(x.label))}</option>`).join("")}</select>
+        </label>
+      </div>
+      <ol class="vgrid pc-grid" id="pc-grid" aria-live="polite"></ol>
+      <div class="pc-more" hidden><button class="btn btn-sm btn-ghost" type="button" data-pc-more>${escapeHtml(t("vid.showMore"))}</button></div>`;
+    pane.querySelector("[data-pc-sort]").onchange = (e) => {
+      pc.sort = e.target.value;
+      Object.assign(pc, { videos: null, vreq: null, vfail: "" });
+      pcFillVideos(pane);
+    };
+    pane.querySelector("[data-pc-more]").onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      await pcLoadVideos({ more: true });
+      if (pane.isConnected) pcFillVideos(pane);
+    };
+    return pcFillVideos(pane);
+  }
+
+  async function pcFillVideos(pane) {
+    const pc = pcState();
+    const V = window.CineAuraVideos;
+    const grid = pane.querySelector("#pc-grid");
+    const more = pane.querySelector(".pc-more");
+    if (!grid) return;
+    if (!pc.videos && !pc.vfail) {
+      grid.setAttribute("aria-busy", "true");
+      grid.innerHTML = pcWaitHtml;
+      more.hidden = true;
+      const req = pcLoadVideos();
+      await req;
+      if (!grid.isConnected || pc.vreq !== req) return; // another tab, or another sort
+    }
+    grid.removeAttribute("aria-busy");
+    pcPaintCounts();
+    if (pc.vfail) {
+      grid.innerHTML = pcFailHtml(pc.vfail);
+      more.hidden = true;
+      return;
+    }
+    if (!pc.videos.length) {
+      const name = `<bdi>@${escapeHtml(state.hostMember?.username || "")}</bdi>`;
+      grid.innerHTML = state.isOwner
+        ? `<li class="glass vs-none pc-none"><p><b>${escapeHtml(t("prof.pc.noneMine"))}</b></p><a class="btn btn-sm btn-primary" href="#content">${escapeHtml(t("vid.hub.create"))}</a></li>`
+        : `<li class="glass vs-none pc-none"><p>${t("prof.pc.none", { name })}</p></li>`;
+      more.hidden = true;
+      return;
+    }
+    grid.innerHTML = pc.videos.map((x) => `<li class="pc-item">${V.cardHtml(x, { vis: true })}</li>`).join("");
+    more.hidden = pc.videos.length >= pc.total;
+    more.querySelector("button").disabled = false;
+    V.observeCards(grid);
+  }
+
+  function pcListCard(p) {
+    const V = window.CineAuraVideos;
+    const name = String(p.name || "");
+    const initial = escapeHtml((name.trim()[0] || "▶").toUpperCase());
+    return `<li class="pc-item">
+      <a class="vcard pc-pl" href="#playlist/${encodeURIComponent(p.id)}" data-pl="${escapeHtml(p.id)}">
+        <span class="vthumb pc-pl-thumb" style="--vh:${V.hueFor(p.id || name)}">
+          <span class="vthumb-ph" aria-hidden="true">${initial}</span>
+          ${p.thumb ? `<img src="${escapeHtml(p.thumb)}" alt="" loading="lazy" data-vthumb />` : ""}
+          <span class="pc-pl-count">${pcIcon("playlists", 13)}<span>${escapeHtml(pcCount(p.count))}</span></span>
+        </span>
+        <span class="vcard-body">
+          <b class="vcard-title">${escapeHtml(name)}</b>
+          <span class="vcard-meta">${escapeHtml(t("prof.pc.updated", { when: V.timeAgo(p.updated_at) }))}</span>
+          <span class="pc-pl-open">${escapeHtml(t("prof.pc.viewAll"))}</span>
+        </span>
+      </a>
+    </li>`;
+  }
+
+  async function pcDrawLists(pane) {
+    const pc = pcState();
+    pane.innerHTML = `<ol class="vgrid pc-grid pc-lists" id="pc-grid" aria-live="polite"></ol>`;
+    const grid = pane.querySelector("#pc-grid");
+    if (!pc.lists && !pc.lfail) {
+      grid.setAttribute("aria-busy", "true");
+      grid.innerHTML = pcWaitHtml;
+      await pcLoadLists();
+      if (!grid.isConnected) return;
+    }
+    grid.removeAttribute("aria-busy");
+    pcPaintCounts();
+    if (pc.lfail) {
+      grid.innerHTML = pcFailHtml(pc.lfail);
+      return;
+    }
+    if (!pc.lists.length) {
+      const name = `<bdi>@${escapeHtml(state.hostMember?.username || "")}</bdi>`;
+      grid.innerHTML = `<li class="glass vs-none pc-none"><p>${state.isOwner ? escapeHtml(t("prof.pc.noPlMine")) : t("prof.pc.noPl", { name })}</p></li>`;
+      return;
+    }
+    grid.innerHTML = pc.lists.map(pcListCard).join("");
+  }
+
+  async function pcDrawPlaylist(pane) {
+    const pc = pcState();
+    const V = window.CineAuraVideos;
+    const id = pc.playlist;
+    const seq = (pc.pseq += 1);
+    const back = `<a class="btn btn-sm btn-ghost pc-back" href="#playlists">${pcIcon("back")}<span>${escapeHtml(t("prof.pc.back"))}</span></a>`;
+    pane.innerHTML = `<ol class="vgrid pc-grid" aria-busy="true">${pcWaitHtml}</ol>`;
+    const res = await V.call("content_playlist_get", { p_playlist: id, p_member: V.memberId(), p_limit: 100 });
+    if (seq !== pc.pseq || !pane.isConnected || pc.playlist !== id) return;
+    const p = res.ok && res.data?.ok ? res.data.playlist : null;
+    // a playlist opens on its owner's page only
+    if (!p || p.owner_id !== state.hostMember?.member_id) {
+      pane.innerHTML = `<div class="pc-plhead">${back}</div>
+        <div class="glass vs-none pc-none"><p><b>${escapeHtml(t(res.setup ? "vid.setup" : !res.ok ? "vid.loadFail" : "prof.pc.plGone"))}</b></p></div>`;
+      return;
+    }
+    const items = Array.isArray(res.data.items) ? res.data.items : [];
+    const owner = String(p.owner || "");
+    const href = `${profileHref(owner)}#playlist/${encodeURIComponent(p.id)}`;
+    pane.innerHTML = `
+      <div class="pc-plhead">
+        ${back}
+        <div class="pc-plinfo">
+          <span class="eyebrow">${escapeHtml(t("prof.pc.playlist"))}</span>
+          <h3>${escapeHtml(p.name || "")}</h3>
+          <p class="muted"><a href="${escapeHtml(profileHref(owner))}"><bdi>@${escapeHtml(owner)}</bdi></a> · ${escapeHtml(pcCount(p.count))} · ${escapeHtml(t("prof.pc.updated", { when: V.timeAgo(p.updated_at) }))}</p>
+        </div>
+        <div class="pc-plshare">${shareRowHtml(href, `«${p.name || ""}» — @${owner} · CineAura`, { compact: true })}</div>
+      </div>
+      ${items.length
+        ? `<ol class="vgrid pc-grid">${items.map((x, i) => `<li class="pc-item">${V.cardHtml(x, { rank: i + 1, vis: true })}</li>`).join("")}</ol>`
+        : `<div class="glass vs-none pc-none"><p>${escapeHtml(t("prof.pc.plEmpty"))}</p></div>`}`;
+    V.observeCards(pane);
+  }
+
   // ---------- Rich posts (TMDB info / cast / trailer) ----------
   const Rich = window.CineAuraRich;
   const RICH_KINDS = ["recommendation", "reclist", "review"];
@@ -1262,10 +1618,11 @@
     body.innerHTML = `
       <div class="filter-bar">
         <div class="filter-group">
-          <span class="muted">Type</span>
-          <label class="lang-chip"><input type="radio" name="up-ft" value="all" checked /> All</label>
-          <label class="lang-chip"><input type="radio" name="up-ft" value="playlist" /> Playlists</label>
-          <label class="lang-chip"><input type="radio" name="up-ft" value="rec" /> Recommendations</label>
+          <span class="muted">${t("prof.updF.type")}</span>
+          <label class="lang-chip"><input type="radio" name="up-ft" value="all" checked /> ${t("prof.updF.all")}</label>
+          <label class="lang-chip"><input type="radio" name="up-ft" value="video" /> ${t("prof.updF.videos")}</label>
+          <label class="lang-chip"><input type="radio" name="up-ft" value="playlist" /> ${t("prof.updF.playlists")}</label>
+          <label class="lang-chip"><input type="radio" name="up-ft" value="rec" /> ${t("prof.updF.recs")}</label>
           <label class="lang-chip"><input type="radio" name="up-ft" value="review" /> ${t("rev.reviews")}</label>
         </div>
       </div>
@@ -1286,6 +1643,28 @@
       return;
     }
     $("#upd-list").innerHTML = `<p class="muted">${t("common.loading")}</p>`;
+    // The videos the members I follow published (sql/content.sql), newest first, a page
+    // at a time; they join the other updates by date.
+    const V = window.CineAuraVideos;
+    const feed = { items: [], more: false };
+    const loadVideos = async () => {
+      if (!V) return;
+      const last = feed.items[feed.items.length - 1];
+      const res = await V.call("content_feed", {
+        p_member: state.me.member.member_id,
+        p_limit: 20,
+        p_before: last ? last.publish_at : null,
+        p_before_id: last ? last.id : "",
+      });
+      if (!res.ok || res.data?.ok === false) {
+        feed.more = false;
+        return;
+      }
+      const seen = new Set(feed.items.map((v) => v.id));
+      feed.items.push(...(Array.isArray(res.data?.items) ? res.data.items : []).filter((v) => !seen.has(v.id)));
+      feed.more = Boolean(res.data?.more);
+    };
+    const videosReady = loadVideos();
     const upd = await supabaseRequest(
       `/rest/v1/updates?actor_id=in.(${ids.join(",")})&select=*&order=created_at.desc&limit=120`
     );
@@ -1350,7 +1729,11 @@
       });
     }
     openPosts.forEach((p) => state.postCache.set(p.post_id, p));
-    await primeAvatars(rows.map((r) => r.actor_id), rows.map((r) => r.actor_username));
+    await videosReady;
+    await primeAvatars(
+      [...rows.map((r) => r.actor_id), ...feed.items.map((v) => v.owner_id)],
+      [...rows.map((r) => r.actor_username), ...feed.items.map((v) => v.owner)]
+    );
     await enrichItemMap(openPosts, itemMap);
 
     // One line per actor (a changed vote replaces its own line).
@@ -1379,9 +1762,37 @@
         </div>
       </div>`;
     };
+    // A new video of somebody I follow: the same lead line as the other entries, then
+    // its card (Content.html?idcontent=…).
+    const videoHtml = (v) => {
+      const owner = String(v.owner || "").replace(/^@/, "");
+      const actor = `<a href="${profileHref(owner)}"><strong><bdi>@${escapeHtml(owner)}</bdi></strong></a>`;
+      return `<article class="post-card upd-card upd-video" data-feed-video="${escapeHtml(v.id)}" data-owner="${escapeHtml(v.owner_id || "")}">
+        <div class="upd-lead">
+          ${avatarImg(v.owner_id, owner)}
+          <div class="upd-lead-body">
+            <p class="upd-lead-line">${t("prof.updLineVideo", { actor })}</p>
+            <div class="upd-lead-time muted">${escapeHtml(String(v.publish_at || "").slice(0, 16).replace("T", " "))}</div>
+          </div>
+        </div>
+        ${V.cardHtml(v, { vis: true })}
+      </article>`;
+    };
+    const postEntryHtml = (g) => {
+      const p = g.post;
+      const head = leadHtml(g);
+      if (!g.open) {
+        return `<article class="post-card upd-card upd-hidden" data-post="${escapeHtml(p.post_id)}" data-owner="${escapeHtml(p.owner_id || "")}">${head}</article>`;
+      }
+      return `<article class="post-card upd-card kind-${escapeHtml(p.kind)}" data-post="${escapeHtml(p.post_id)}" data-owner="${escapeHtml(p.owner_id || "")}">
+        ${head}
+        ${postCardInnerHtml(p, itemMap[p.post_id] || [], voteMap[p.post_id] || [], cmtMap[p.post_id] || [])}
+      </article>`;
+    };
+    const timeOf = (iso) => Date.parse(iso || "") || 0;
     const draw = () => {
       const f = document.querySelector('input[name="up-ft"]:checked')?.value || "all";
-      const list = entries.filter((g) => {
+      const postList = f === "video" ? [] : entries.filter((g) => {
         if (!g.open) return f === "all";
         const kind = g.post.kind;
         if (f === "playlist") return kind === "playlist";
@@ -1394,22 +1805,24 @@
         if (f === "review") return kind === "review";
         return true;
       });
+      const withVideos = V && (f === "all" || f === "video");
+      // While older videos are still to come, older posts wait with them (the feed stays in date order).
+      const oldest = feed.items.length ? timeOf(feed.items[feed.items.length - 1].publish_at) : 0;
+      const cutoff = withVideos && feed.more ? oldest : -Infinity;
+      const list = [
+        ...postList.map((g) => ({ at: timeOf(g.actions[0]?.created_at), g })).filter((e) => e.at >= cutoff),
+        ...(withVideos ? feed.items.map((v) => ({ at: timeOf(v.publish_at), v })) : []),
+      ].sort((a, b) => b.at - a.at);
       const box = $("#upd-list");
       box.innerHTML = list.length
-        ? list
-            .map((g) => {
-              const p = g.post;
-              const head = leadHtml(g);
-              if (!g.open) {
-                return `<article class="post-card upd-card upd-hidden" data-post="${escapeHtml(p.post_id)}" data-owner="${escapeHtml(p.owner_id || "")}">${head}</article>`;
-              }
-              return `<article class="post-card upd-card kind-${escapeHtml(p.kind)}" data-post="${escapeHtml(p.post_id)}" data-owner="${escapeHtml(p.owner_id || "")}">
-                ${head}
-                ${postCardInnerHtml(p, itemMap[p.post_id] || [], voteMap[p.post_id] || [], cmtMap[p.post_id] || [])}
-              </article>`;
-            })
-            .join("")
+        ? list.map((e) => (e.v ? videoHtml(e.v) : postEntryHtml(e.g))).join("")
         : `<p class="empty">${t("prof.noUpd")}</p>`;
+      if (withVideos && feed.more) {
+        box.insertAdjacentHTML(
+          "beforeend",
+          `<div class="upd-more"><button class="btn btn-sm btn-ghost" type="button" data-upd-more>${t("vid.showMore")}</button></div>`
+        );
+      }
       // Ad inside the feed, after the second entry (or after the first when there is only one).
       const cards = box.querySelectorAll(".upd-card");
       if (cards.length) {
@@ -1419,7 +1832,8 @@
         cards[Math.min(1, cards.length - 1)].after(spot);
       }
       hydrateAvatars(box);
-      trackImpressions(box, list.map((g) => g.post));
+      trackImpressions(box, list.filter((e) => e.g).map((e) => e.g.post));
+      if (V) V.observeCards(box);
     };
     $$('input[name="up-ft"]').forEach((el) => {
       el.onchange = draw;
@@ -1428,7 +1842,17 @@
     // The activity wall binds its click handler on #home-body: drop it here so a
     // stale copy cannot react to votes / comments inside the updates feed.
     body.onclick = null;
-    $("#upd-list").onclick = (e) => onPostClick(e, () => drawUpdates());
+    $("#upd-list").onclick = async (e) => {
+      const more = e.target.closest("[data-upd-more]");
+      if (more) {
+        more.disabled = true;
+        await loadVideos();
+        await primeAvatars(feed.items.map((v) => v.owner_id), feed.items.map((v) => v.owner));
+        draw();
+        return;
+      }
+      onPostClick(e, () => drawUpdates());
+    };
     await drawPersonUpdates();
   }
 
@@ -3572,9 +3996,38 @@
     await loadHostStatus();
     // Profile.html#content (and #content/manage, #content/stats) opens "Your content"
     if (state.me && /^#content(\/|$)/.test(location.hash)) state.section = "content";
+    // Profile.html?@name#videos, #playlists, #playlist/CPL… open the Content tab
+    const pcWant = pcFromHash();
+    if (pcWant && !postId) {
+      state.homeTab = "content";
+      Object.assign(pcState(), pcWant);
+    }
     renderShell();
     // A "?post=" link lands on the post itself, once the wall has drawn it.
     if (postId) focusSharedPost(postId);
+    window.addEventListener("hashchange", onHashChange);
+  }
+
+  // Links and back / forward inside the page: the views of the Content tab
+  // (#videos, #playlists, #playlist/CPL…) and "Your content" (#content…).
+  function onHashChange() {
+    if (!state.hostMember) return;
+    const want = pcFromHash();
+    if (want) {
+      Object.assign(pcState(), want);
+      if (state.section === "home" && state.homeTab === "content" && $("#pc-pane")) {
+        pcShow();
+        return;
+      }
+      state.section = "home";
+      state.homeTab = "content";
+      renderShell();
+      return;
+    }
+    if (state.me && /^#content(\/|$)/.test(location.hash) && state.section !== "content") {
+      state.section = "content";
+      renderShell();
+    }
   }
 
   document.addEventListener("DOMContentLoaded", boot);

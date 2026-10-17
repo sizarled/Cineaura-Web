@@ -583,6 +583,14 @@ body.auth-locked a[href*="register.html"] {
   opacity: 1;
 }
 
+/* ... and the controls that only change what is read (.auth-allow: the tabs of a
+   profile, its Content section with its sorting and "Show more"). */
+html body.auth-locked .auth-allow:is(button, select),
+html body.auth-locked .auth-allow :is(button, select) {
+  pointer-events: auto;
+  opacity: 1;
+}
+
 .auth-gate-note {
   display: flex;
   flex-wrap: wrap;

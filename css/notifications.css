@@ -120,6 +120,8 @@
 .k-recommend { background: #e9a300; }
 .k-prize { background: #f07b14; }
 .k-iptv { background: linear-gradient(135deg, #01b4e4, #6c4cf0); }
+.k-content { background: #e0245e; }
+.k-content_comment { background: #2d88ff; }
 .k-info { background: #6b7280; }
 
 .nts-text {

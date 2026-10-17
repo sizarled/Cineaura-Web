@@ -47,6 +47,9 @@
     recommend: svg('<path d="M12 3l2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 16.9l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>'),
     prize: svg('<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 6h3v1a3 3 0 0 1-3 3M7 6H4v1a3 3 0 0 0 3 3"/>'),
     iptv: svg('<rect x="2.5" y="6" width="19" height="13" rx="2.5"/><path d="M8 2.5l4 3.5 4-3.5"/>'),
+    // a new video of a member you follow / a comment on your video (sql/content.sql)
+    content: svg('<rect x="2.5" y="5" width="19" height="14" rx="3"/><path d="M10 9.2l5 2.8-5 2.8z"/>'),
+    content_comment: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M10 7.8l4 2.2-4 2.2z"/>'),
     info: svg(BELL),
   };
 

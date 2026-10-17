@@ -1,5 +1,6 @@
 /* CineAura — member videos, shared by Profile > Your content (js/content-studio.js),
-   Content.html (js/content.js) and Search.html (js/search.js).
+   Content.html (js/content.js), Search.html (js/search.js), the home page
+   (js/home-videos.js) and a member's page > Content / Updates (js/profile.js).
 
    Everything goes through the content_* functions of sql/content.sql: the tables
    themselves are closed to the public key.
@@ -9,7 +10,7 @@
                             Drive, TikTok, an .mp4/.webm file, an .m3u8 stream, any page)
      embedSrc(info)         the player address of an iframe link
      autoThumb(info)        the picture a provider gives every video (sync), fetchThumb (async)
-     cardHtml(item, opts)   a video card (search, suggestions)
+     cardHtml(item, opts)   a video card (search, suggestions, a member's page, the updates feed)
      observeCards(root)     counts the cards that are seen (impressions) and clicked
      call(name, args)       rpc with { ok, data } | { setup: true } when the SQL is missing
 */
@@ -275,25 +276,32 @@
     return HUES[h % HUES.length];
   }
 
-  function thumbHtml(item, { badges = true, rank = 0 } = {}) {
+  // vis: also a badge on a private video (and on an exclusive one the viewer can watch)
+  function thumbHtml(item, { badges = true, rank = 0, vis = false } = {}) {
     const title = String(item?.title || "");
     const initial = escapeHtml((title.trim()[0] || "▶").toUpperCase());
     const age = Number(item?.age || item?.age_rating || 3);
     // a video the viewer cannot watch yet (exclusive): a lock, and why on hover
     const lock = item?.locked ? `<span class="vbadge vbadge-lock" title="${escapeHtml(lockLabel(item.locked))}">${LOCK_ICON}<span>${escapeHtml(visLabel("exclusive"))}</span></span>` : "";
+    const v = item?.visibility;
+    const visBadge = vis && !item?.locked && (v === "private" || v === "exclusive")
+      ? `<span class="vbadge vbadge-vis vbadge-${v}">${v === "private" ? LOCK_ICON : STAR_ICON}<span>${escapeHtml(visLabel(v))}</span></span>`
+      : "";
     return `<span class="vthumb" style="--vh:${hueFor(item?.id || title)}">
       <span class="vthumb-ph" aria-hidden="true">${initial}</span>
       ${item?.thumb ? `<img src="${escapeHtml(item.thumb)}" alt="" loading="lazy" data-vthumb />` : ""}
-      ${badges ? `<span class="vbadges">${age > 3 ? `<span class="vbadge vbadge-age">${ageLabel(age)}</span>` : ""}${lock}</span>` : ""}
+      ${badges ? `<span class="vbadges">${age > 3 ? `<span class="vbadge vbadge-age">${ageLabel(age)}</span>` : ""}${lock}${visBadge}</span>` : ""}
       ${rank ? `<span class="vrank"><bdi dir="ltr" aria-hidden="true">#${Number(rank)}</bdi><span class="sr-only">${escapeHtml(t("vid.hub.rank", { n: rank }))}</span></span>` : ""}
       <span class="vthumb-play" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5L13 8L4 13.5V2.5Z"/></svg></span>
     </span>`;
   }
 
   const LOCK_ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+  const STAR_ICON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg>';
 
-  // rank: the place in a top list (#1 on the picture); stat: an HTML line under the meta
-  function cardHtml(item, { compact = false, rank = 0, stat = "" } = {}) {
+  // rank: the place in a top list (#1 on the picture); stat: an HTML line under the meta;
+  // vis: a badge on private videos (a member's page, the updates feed)
+  function cardHtml(item, { compact = false, rank = 0, stat = "", vis = false } = {}) {
     if (!item?.id) return "";
     const meta = [
       `<bdi>@${escapeHtml(item.owner || "")}</bdi>`,
@@ -304,7 +312,7 @@
       ? `<span class="vcard-tags">${item.tags.slice(0, 4).map((x) => `<bdi>#${escapeHtml(x)}</bdi>`).join("")}</span>`
       : "";
     return `<a class="vcard${compact ? " vcard--compact" : ""}" href="${contentHref(item.id)}" data-vid="${escapeHtml(item.id)}" data-owner="${escapeHtml(item.owner_id || "")}">
-      ${thumbHtml(item, { rank })}
+      ${thumbHtml(item, { rank, vis })}
       <span class="vcard-body">
         <b class="vcard-title">${escapeHtml(item.title || "")}</b>
         <span class="vcard-meta">${meta}</span>
@@ -524,6 +532,7 @@
     call,
     beacon,
     track,
+    hueFor,
     thumbHtml,
     cardHtml,
     observeCards,
