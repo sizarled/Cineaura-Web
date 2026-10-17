@@ -313,28 +313,33 @@ end $$;
 revoke all on function public._notify_prize_staff(bigint, text, text) from public, anon, authenticated;
 revoke all on function public._notify_new_prize(bigint) from public, anon, authenticated;
 
--- The points formula. Same body in prize_secure.sql, point_levels.sql, point_codes.sql
--- and content.sql (kept identical, so the file run last always leaves the same formula).
+-- The points formula. Same body in prize_secure.sql, point_levels.sql, point_codes.sql,
+-- content.sql and market.sql (kept identical, so the file run last always leaves the same formula).
 create or replace function public._points(p_member text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare
-  pr record; earned bigint; watch bigint; vids bigint; codes bigint; sh int; pl int; rc int; cm int; lk int := 0;
+  pr record; earned bigint; watch bigint; vids bigint; codes bigint; mk bigint; mr bigint; sh int; pl int; rc int; cm int; lk int := 0;
   dl bigint := 0; clicks bigint; has_dl boolean;
 begin
   select coalesce(p.private_minutes, 0) + coalesce(p.public_minutes, 0) as mins,
          coalesce(p.points_spent, 0) as spent,
          to_jsonb(p) ->> 'watch_points' as wp,
          to_jsonb(p) ->> 'content_points' as vp,
-         to_jsonb(p) ->> 'code_points' as cp
+         to_jsonb(p) ->> 'code_points' as cp,
+         to_jsonb(p) ->> 'market_points' as mp,
+         to_jsonb(p) ->> 'market_ref_points' as mrp
     into pr
   from public.profiles p where p.member_id = p_member;
-  if not found then return jsonb_build_object('earned', 0, 'spent', 0, 'available', 0, 'watch', 0, 'videos', 0, 'codes', 0); end if;
+  if not found then return jsonb_build_object('earned', 0, 'spent', 0, 'available', 0, 'watch', 0, 'videos', 0, 'codes', 0, 'market', 0, 'market_refs', 0); end if;
   -- watch points: stored by sql/point_levels.sql (country tier x level); before that file, 1 a minute
   watch := case when pr.wp is null then pr.mins else floor(pr.wp::numeric)::bigint end;
   -- videos (sql/content.sql): minutes watched, shares, comments and positive recommendations
   vids := floor(coalesce(pr.vp, '0')::numeric)::bigint;
   -- points codes (sql/point_codes.sql)
   codes := floor(coalesce(pr.cp, '0')::numeric)::bigint;
+  -- the market (sql/market.sql): sales of the member's store, and 25% of the sales made through their links
+  mk := floor(coalesce(pr.mp, '0')::numeric)::bigint;
+  mr := floor(coalesce(pr.mrp, '0')::numeric)::bigint;
   select count(*) into sh from public.post_events where kind = 'share' and network = 'referral' and member_id = p_member;
   select count(*) into pl from public.playlists where owner_id = p_member and visibility in ('public', 'exclusive');
   select count(*) into rc from public.posts where owner_id = p_member and kind in ('recommendation', 'reclist') and visibility in ('public', 'exclusive');
@@ -369,9 +374,9 @@ begin
       dl := dl + coalesce(clicks, 0);
     end if;
   end if;
-  earned := watch + vids + codes + sh / 5 + pl / 10 + rc / 50 + cm / 100 + lk / 500 + dl / 1000;
+  earned := watch + vids + codes + mk + mr + sh / 5 + pl / 10 + rc / 50 + cm / 100 + lk / 500 + dl / 1000;
   return jsonb_build_object('earned', earned, 'spent', pr.spent, 'available', greatest(0, earned - pr.spent),
-                            'watch', watch, 'videos', vids, 'codes', codes);
+                            'watch', watch, 'videos', vids, 'codes', codes, 'market', mk, 'market_refs', mr);
 end $$;
 
 -- Locks the profile row, checks the balance, spends and writes the spending ledger
@@ -997,13 +1002,17 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- 'add' answers the id of the new group too (its picture is uploaded under that id:
+-- sql/image_uploads.sql).
 create or replace function public.prize_admin_group(p_token text, p_op text, p_id bigint, p_name text, p_thumb text, p_visible boolean)
 returns jsonb language plpgsql security definer set search_path = public as $$
+declare gid bigint;
 begin
   perform public._staff_prizes(p_token);
   if p_op = 'add' then
     if coalesce(trim(p_name), '') = '' then return jsonb_build_object('ok', false, 'error', 'name'); end if;
-    insert into public.prize_groups (name, thumb, visible) values (trim(p_name), coalesce(p_thumb, ''), true);
+    insert into public.prize_groups (name, thumb, visible) values (trim(p_name), coalesce(p_thumb, ''), true) returning id into gid;
+    return jsonb_build_object('ok', true, 'id', gid);
   elsif p_op = 'visible' then
     update public.prize_groups set visible = coalesce(p_visible, true) where id = p_id;
   elsif p_op = 'delete' then
