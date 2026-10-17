@@ -2811,17 +2811,21 @@
       // taken by the prize team when a claim was rejected (sql/prize_claims.sql)
       penalty: t("points.mode.penalty"),
       reset: t("points.mode.reset"),
+      // Market.html (sql/market.sql): a purchase, and the points given back (negative amount)
+      market: t("mkt.spendMode"),
+      market_refund: t("mkt.refundMode"),
     };
     const rows = spends.rows.map((r) => {
       const when = String(r.created_at || "").slice(0, 10);
       const mode = modeLabel[r.mode] || "";
+      const amount = Number(r.amount || 0);
       return `
-        <li class="pt-row">
+        <li class="pt-row${amount < 0 ? " pt-row-refund" : ""}">
           <span class="pt-src">
             <b>${escapeHtml(r.prize_title || t("points.unnamedPrize"))}</b>
             <small>${escapeHtml([mode, when].filter(Boolean).join(" · "))}</small>
           </span>
-          <span class="pt-pts">−${Number(r.amount || 0)}</span>
+          <span class="pt-pts">${amount < 0 ? `+${-amount}` : `−${amount}`}</span>
         </li>`;
     });
     if (spends.earlier > 0) {

@@ -74,6 +74,10 @@ ROUTES = {
     "/IPTV": "iptv.html",
     "/IPTV.html": "iptv.html",
     "/iptv": "iptv.html",
+    # the members' market (sql/market.sql): Market.html
+    "/Market": "market.html",
+    "/Market.html": "market.html",
+    "/market": "market.html",
 }
 
 
