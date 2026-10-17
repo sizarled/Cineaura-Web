@@ -2964,6 +2964,31 @@
     "home.vids.explore": "Explore",
     "home.vids.listsLabel": "The 50 most popular videos",
     "reg.activateWithin": "Activate your account within 30 days: an account that isn’t activated by then is fully banned.",
+
+    // ── Round 21: a member's page > Content (videos, playlists), videos in Profile > Updates ──
+    "prof.contentTab": "Content",
+    "prof.pc.tabsLabel": "Videos and playlists",
+    "prof.pc.videos": "Videos",
+    "prof.pc.playlists": "Video playlists",
+    "prof.pc.playlist": "Video playlist",
+    "prof.pc.manage": "Manage your content",
+    "prof.pc.ownerNote": "Visitors find your published videos here, and your playlists that hold videos they may watch. A private video only shows to the people you chose.",
+    "prof.pc.none": "{name} hasn’t published any videos yet.",
+    "prof.pc.noneMine": "You haven’t published any videos yet.",
+    "prof.pc.noPl": "{name} has no playlists yet.",
+    "prof.pc.noPlMine": "You have no playlists yet. Add a video to one from its page, or when you create it.",
+    "prof.pc.oneVideo": "1 video",
+    "prof.pc.updated": "Updated {when}",
+    "prof.pc.viewAll": "View full playlist",
+    "prof.pc.back": "All playlists",
+    "prof.pc.plEmpty": "This playlist has no videos yet.",
+    "prof.pc.plGone": "This playlist isn’t available.",
+    "prof.updLineVideo": "{actor} published a new video",
+    "prof.updF.type": "Type",
+    "prof.updF.all": "All",
+    "prof.updF.videos": "Videos",
+    "prof.updF.playlists": "Playlists",
+    "prof.updF.recs": "Recommendations",
   };
 
   const dict = {};
