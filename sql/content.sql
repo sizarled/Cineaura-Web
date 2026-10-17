@@ -17,6 +17,13 @@
 --     recommend / don't recommend, share, add to a playlist, comments and
 --     suggestions. Content.html alone: a search box and the 50 videos with the most
 --     watched minutes, recommendations or shares. Search.html finds videos.
+--   * A member's page (Profile.html?@name) > Content: their videos (newest, most
+--     watched, most liked, most shared) and their playlists, each one with its
+--     videos, as far as the visitor may find them (content_search with p_owner,
+--     content_playlists_of, content_playlist_get).
+--   * Followers: the bell tells them about a new video (_content_notify) and
+--     Profile > Updates lists the videos of the members they follow among the
+--     other updates (content_feed).
 --
 -- Visibility
 --   public     everyone, visitors included
@@ -464,6 +471,17 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- ------------------------------------------------------------------ 5. followers hear about a new video
+-- A publisher's videos stay out of a follower's bell and updates when one blocked the
+-- other (sql/profile.sql): the publisher fully or for their updates, the follower fully.
+create or replace function public._content_feed_hidden(p_owner text, p_member text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.blocks b
+    where (b.blocker_id = p_owner and b.blocked_id = p_member
+           and (b.kind = 'full' or 'updates' = any (string_to_array(replace(coalesce(b.features, ''), ' ', ''), ','))))
+       or (b.blocker_id = p_member and b.blocked_id = p_owner and b.kind = 'full'))
+$$;
+
 create or replace function public._content_notify(p_id text) returns int
 language plpgsql security definer set search_path = public as $$
 declare c public.content; n int := 0;
@@ -472,10 +490,13 @@ begin
   if not found or c.notified or c.publish_at > now() then return 0; end if;
   update public.content set notified = true where content_id = p_id;
   if c.visibility = 'private' or to_regclass('public.notifications') is null then return 0; end if;
+  -- the followers who also find it in Profile > Updates (content_feed)
   insert into public.notifications (member_id, kind, title, body, href, from_id, from_username)
   select f.follower_id, 'content', 'New video', c.title, './Content.html?idcontent=' || c.content_id, c.owner_id, c.owner_username
   from public.follows f
   where f.following_id = c.owner_id and f.status = 'accepted' and f.follower_id <> c.owner_id
+    and not public._content_feed_hidden(c.owner_id, f.follower_id)
+    and public._content_access(c, f.follower_id) not in ('private', 'scheduled', 'gone', 'age')
   limit 500;
   get diagnostics n = row_count;
   return n;
@@ -490,6 +511,44 @@ begin
     n := n + public._content_notify(r.content_id);
   end loop;
   return n;
+end $$;
+
+-- Profile > Updates (the member's own page): the videos of the members they follow
+-- (accepted follows), newest first, once published. The rules of the search apply: no
+-- private video they were not given, nothing above their age, nothing of a banned
+-- publisher; an exclusive video they cannot watch yet comes with its lock. A publisher
+-- who blocked the member (fully, or their updates) or whom the member blocked fully is
+-- left out. The next page: p_before / p_before_id = publish_at / id of the last card.
+-- -> { ok: true, items: [cards], more } | { ok: false, reason: 'member' }
+create or replace function public.content_feed(
+  p_member text, p_limit int default 20, p_before timestamptz default null, p_before_id text default '')
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare m public.members; lim int := least(greatest(coalesce(p_limit, 20), 1), 60); n int; items jsonb;
+begin
+  m := public._content_viewer(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  with pubs as (
+    select distinct f.following_id as owner_id
+    from public.follows f
+    where f.follower_id = m.member_id and f.status = 'accepted' and f.following_id <> m.member_id
+      and not public._content_feed_hidden(f.following_id, m.member_id)
+  ), cand as (
+    select c as r, public._content_access(c, m.member_id) as why
+    from public.content c join pubs on pubs.owner_id = c.owner_id
+    where c.publish_at <= now()
+      and (p_before is null or c.publish_at < p_before
+           or (c.publish_at = p_before and c.content_id < coalesce(p_before_id, '')))
+  ), page as (
+    select k.r, k.why, row_number() over (order by (k.r).publish_at desc, (k.r).content_id desc) as rn
+    from cand k
+    where k.why not in ('private', 'scheduled', 'gone', 'age')
+    order by (k.r).publish_at desc, (k.r).content_id desc
+    limit lim + 1
+  )
+  select count(*), coalesce(jsonb_agg(public._content_card(p.r, p.why) order by p.rn) filter (where p.rn <= lim), '[]'::jsonb)
+    into n, items
+  from page p;
+  return jsonb_build_object('ok', true, 'items', items, 'more', n > lim);
 end $$;
 
 -- ------------------------------------------------------------------ 6. publishing
@@ -1013,6 +1072,82 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- A member's page > Content > Playlists: the playlists of p_owner (a member id). The
+-- owner sees every one of them, empty ones too; anybody else only those holding at
+-- least one video they may find (the rules of the search: published videos only, the
+-- owner's too), counted for them. The picture is the one of the first of those
+-- videos; the newest addition comes first.
+-- -> [{ id, name, created_at, updated_at, count, thumb, first, mine }]
+create or replace function public.content_playlists_of(p_owner text, p_member text default '')
+returns jsonb language sql stable security definer set search_path = public as $$
+  with lists as (
+    select p.playlist_id, p.name, p.created_at, (p.owner_id = btrim(coalesce(p_member, ''))) as mine
+    from public.content_playlists p
+    join public.members o on o.member_id = p.owner_id and lower(coalesce(o.status, '')) <> 'banned'
+    where p.owner_id = btrim(coalesce(p_owner, ''))
+  ), seen as (
+    select i.playlist_id, i.added_at, c.content_id, c.thumb_url,
+           row_number() over (partition by i.playlist_id order by i.added_at, c.content_id) as pos
+    from public.content_playlist_items i
+    join lists l on l.playlist_id = i.playlist_id
+    join public.content c on c.content_id = i.content_id
+    where c.publish_at <= now() and public._content_access(c, p_member) not in ('private', 'scheduled', 'gone', 'age')
+  ), agg as (
+    select s.playlist_id, count(*) as n, max(s.added_at) as updated_at,
+           max(s.content_id) filter (where s.pos = 1) as first,
+           coalesce(max(s.thumb_url) filter (where s.pos = 1), '') as thumb
+    from seen s group by s.playlist_id
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'id', l.playlist_id, 'name', l.name, 'created_at', l.created_at,
+           'updated_at', coalesce(a.updated_at, l.created_at), 'count', coalesce(a.n, 0),
+           'thumb', coalesce(a.thumb, ''), 'first', a.first, 'mine', l.mine)
+         order by coalesce(a.updated_at, l.created_at) desc, lower(l.name), l.playlist_id), '[]'::jsonb)
+  from lists l left join agg a on a.playlist_id = l.playlist_id
+  where l.mine or coalesce(a.n, 0) > 0;
+$$;
+
+-- One playlist (a member's page > Content > Playlists): the videos of it the viewer may
+-- find (published ones, as in the search), in the order they were added. Not found for
+-- anybody but its owner when it holds none of those (and for everybody when its owner
+-- is banned).
+-- -> { ok: true, playlist: { id, name, owner_id, owner, created_at, updated_at, count, mine },
+--      items: [cards + added_at], total }
+--    { ok: false, reason: 'not_found' }
+create or replace function public.content_playlist_get(
+  p_playlist text, p_member text default '', p_limit int default 60, p_offset int default 0)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  p public.content_playlists; is_mine boolean; total int; upd timestamptz; items jsonb;
+  lim int := least(greatest(coalesce(p_limit, 60), 1), 100); off int := greatest(coalesce(p_offset, 0), 0);
+begin
+  select * into p from public.content_playlists where playlist_id = btrim(coalesce(p_playlist, ''));
+  if not found or exists (
+    select 1 from public.members o where o.member_id = p.owner_id and lower(coalesce(o.status, '')) = 'banned'
+  ) then
+    return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+  is_mine := p.owner_id = btrim(coalesce(p_member, ''));
+  with seen as (
+    select c as r, public._content_access(c, p_member) as why, i.added_at
+    from public.content_playlist_items i join public.content c on c.content_id = i.content_id
+    where i.playlist_id = p.playlist_id and c.publish_at <= now()
+  ), ok as (
+    select * from seen where why not in ('private', 'scheduled', 'gone', 'age')
+  )
+  select (select count(*) from ok), (select max(added_at) from ok),
+         coalesce((select jsonb_agg(public._content_card(z.r, z.why) || jsonb_build_object('added_at', z.added_at)
+                                    order by z.added_at, (z.r).content_id)
+                   from (select * from ok order by added_at, (r).content_id offset off limit lim) z), '[]'::jsonb)
+    into total, upd, items;
+  if total = 0 and not is_mine then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  return jsonb_build_object('ok', true, 'items', items, 'total', total,
+    'playlist', jsonb_build_object(
+      'id', p.playlist_id, 'name', p.name, 'owner_id', p.owner_id,
+      'owner', coalesce((select m.username from public.members m where m.member_id = p.owner_id), p.owner_username),
+      'created_at', p.created_at, 'updated_at', coalesce(upd, p.created_at), 'count', total, 'mine', is_mine));
+end $$;
+
 -- ------------------------------------------------------------------ 10. tags and statistics
 -- Tags already used (Create > Tags): the most used first, matching p_q.
 create or replace function public.content_tags(p_q text default '', p_member text default '', p_limit int default 20)
@@ -1098,7 +1233,7 @@ begin
     'public._content_credit(text, int)', 'public._content_reward(text, text, text)',
     'public._content_viewer(text)', 'public._content_blocked(text, text)',
     'public._content_access(public.content, text)', 'public._content_card(public.content, text)',
-    'public._content_notify(text)', 'public.content_notify_due()']
+    'public._content_feed_hidden(text, text)', 'public._content_notify(text)', 'public.content_notify_due()']
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;
@@ -1112,6 +1247,8 @@ begin
     'public.content_comments_list(text, text, int)', 'public.content_comment_add(text, text, text, bigint, text)',
     'public.content_comment_delete(text, bigint)', 'public.content_playlists_mine(text, text)',
     'public.content_playlist_add(text, text, text, text)', 'public.content_playlist_remove(text, text, text)',
+    'public.content_playlists_of(text, text)', 'public.content_playlist_get(text, text, int, int)',
+    'public.content_feed(text, int, timestamptz, text)',
     'public.content_tags(text, text, int)', 'public.content_stats(text, timestamptz, timestamptz)']
   loop
     execute format('revoke all on function %s from public', f);
