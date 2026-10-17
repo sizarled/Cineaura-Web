@@ -2013,8 +2013,12 @@
       ${ended ? `<span class="ipx-badge off">${t("dash.ov.st.expired")}</span>` : ""}`;
   }
 
+  // Dashboard > IPTV: two tabs. "IPTV packages": the free packages and the premium
+  // accounts given to the member (Panel > IPTV). "Your lists": the IPTV lists the member
+  // published (sql/iptv_lists.sql, js/iptv-lists.js): publish, edit, read the channels
+  // again, copy the link, delete. dashboard.html#iptv-lists opens the second tab.
   async function viewIptv(main) {
-    const rows = (await loadMyIptv()) || [];
+    const [rows, lists] = await Promise.all([loadMyIptv().then((r) => r || []).catch(() => []), loadMyLists()]);
     const premium = myPremium(rows);
     const free = rows.filter((p) => C.iptvIsFree(p));
     const card = (p, tm = null) => `
@@ -2032,18 +2036,116 @@
           </article>`;
     main.innerHTML = `
       <p class="eyebrow">${t("dash.liveTv")}</p>
-      <h1>${t("dash.iptvPacks")}</h1>
-      <p class="muted">${t("dash.iptvLead")}</p>
-      <div id="ipx-wrap">
-        ${premium.length ? `
-        <h2 class="ipx-group">${t("dash.iptv.mine")}</h2>
-        <div class="ipx-grid" id="ipx-premium">${premium.map(({ p, tm }) => card(p, tm)).join("")}</div>
-        <h2 class="ipx-group">${t("dash.iptv.freeTitle")}</h2>` : ""}
-        <div class="ipx-grid" id="ipx-grid">${
-          free.length ? free.map((p) => card(p)).join("") : `<p class="empty">${t(premium.length ? "dash.iptv.noFree" : "dash.noIptv")}</p>`
-        }</div>
-      </div>`;
+      <h1>${t("dash.nav.iptv")}</h1>
+      <div class="tabs follow-tabs dash-iptv-tabs" data-tabbar role="tablist" aria-label="${escapeHtml(t("dash.nav.iptv"))}">
+        <button type="button" role="tab" class="follow-tab" data-dtab="iptv-packs">${t("dash.iptvPacks")}<span class="follow-count">${premium.length + free.length}</span></button>
+        <button type="button" role="tab" class="follow-tab" data-dtab="iptv-lists">${t("ipl.yourLists")}<span class="follow-count" id="ipl-dash-count">${lists.rows.length}</span></button>
+      </div>
+      <section class="follow-pane" data-dpane="iptv-packs" hidden>
+        <p class="muted">${t("dash.iptvLead")}</p>
+        <div id="ipx-wrap">
+          ${premium.length ? `
+          <h2 class="ipx-group">${t("dash.iptv.mine")}</h2>
+          <div class="ipx-grid" id="ipx-premium">${premium.map(({ p, tm }) => card(p, tm)).join("")}</div>
+          <h2 class="ipx-group">${t("dash.iptv.freeTitle")}</h2>` : ""}
+          <div class="ipx-grid" id="ipx-grid">${
+            free.length ? free.map((p) => card(p)).join("") : `<p class="empty">${t(premium.length ? "dash.iptv.noFree" : "dash.noIptv")}</p>`
+          }</div>
+        </div>
+      </section>
+      <section class="follow-pane ipl-dash" data-dpane="iptv-lists" id="ipl-dash" hidden></section>`;
     C.bindIptvActions($("#ipx-wrap"), (id) => rows.find((x) => String(x.id) === id));
+    const pane = $("#ipl-dash");
+    drawMyLists(pane, lists);
+    wireMyLists(pane);
+    // the two tabs; the address follows (dashboard.html#iptv-lists opens Your lists)
+    wireTabs(main, "iptv");
+    const syncIptvHash = () => {
+      const hash = state.tabs?.iptv === "iptv-lists" ? "#iptv-lists" : "#iptv";
+      if (location.hash !== hash) history.replaceState(history.state, "", hash);
+    };
+    main.querySelector(".dash-iptv-tabs")?.addEventListener("click", (e) => {
+      if (e.target.closest("[data-dtab]")) syncIptvHash();
+    });
+    syncIptvHash();
+  }
+
+  // ---------- Dashboard > IPTV > Your lists ----------
+  async function loadMyLists() {
+    const L = window.CineAuraIptvLists;
+    if (!L || !state.member) return { ok: false, setup: true, rows: [] };
+    const res = await L.call("iptv_lists_mine", { p_member: state.member.member_id });
+    if (!res.ok) return { ok: false, setup: Boolean(res.setup), rows: [] };
+    return { ok: true, rows: Array.isArray(res.data) ? res.data : [] };
+  }
+
+  function drawMyLists(pane, got) {
+    const L = window.CineAuraIptvLists;
+    pane._lists = got.rows;
+    const plus = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+    const count = $("#ipl-dash-count");
+    if (count) count.textContent = String(got.rows.length);
+    let body;
+    if (!got.ok) body = `<p class="empty">${escapeHtml(t(got.setup ? "ipl.setupText" : "ipl.loadFail"))}</p>`;
+    else if (!got.rows.length) body = `<p class="empty">${escapeHtml(t("ipl.noMineText"))}</p>`;
+    else body = `<div class="ipl-grid">${got.rows.map((l) => L.cardHtml(l, { manage: true, owner: false })).join("")}</div>`;
+    pane.innerHTML = `
+        <div class="ipl-dash-head">
+          <p>${escapeHtml(t("ipl.dashLead"))}</p>
+          <div class="ipl-dash-acts">
+            ${got.ok || !got.setup ? `<button class="btn btn-sm btn-primary" type="button" data-ipl-new>${plus}<span>${escapeHtml(t("ipl.publish"))}</span></button>` : ""}
+            <a class="btn btn-sm btn-ghost" href="./IPTV.html">${escapeHtml(t("ipl.pageLink"))}</a>
+          </div>
+        </div>
+        ${body}`;
+  }
+
+  async function reloadMyLists(pane) {
+    drawMyLists(pane, await loadMyLists());
+  }
+
+  function wireMyLists(pane) {
+    const L = window.CineAuraIptvLists;
+    if (!L) return;
+    const find = (id) => (pane._lists || []).find((l) => l.id === id);
+    pane.onclick = async (e) => {
+      if (e.target.closest("[data-ipl-new]")) {
+        L.openForm({ onSaved: () => reloadMyLists(pane) });
+        return;
+      }
+      const edit = e.target.closest("[data-ipl-edit]");
+      if (edit) {
+        const l = find(edit.dataset.iplEdit);
+        if (l) L.openForm({ list: l, onSaved: () => reloadMyLists(pane) });
+        return;
+      }
+      const copy = e.target.closest("[data-ipl-copy]");
+      if (copy) {
+        const ok = await C.copyText(C.absoluteUrl(L.listHref(copy.dataset.iplCopy)));
+        toast(t(ok ? "ipl.copied" : "ipl.copyFail"));
+        return;
+      }
+      const again = e.target.closest("[data-ipl-refresh]");
+      if (again) {
+        const l = find(again.dataset.iplRefresh);
+        const box = again.closest(".ipl-card");
+        if (!l || box?.classList.contains("ipl-busy")) return;
+        box?.classList.add("ipl-busy");
+        again.textContent = t("ipl.refreshing");
+        const r = await L.refresh(l);
+        toast(r.ok ? t("ipl.refreshed", { n: L.fmt(r.counts?.channels || 0) }) : L.errText(r));
+        await reloadMyLists(pane);
+        return;
+      }
+      const del = e.target.closest("[data-ipl-delete]");
+      if (del) {
+        const l = find(del.dataset.iplDelete);
+        if (!l || !confirm(t("ipl.confirmDelete", { name: l.name }))) return;
+        const r = await L.call("iptv_list_delete", { p_member: state.member.member_id, p_id: l.id });
+        toast(r.ok && r.data?.ok ? t("ipl.deleted") : L.errText(r.ok ? r.data : r));
+        await reloadMyLists(pane);
+      }
+    };
   }
 
   async function viewViews(main) {
@@ -3064,9 +3166,12 @@
   const SECTIONS = ["overview","points","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"];
   // dashboard.html#claims: Prizes > Prize claims (where the claim notifications lead)
   // dashboard.html#devices: Codes > Linked devices (named by the watch page)
+  // dashboard.html#iptv-lists: IPTV > Your lists
   const HASH_ALIASES = {
     claims: { section: "prizes", tabs: { prizeModes: "prize-claims" } },
     devices: { section: "codes", tabs: { codes: "codes-devices" } },
+    // dashboard.html#iptv-lists: IPTV > Your lists (the IPTV lists the member published)
+    "iptv-lists": { section: "iptv", tabs: { iptv: "iptv-lists" } },
   };
 
   function routeOf(hash) {

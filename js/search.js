@@ -8,6 +8,12 @@
 
    Movies & series: TMDB search (trending without a query), with the same sort and
    the language filter (original language).
+
+   Channels (?tab=channels): the channels of the IPTV lists that members publish
+   (sql/iptv_lists.sql, iptv_channel_search): the public lists, and the exclusive lists
+   whose criteria the member meets (followers, country, language) — never a private
+   list. Filter by type (channels / movies / series, ?type=), sort by relevance, A→Z,
+   Z→A or the most viewed lists (?csort=). A result opens the channel in its list.
 */
 (() => {
   "use strict";
@@ -26,7 +32,11 @@
     age: [3, 6, 13, 16, 18].includes(Number(params.get("age"))) ? Number(params.get("age")) : "",
     tag: (params.get("tag") || "").replace(/^#+/, "").trim().toLowerCase(),
     owner: (params.get("owner") || "").replace(/^@+/, "").trim(),
-    tab: params.get("tab") === "tmdb" ? "tmdb" : "videos",
+    tab: ["tmdb", "channels"].includes(params.get("tab")) ? params.get("tab") : "videos",
+    ctype: ["live", "movie", "series"].includes(params.get("type")) ? params.get("type") : "",
+    csort: ["az", "za", "lists"].includes(params.get("csort")) ? params.get("csort") : "",
+    channels: [],
+    chTotal: 0,
     items: [],
     total: 0,
     tmdb: [],
@@ -49,23 +59,31 @@
     if (state.age) q.set("age", String(state.age));
     if (state.tag) q.set("tag", state.tag);
     if (state.owner) q.set("owner", state.owner);
-    if (state.tab === "tmdb") q.set("tab", "tmdb");
+    if (state.tab !== "videos") q.set("tab", state.tab);
+    if (state.tab === "channels" && state.ctype) q.set("type", state.ctype);
+    if (state.tab === "channels" && state.csort) q.set("csort", state.csort);
     const s = q.toString();
     history.replaceState(history.state, "", `${location.pathname}${s ? `?${s}` : ""}`);
   }
 
   // ---------------------------------------------------------------- controls
   function drawKind() {
-    $("#vs-kind").innerHTML = ["videos", "tmdb"]
+    // the box says what it searches
+    const ph = t(state.tab === "channels" ? "vid.searchPhChannels" : "vid.searchPh");
+    $("#vs-q").placeholder = ph;
+    $("#vs-q").setAttribute("aria-label", ph);
+    $("#vs-kind").innerHTML = ["videos", "tmdb", "channels"]
       .map((k) => {
         const on = state.tab === k;
-        const count = k === "videos" && state.total ? ` <span class="follow-count">${esc(V.fmtCount(state.total))}</span>` : "";
+        const n = k === "videos" ? state.total : k === "channels" && on ? state.chTotal : 0;
+        const count = n ? ` <span class="follow-count">${esc(V.fmtCount(n))}</span>` : "";
         return `<button type="button" role="tab" class="follow-tab${on ? " active" : ""}" data-kind="${k}" aria-selected="${on}">${esc(t(`vid.kind.${k}`))}${count}</button>`;
       })
       .join("");
   }
 
   function drawFilters() {
+    if (state.tab === "channels") return drawChannelFilters();
     const sel = (id, label, opts, value) => `
       <label class="vs-filter" for="${id}">
         <span>${esc(label)}</span>
@@ -108,6 +126,8 @@
       if (id === "vs-lang") state.lang = e.target.value;
       if (id === "vs-region") state.region = e.target.value;
       if (id === "vs-age") state.age = e.target.value ? Number(e.target.value) : "";
+      if (id === "vs-csort") state.csort = e.target.value === "relevance" ? "" : e.target.value;
+      if (id === "vs-ctype") state.ctype = e.target.value;
       run();
     });
     $("#vs-filters").addEventListener("click", (e) => {
@@ -118,13 +138,15 @@
         return;
       }
       if (e.target.closest("[data-reset]")) {
-        Object.assign(state, { sort: "", lang: "", region: "", age: "", tag: "", owner: "" });
+        if (state.tab === "channels") Object.assign(state, { ctype: "", csort: "" });
+        else Object.assign(state, { sort: "", lang: "", region: "", age: "", tag: "", owner: "" });
         run();
       }
     });
     $("#vs-results").addEventListener("click", (e) => {
       if (e.target.closest("[data-more]")) {
         if (state.tab === "videos") loadVideos(true);
+        else if (state.tab === "channels") loadChannels(true);
         else loadTmdb(true);
       }
     });
@@ -245,11 +267,76 @@
       ${state.tmdbPage < state.tmdbPages ? `<div class="vs-more"><button class="btn btn-lg btn-ghost" type="button" data-more>${esc(t("vid.loadMore"))}</button></div>` : ""}`;
   }
 
+  // ---------------------------------------------------------------- channels of the members' IPTV lists
+  function drawChannelFilters() {
+    const sel = (id, label, opts, value) => `
+      <label class="vs-filter" for="${id}">
+        <span>${esc(label)}</span>
+        <select id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+      </label>`;
+    $("#vs-filters").innerHTML = `
+      ${sel("vs-csort", t("vid.sortBy"), ["relevance", "az", "za", "lists"].map((k) => [k, t(`vid.csort.${k}`)]), state.csort || "relevance")}
+      ${sel("vs-ctype", t("chan.f.type"), [["", t("chan.f.all")], ["live", t("chan.f.live")], ["movie", t("chan.f.movie")], ["series", t("chan.f.series")]], state.ctype)}
+      <p class="vs-note muted">${esc(t("vid.channelsNote"))} <a href="./IPTV.html">${esc(t("vid.channelsLists"))}</a></p>
+      ${state.ctype || state.csort ? `<button class="btn btn-sm btn-ghost vs-reset" type="button" data-reset>${esc(t("vid.resetFilters"))}</button>` : ""}`;
+  }
+
+  async function loadChannels(more = false) {
+    const L = window.CineAuraIptvLists;
+    const seq = ++state.seq;
+    const box = $("#vs-results");
+    if (!more) state.channels = [];
+    if (state.q.length < 2) {
+      state.chTotal = 0;
+      drawKind();
+      box.innerHTML = `<div class="ipl-tip glass">
+        <h2>${esc(t("vid.channelsTipTitle"))}</h2>
+        <p>${esc(t("vid.channelsTip"))}</p>
+        <a class="btn btn-sm btn-ghost" href="./IPTV.html">${esc(t("vid.channelsLists"))}</a>
+      </div>`;
+      return;
+    }
+    if (!more) box.innerHTML = `<p class="muted">${esc(t("common.loading"))}</p>`;
+    else box.querySelector("[data-more]")?.setAttribute("disabled", "");
+    const res = L
+      ? await L.call("iptv_channel_search", {
+          p_member: V.memberId(),
+          p_q: state.q,
+          p_kind: state.ctype,
+          p_sort: state.csort || "relevance",
+          p_limit: 30,
+          p_offset: more ? state.channels.length : 0,
+        })
+      : { ok: false, setup: true };
+    if (seq !== state.seq) return;
+    if (!res.ok) {
+      box.innerHTML = `<p class="empty">${esc(t(res.setup ? "ipl.setupText" : "vid.loadFail"))}</p>`;
+      return;
+    }
+    const items = Array.isArray(res.data?.items) ? res.data.items : [];
+    state.chTotal = Number(res.data?.total || 0);
+    state.channels = more ? state.channels.concat(items) : items;
+    drawKind();
+    if (!state.channels.length) {
+      box.innerHTML = `<div class="vs-none glass">
+        <h2>${esc(t("vid.noResults"))}</h2>
+        <p class="muted">${esc(t("vid.channelsNone"))}</p>
+        <a class="btn btn-sm btn-ghost" href="./IPTV.html">${esc(t("vid.channelsLists"))}</a>
+      </div>`;
+      return;
+    }
+    box.innerHTML = `
+      <div class="vs-results-head"><h2>${esc(t("vid.resultsFor", { q: state.q }))}</h2><span class="muted">${esc(t(state.chTotal === 1 ? "vid.channelsOne" : "vid.channelsN", { n: V.fmtNum(state.chTotal) }))}</span></div>
+      <div class="ipl-chs">${state.channels.map((x) => L.channelHtml(x)).join("")}</div>
+      ${state.channels.length < state.chTotal ? `<div class="vs-more"><button class="btn btn-lg btn-ghost" type="button" data-more>${esc(t("vid.loadMore"))}</button></div>` : ""}`;
+  }
+
   function run() {
     syncUrl();
     drawKind();
     drawFilters();
     if (state.tab === "tmdb") loadTmdb(false);
+    else if (state.tab === "channels") loadChannels(false);
     else loadVideos(false);
   }
 

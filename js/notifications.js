@@ -50,6 +50,8 @@
     // a new video of a member you follow / a comment on your video (sql/content.sql)
     content: svg('<rect x="2.5" y="5" width="19" height="14" rx="3"/><path d="M10 9.2l5 2.8-5 2.8z"/>'),
     content_comment: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M10 7.8l4 2.2-4 2.2z"/>'),
+    // a member shared a private IPTV list with you (sql/iptv_lists.sql)
+    iptv_list: svg('<rect x="2.5" y="6" width="19" height="13" rx="2.5"/><path d="M8 2.5l4 3.5 4-3.5M7 11h6M7 14.5h10"/>'),
     info: svg(BELL),
   };
 
@@ -311,6 +313,7 @@
     if (kind === "vote_up") return "up";
     if (kind === "vote_down") return "down";
     if (kind.startsWith("prize")) return "prize";
+    if (kind === "iptv_list") return "iptv_list"; // a member shared a private IPTV list
     if (kind.startsWith("iptv")) return "iptv"; // a premium IPTV account given or renewed
     return ICON[kind] ? kind : "info";
   }

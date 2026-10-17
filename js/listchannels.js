@@ -45,6 +45,15 @@
  *
  * When the package has a programme guide (EPG), every live channel card that
  * comes near the screen shows what is on now, with how far it has got.
+ *
+ * ?list=IPL…: an IPTV list published by a member (IPTV.html, sql/iptv_lists.sql,
+ * js/iptv-lists.js). iptv_list_open says whether the visitor may see it (public:
+ * everybody, visitors included; exclusive: members who meet its criteria; private:
+ * the members it was given to) and where its playlist is; the page reads the playlist
+ * and plays it like the lists above. &channel=<id>&name=<channel> (a result of
+ * Search.html > Channels) opens that channel, found by its name when the playlist has
+ * changed since. When the publisher opens their own list and its channels changed, the
+ * channels kept for the search are saved again.
  */
 (() => {
   const C = window.CineAura;
@@ -75,7 +84,11 @@
   const freeMode = !pack && params.has("free") && params.get("free") !== "0";
   // ?premium=1: the premium channels (IPTV-Premuim.m3u, unlocked with an account or a code)
   const premiumMode = !pack && !freeMode && params.has("premium") && params.get("premium") !== "0";
-  const listPage = freeMode || premiumMode;
+  // ?list=IPL…: an IPTV list published by a member (sql/iptv_lists.sql)
+  const memberList = !pack && !freeMode && !premiumMode && params.has("list");
+  const listId = memberList ? (params.get("list") || "").trim().toUpperCase().slice(0, 20) : "";
+  const listPage = freeMode || premiumMode || memberList;
+  const LISTS = () => window.CineAuraIptvLists;
   const pick = (value, list, fallback) => (list.includes(value) ? value : fallback);
 
   const state = {
@@ -85,6 +98,8 @@
     access: "ok", // ok | signin | locked | unlock (premium list waiting for an account)
     wanted: "", // id of the channel to play after signing in (a guest), or once the premium list is unlocked
     m3u: null, // the playlist of a home page list: { key, name, url, epg }
+    list: null, // ?list=: the member's list (iptv_list_open)
+    refused: null, // ?list=: why the visitor may not see it { reason, owner, … }
     unlock: null, // premium list: { user, pass, via: login | code | device, code, remembered }
     unlockWay: "login", // the premium gate: login (username + password) | code ("Use an access code")
     unlockBusy: false,
@@ -202,9 +217,39 @@
     const rows = C.parseM3U(text).map((r) => ({
       ...r,
       package_name: list.name,
-      id: `m${hash(`${r.stream_url || norm(r.channel_name)}\n${r.group_name}`)}`,
+      id: C.m3uRowId(r), // the same id as the channel search of the members' lists
     }));
-    return { rows, epg: C.m3uHeaderEpg(text) };
+    return { rows, epg: C.m3uHeaderEpg(text), text };
+  }
+
+  // ?list=: may the visitor see it, and where is its playlist (sql/iptv_lists.sql)
+  async function loadMemberList() {
+    const L = LISTS();
+    const res = L
+      ? await L.call("iptv_list_open", { p_id: listId, p_member: String(getSession()?.member_id || "") })
+      : { ok: false };
+    if (!res.ok) throw new Error(res.setup ? "setup" : "open");
+    if (!res.data?.ok) {
+      state.refused = res.data || { reason: "not_found" };
+      return null;
+    }
+    const l = res.data.list;
+    state.list = l;
+    const url = L.sourceUrl(l);
+    if (!url) throw new Error("no playlist");
+    const got = await loadPlaylist({ key: "list", name: l.name, url });
+    return { ...got, url, epg: l.epg_url || got.epg };
+  }
+
+  // the publisher's own visit: the channels kept for the search follow the playlist
+  function followPlaylist(rows, epg) {
+    const L = LISTS();
+    const l = state.list;
+    if (!L || !l?.mine || !rows.length) return;
+    if (l.sig && L.signature(rows) === l.sig) return;
+    L.refresh(l, { rows, epg }).then((r) => {
+      if (r?.ok) l.sig = L.signature(rows);
+    }).catch(() => {});
   }
 
   // The IPTV "account" of a list, for the player's programme guide: the guide of
@@ -225,6 +270,7 @@
   }
 
   async function loadAccess() {
+    if (memberList) return "ok"; // iptv_list_open already said this visitor may see the list
     if (premiumMode) return "unlock"; // an account or a code, for guests, members and staff alike
     const session = getSession();
     if (staffSession()) return "ok";
@@ -515,7 +561,43 @@
       </div>`;
   }
 
-  const pageTitle = () => (freeMode ? t("home.iptv.free") : premiumMode ? t("home.iptv.premium") : pack);
+  const pageTitle = () =>
+    memberList ? state.list?.name || t("ipl.listTitle") : freeMode ? t("home.iptv.free") : premiumMode ? t("home.iptv.premium") : pack;
+
+  // ?list=: the publisher, who may see the list, the way back to IPTV.html
+  function listMetaHtml() {
+    const l = state.list;
+    if (!l) return "";
+    const L = LISTS();
+    const crit = l.visibility === "exclusive" ? L.criteriaParts(l) : [];
+    return `
+            <p class="ipl-head-meta">
+              ${L.badgeHtml(l)}
+              <span>${escapeHtml(t("ipl.by"))} <a href="${escapeHtml(C.profileHref(l.owner))}"><bdi>@${escapeHtml(l.owner || "")}</bdi></a></span>
+              ${crit.length ? `<span>${crit.map((x) => `<bdi>${escapeHtml(x)}</bdi>`).join(" · ")}</span>` : ""}
+              <a class="ipl-back" href="./IPTV.html">${escapeHtml(t("ipl.allLists"))}</a>
+              ${l.mine ? `<a class="ipl-back" href="${escapeHtml(L.MANAGE_HREF)}">${escapeHtml(t("ipl.manage"))}</a>` : ""}
+            </p>
+            ${l.description ? `<p class="ipl-head-desc" dir="auto">${escapeHtml(l.description)}</p>` : ""}`;
+  }
+
+  // ?list=: the visitor may not see this list (or it is gone)
+  function refusedHtml() {
+    const r = state.refused || {};
+    const L = LISTS();
+    const acts = [];
+    if (r.reason === "signin") acts.push(`<a class="btn btn-sm btn-primary" href="${escapeHtml(signinUrl())}" data-signin>${escapeHtml(t("common.signin"))}</a>`);
+    if (r.reason === "followers" && r.owner) acts.push(`<a class="btn btn-sm btn-primary" href="${escapeHtml(C.profileHref(r.owner))}">${escapeHtml(t("ipl.seeProfile", { name: `@${r.owner}` }))}</a>`);
+    acts.push(`<a class="btn btn-sm btn-ghost" href="./IPTV.html">${escapeHtml(t("ipl.allLists"))}</a>`);
+    return `
+      <section class="glass dash-main chl-page ipl-gate">
+        <span class="ipl-gate-ico" aria-hidden="true">${ICON.lock}</span>
+        <p class="eyebrow">${escapeHtml(t("ipl.listTitle"))}</p>
+        <h1>${escapeHtml(t(r.reason === "not_found" || !r.reason ? "ipl.no.foundTitle" : "ipl.no.title"))}</h1>
+        <p class="muted">${escapeHtml(L ? L.refusalText(r) : t("chan.loadFail"))}</p>
+        <div class="ipl-gate-acts">${acts.join("")}</div>
+      </section>`;
+  }
 
   function render() {
     const root = document.getElementById("root");
@@ -539,6 +621,10 @@
         </section>`;
       return;
     }
+    if (memberList && state.refused) {
+      root.innerHTML = refusedHtml();
+      return;
+    }
     const total = state.rows.length;
     const groups = new Set(state.rows.map((r) => r._group)).size;
     let body = `<p class="empty">${escapeHtml(t(freeMode ? "chan.freeNone" : premiumMode ? "iptvp.none" : "chan.empty"))}</p>`;
@@ -548,8 +634,9 @@
       <section class="glass dash-main chl-page">
         <div class="chl-head">
           <div class="chl-title">
-            <p class="eyebrow">${escapeHtml(t("dash.liveTv"))}</p>
+            <p class="eyebrow">${escapeHtml(t(memberList ? "ipl.listTitle" : "dash.liveTv"))}</p>
             <h1>${escapeHtml(pageTitle())}</h1>
+            ${memberList ? listMetaHtml() : ""}
             ${total ? `<p class="muted">${escapeHtml(t("chan.count", { n: total, g: groups }))}</p>` : ""}
           </div>
           ${
@@ -1186,6 +1273,7 @@
 
   // ?package=<name>, or ?free=1 for the free list
   function baseQuery() {
+    if (memberList) return `list=${encodeURIComponent(listId)}`;
     if (freeMode) return "free=1";
     if (premiumMode) return "premium=1";
     return `package=${encodeURIComponent(pack)}`;
@@ -1275,7 +1363,7 @@
     const account = listAccount();
     player().open(list, index, {
       report: true,
-      countViews: true, // home page > Most watched channels
+      countViews: !memberList, // home page > Most watched channels (CineAura's own lists)
       ...(account ? { accounts: [account] } : {}),
       onResult(row, ok) {
         if (!row || !row._ck) return;
@@ -1383,9 +1471,19 @@
   }
 
   function openFromAddress() {
-    const wanted = (params.get("channel") || "").trim();
+    let wanted = (params.get("channel") || "").trim();
+    const byName = (params.get("name") || "").trim().slice(0, 200);
+    if (memberList && (wanted || byName) && !state.rows.some((r) => String(r.id) === wanted)) {
+      // a result of Search.html > Channels from before the playlist changed: the same name
+      const same = byName ? sameChannel({ channel_name: byName, stream_url: "" }) : null;
+      if (!same) {
+        if (state.rows.length) toast(t("ipl.channelGone", { name: byName || wanted }));
+        return;
+      }
+      wanted = String(same.id);
+    }
     if (!wanted) return;
-    if (state.m3u && !state.rows.some((r) => String(r.id) === wanted)) {
+    if (state.m3u && !memberList && !state.rows.some((r) => String(r.id) === wanted)) {
       openDatabaseChannel(wanted); // a card of Most watched channels on the home page
       return;
     }
@@ -1746,7 +1844,15 @@
     });
     try {
       let rows = null;
-      if (listPage) {
+      if (memberList) {
+        const got = await loadMemberList();
+        rows = got ? got.rows : [];
+        if (got) {
+          state.m3u = { key: "list", name: state.list.name, url: got.url, epg: got.epg };
+          state.packs = [state.list.name];
+          followPlaylist(got.rows, got.epg);
+        }
+      } else if (listPage) {
         const list = premiumMode ? C.IPTV_LISTS.premium : C.IPTV_LISTS.free;
         try {
           const got = await loadPlaylist(list);

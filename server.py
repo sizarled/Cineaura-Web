@@ -70,6 +70,10 @@ ROUTES = {
     "/Search": "search.html",
     "/Search.html": "search.html",
     "/search": "search.html",
+    # members' IPTV lists (sql/iptv_lists.sql): IPTV.html
+    "/IPTV": "iptv.html",
+    "/IPTV.html": "iptv.html",
+    "/iptv": "iptv.html",
 }
 
 

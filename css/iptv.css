@@ -1,0 +1,293 @@
+/* ==========================================================
+   Members' IPTV lists (sql/iptv_lists.sql): IPTV.html (js/iptv.js), the cards and the
+   publish dialog (js/iptv-lists.js), Search.html > Channels, Dashboard > IPTV > Your
+   lists and the list header of Listchannels.html. Colours come from the theme
+   variables (facebook.css loads last).
+   ========================================================== */
+
+.ipl-page [hidden],
+.ipl-dialog [hidden],
+.ipl-dash [hidden] { display: none !important; }
+
+/* ---------- IPTV.html ---------- */
+.ipl-hero-top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 20px; }
+.ipl-hero-text { min-width: 0; flex: 1 1 320px; display: grid; gap: 6px; }
+.ipl-hero-top p { margin: 0; color: var(--muted); max-width: 760px; }
+.ipl-hero-acts { flex: 0 1 auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ipl-hero-acts .btn { gap: 8px; }
+.ipl-tools { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 14px; }
+.ipl-tools .follow-tabs { margin: 0; flex: 1 1 auto; min-width: 0; }
+
+/* ---------- a list as a card ---------- */
+.ipl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+.ipl-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+.ipl-card.is-waiting { border-style: dashed; }
+.ipl-card-main { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; align-items: start; color: inherit; text-decoration: none; }
+.ipl-card-main:hover h3 { color: var(--cyan); }
+.ipl-cover {
+  --ipl-h: 204;
+  width: 92px;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 2px;
+  color: #fff;
+  background: linear-gradient(145deg, hsl(var(--ipl-h) 70% 42%), hsl(calc(var(--ipl-h) + 40) 62% 26%));
+  text-align: center;
+}
+.ipl-cover svg { opacity: 0.9; }
+.ipl-cover b { font-size: 19px; line-height: 1.1; }
+.ipl-cover small { font-size: 11px; opacity: 0.85; }
+.ipl-card-text { min-width: 0; display: grid; gap: 4px; }
+.ipl-card h3 { margin: 0; font-size: 16.5px; line-height: 1.3; overflow-wrap: anywhere; transition: color 0.15s; }
+.ipl-desc { color: var(--muted); font-size: 13.5px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ipl-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.ipl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.6;
+  background: var(--sub-bg);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ipl-badge svg { width: 12px; height: 12px; flex: none; }
+.ipl-badge.is-public { background: rgba(66, 183, 42, 0.16); color: #5fd34a; }
+.ipl-badge.is-exclusive { background: rgba(233, 163, 0, 0.16); color: #f2b536; }
+.ipl-badge.is-private { background: rgba(123, 92, 240, 0.18); color: #a891ff; }
+.ipl-badge.is-epg { background: rgba(45, 136, 255, 0.16); color: var(--cyan); }
+.ipl-badge.is-mine { background: rgba(45, 136, 255, 0.16); color: var(--cyan); }
+html[data-theme="day"] .ipl-badge.is-public { color: #2a8a17; }
+html[data-theme="day"] .ipl-badge.is-exclusive { color: #9a6a00; }
+html[data-theme="day"] .ipl-badge.is-private { color: #5a3fd1; }
+.ipl-aud { margin: 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.ipl-kinds { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.ipl-kind { font-size: 12px; color: var(--muted); }
+.ipl-kinds .ipl-kind { padding: 3px 8px; border-radius: 8px; background: var(--sub-bg); }
+.ipl-kinds .ipl-kind b { color: var(--text); margin-inline-start: 2px; }
+.ipl-warn { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12.5px; background: rgba(233, 163, 0, 0.12); color: var(--text); }
+.ipl-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; color: var(--muted); }
+.ipl-owner { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-weight: 600; text-decoration: none; min-width: 0; }
+.ipl-owner:hover { color: var(--cyan); }
+.ipl-owner-ava { width: 22px; height: 22px; border-radius: 50%; overflow: hidden; flex: none; background: var(--sub-bg); }
+.ipl-owner-ava img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ipl-facts { display: inline-flex; flex-wrap: wrap; gap: 2px 8px; }
+.ipl-facts span + span::before { content: "·"; margin-inline-end: 8px; }
+.ipl-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.ipl-actions .btn { gap: 6px; }
+
+/* ---------- Search.html > Channels ---------- */
+.ipl-chs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 10px; }
+.ipl-ch {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.ipl-ch:hover { border-color: var(--cyan); }
+.ipl-ch:hover .ipl-ch-play { background: var(--btn-blue); color: #fff; }
+.ipl-ch-logo {
+  --ipl-h: 204;
+  position: relative;
+  width: 56px;
+  height: 42px;
+  border-radius: 8px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 800;
+  font-size: 15px;
+  background: linear-gradient(145deg, hsl(var(--ipl-h) 60% 40%), hsl(calc(var(--ipl-h) + 40) 55% 24%));
+}
+.ipl-ch-logo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #111; padding: 4px; }
+.ipl-ch-text { min-width: 0; display: grid; gap: 2px; }
+.ipl-ch-text b { font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ipl-ch-text small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ipl-ch-list { display: flex; align-items: center; gap: 6px; }
+.ipl-ch-list .ipl-badge { padding: 0 6px; font-size: 10.5px; }
+.ipl-ch-play { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--sub-bg); color: var(--text); transition: background 0.15s, color 0.15s; }
+html[dir="rtl"] .ipl-ch-play svg { transform: scaleX(-1); }
+.ipl-tip { display: grid; justify-items: center; gap: 10px; text-align: center; padding: 30px 20px; border-radius: 14px; }
+.ipl-tip h2 { margin: 0; font-size: 18px; }
+.ipl-tip p { margin: 0; color: var(--muted); max-width: 560px; }
+
+/* ---------- the publish / edit dialog ---------- */
+html.ipl-lock { overflow: hidden; }
+.ipl-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 320;
+  display: grid;
+  place-items: center;
+  padding: max(16px, env(safe-area-inset-top, 0px)) 16px max(16px, env(safe-area-inset-bottom, 0px));
+  background: rgba(0, 0, 0, 0.58);
+  overflow: auto;
+}
+.ipl-dialog {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.ipl-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 10px; border-bottom: 1px solid var(--line); }
+.ipl-dialog-head h2 { margin: 2px 0 0; font-size: 20px; }
+.ipl-dialog-head .eyebrow { margin: 0; }
+.ipl-x { flex: none; width: 36px; height: 36px; border-radius: 50%; border: 0; display: grid; place-items: center; background: var(--sub-bg); color: var(--text); cursor: pointer; }
+.ipl-x:hover { filter: brightness(1.15); }
+.ipl-dialog-body { overflow: auto; padding: 14px 18px 6px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; overscroll-behavior: contain; }
+.ipl-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.ipl-field .field-label { margin: 0; }
+.ipl-dialog input[type="text"],
+.ipl-dialog input[type="url"],
+.ipl-dialog input:not([type]),
+.ipl-dialog textarea,
+.ipl-dialog select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14.5px;
+}
+.ipl-dialog textarea { resize: vertical; min-height: 44px; }
+.ipl-dialog input:focus-visible,
+.ipl-dialog textarea:focus-visible,
+.ipl-dialog select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.ipl-hint { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.ipl-sub { margin: 0; font-size: 13px; color: var(--muted); }
+.ipl-seg { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.ipl-seg-opt, .ipl-vis-opt { position: relative; cursor: pointer; }
+.ipl-seg-opt input, .ipl-vis-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.ipl-seg-opt > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--sub-bg);
+  font-weight: 600;
+  font-size: 14px;
+  text-align: center;
+}
+.ipl-seg-opt input:checked + span,
+.ipl-vis-opt input:checked + span { border-color: var(--cyan); background: rgba(45, 136, 255, 0.14); color: var(--text); }
+.ipl-seg-opt input:focus-visible + span,
+.ipl-vis-opt input:focus-visible + span { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.ipl-src-box { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 4px; }
+.ipl-file { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; cursor: pointer; }
+.ipl-file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.ipl-file .btn { gap: 6px; pointer-events: none; }
+.ipl-file:focus-within .btn { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.ipl-file-name { min-width: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.ipl-vis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ipl-vis-opt > span {
+  height: 100%;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--sub-bg);
+}
+.ipl-vis-opt b { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.ipl-vis-opt small { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.ipl-aud-box { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 4px; padding: 12px; border-radius: 10px; border: 1px dashed var(--line); }
+.ipl-check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.ipl-check input { width: 17px; height: 17px; accent-color: var(--cyan); flex: none; }
+.ipl-cty { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.ipl-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ipl-chips:empty { display: none; }
+.ipl-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border-radius: 999px; background: var(--sub-bg); font-size: 13px; }
+html[dir="rtl"] .ipl-chip { padding: 3px 10px 3px 4px; }
+.ipl-chip button { width: 22px; height: 22px; border-radius: 50%; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
+.ipl-chip button:hover { background: var(--line); color: var(--text); }
+.ipl-langs { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.ipl-lang { padding: 6px 10px; border-radius: 999px; background: var(--sub-bg); font-size: 13.5px; }
+.ipl-progress { padding: 4px 18px 0; display: grid; gap: 6px; }
+.ipl-progress p { margin: 0; font-size: 13px; color: var(--muted); }
+.ipl-bar { height: 6px; border-radius: 999px; background: var(--sub-bg); overflow: hidden; }
+.ipl-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--cyan); transition: width 0.25s ease; }
+.ipl-msg { margin: 0; padding: 0 18px; font-size: 13.5px; color: var(--red); }
+.ipl-msg:empty { display: none; }
+.ipl-msg.ok { color: var(--green); }
+.ipl-dialog-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); margin-top: 10px; }
+.ipl-dialog.is-busy .ipl-dialog-body { opacity: 0.7; }
+
+/* ---------- Listchannels.html?list= ---------- */
+.ipl-head-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.ipl-head-meta a.ipl-back { color: var(--cyan); text-decoration: none; font-weight: 600; }
+.ipl-head-meta a.ipl-back:hover { text-decoration: underline; }
+.ipl-head-desc { margin: 4px 0 0; color: var(--muted); font-size: 13.5px; max-width: 760px; overflow-wrap: anywhere; white-space: pre-line; }
+.ipl-gate, .chl-page.ipl-gate { display: grid; justify-items: start; align-content: start; gap: 10px; }
+.chl-page.ipl-gate > * { margin: 0; }
+.chl-page.ipl-gate h1 { margin-bottom: 2px; }
+.ipl-gate-ico { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--sub-bg); color: var(--cyan); }
+.ipl-gate-ico svg { width: 22px; height: 22px; }
+.ipl-gate p { margin: 0; max-width: 640px; }
+.ipl-gate-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- Dashboard > IPTV > Your lists ---------- */
+.ipl-dash { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.ipl-dash-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.ipl-dash-head p { margin: 0; color: var(--muted); max-width: 640px; }
+.ipl-dash-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.ipl-dash-acts .btn { gap: 6px; }
+.ipl-dash .ipl-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.ipl-busy { opacity: 0.6; pointer-events: none; }
+
+/* ---------- phones ---------- */
+@media (max-width: 640px) {
+  .ipl-vis { grid-template-columns: minmax(0, 1fr); }
+  .ipl-card-main { grid-template-columns: 72px minmax(0, 1fr); }
+  .ipl-cover { width: 72px; border-radius: 10px; }
+  .ipl-cover b { font-size: 16px; }
+  .ipl-cover svg { width: 18px; height: 18px; }
+  .ipl-modal { padding: 0; place-items: end stretch; }
+  .ipl-dialog { width: 100%; max-height: 94vh; max-height: 94dvh; border-radius: 14px 14px 0 0; }
+  .ipl-dialog-head, .ipl-dialog-body, .ipl-dialog-foot { padding-inline: 14px; }
+  .ipl-dialog-foot .btn { flex: 1 1 0; }
+  .ipl-hero-acts { width: 100%; }
+  .ipl-hero-acts .btn { flex: 1 1 auto; justify-content: center; }
+  .ipl-ch { grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; padding: 9px 10px; }
+  .ipl-ch-logo { width: 48px; height: 36px; }
+}
+.ipl-card.is-fresh { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(45, 136, 255, 0.35); }
