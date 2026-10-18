@@ -1,7 +1,9 @@
 -- ============================================================
--- CineAura — Panel: the overview, the announcements and the bar of the home page
+-- CineAura — Panel: the overview, the announcements, the bar of the home page and the
+-- settings of the Panel button
 -- Run this in the Supabase SQL editor (safe to run more than once), LAST: after
--- prize_secure.sql, profile.sql, content.sql, iptv_lists.sql, point_codes.sql and market.sql.
+-- prize_secure.sql, profile.sql, content.sql, iptv_lists.sql, point_codes.sql, market.sql and
+-- packages.sql.
 --
 --   Panel > Overview        panel_overview(): the numbers of the site and what is waiting for
 --                           the team. Each staff member sees the numbers of their own sections
@@ -15,6 +17,9 @@
 --                             everybody through site_banner_get()
 --   Panel > Accounts        panel_member_summary(): a member at a glance (Full info): points and
 --                           level, videos, IPTV lists, store and orders, reviews, codes, claims.
+--   Panel > Settings        panel_settings_save(): who sees the Panel button of the dashboard
+--                           (admins / moderators / members; the Super Admin only). The page
+--                           reads panel_settings; only this function writes it (section 8).
 --
 -- A table some installs do not have yet (the market, the IPTV lists…) is simply left out.
 -- ============================================================
@@ -71,7 +76,7 @@ end $$;
 create or replace function public._panel_sections(s public.staff) returns text[]
 language sql immutable as $$
   select case when s.role = 'super'
-              then array['accounts', 'links', 'iptv', 'apps', 'reports', 'prizes', 'messages', 'content', 'market', 'points',
+              then array['accounts', 'links', 'iptv', 'apps', 'reports', 'prizes', 'messages', 'content', 'market', 'packages',
                          'announce', 'staff', 'settings']
               else array(select x from unnest(string_to_array(replace(coalesce(s.sections, ''), ' ', ''), ',')) x where x <> '') end
 $$;
@@ -344,12 +349,16 @@ begin
     end if;
   end if;
 
-  if 'points' = any (secs) then
-    res := res || jsonb_build_object('points', jsonb_build_object(
-      'unused', public._panel_n('select count(*) from public.point_codes where not used and (expires_at is null or expires_at > now())'),
-      'unused_points', public._panel_n('select coalesce(sum(points), 0) from public.point_codes where not used and (expires_at is null or expires_at > now())'),
-      'used_30d', public._panel_n('select count(*) from public.point_codes where used and used_at > now() - interval ''30 days'''),
-      'used_points_30d', public._panel_n('select coalesce(sum(points), 0) from public.point_codes where used and used_at > now() - interval ''30 days''')));
+  -- Panel > Packages (sql/point_codes.sql, sql/packages.sql); 'points': the section of round 27
+  if 'packages' = any (secs) or 'points' = any (secs) then
+    res := res || jsonb_build_object('packages', jsonb_build_object(
+      'points', public._panel_n('select count(*) from public.point_codes where not used and uses < max_uses and (expires_at is null or expires_at > now())'),
+      'accounts', public._panel_n('select count(*) from public.account_codes where uses < max_uses and (expires_at is null or expires_at > now())'),
+      'prizes', public._panel_n('select count(*) from public.prize_pack_codes where uses < max_uses and (expires_at is null or expires_at > now())'),
+      'used_30d', public._panel_n('select count(*) from public.point_code_uses where used_at > now() - interval ''30 days''')
+                  + public._panel_n('select count(*) from public.account_code_uses where used_at > now() - interval ''30 days''')
+                  + public._panel_n('select count(*) from public.prize_pack_uses where used_at > now() - interval ''30 days'''),
+      'points_30d', public._panel_n('select coalesce(sum(points), 0) from public.point_code_uses where used_at > now() - interval ''30 days''')));
   end if;
 
   if 'announce' = any (secs) then
@@ -408,14 +417,75 @@ begin
       'reviews', public._panel_n(format('select count(*) from public.market_reviews where member_id = %L', v_id)),
       'reports', public._panel_n(format('select count(*) from public.market_reports where owner_id = %L and status = ''open''', v_id))),
     'codes', jsonb_build_object(
-      'used', public._panel_n(format('select count(*) from public.point_codes where member_id = %L and used', v_id)),
-      'points', public._panel_n(format('select coalesce(sum(points), 0) from public.point_codes where member_id = %L and used', v_id))),
+      'used', public._panel_n(format('select count(*) from public.point_code_uses where member_id = %L', v_id)),
+      'points', public._panel_n(format('select coalesce(sum(points), 0) from public.point_code_uses where member_id = %L', v_id)),
+      'accounts', public._panel_n(format('select count(*) from public.account_code_uses where member_id = %L', v_id)),
+      'prizes', public._panel_n(format('select count(*) from public.prize_pack_uses where member_id = %L', v_id))),
     'claims', jsonb_build_object(
       'all', public._panel_n(format('select count(*) from public.prize_claims where member_id = %L', v_id)),
       'open', public._panel_n(format('select count(*) from public.prize_claims where member_id = %L and status in (''submitted'', ''review'')', v_id))));
 end $$;
 
--- ------------------------------------------------------------------ 8. who may call what
+-- ------------------------------------------------------------------ 8. Panel > Settings: who sees the Panel button
+-- The dashboard reads panel_settings (sql/panel.sql) to show the Panel button to admins, moderators
+-- or members. Saving it went straight to the table from the browser; it now goes through
+-- panel_settings_save() (the Super Admin), which works whatever the table's policies and grants:
+-- the Data API of the Supabase projects made since 30 May 2026 (and, on 30 October 2026, of every
+-- project) no longer opens a new table by itself, so the table is opened for reading here.
+create table if not exists public.panel_settings (
+  id integer primary key default 1,
+  show_admin boolean not null default true,
+  show_moderator boolean not null default true,
+  show_member boolean not null default false,
+  constraint panel_settings_one check (id = 1)
+);
+alter table public.panel_settings add column if not exists show_admin boolean not null default true;
+alter table public.panel_settings add column if not exists show_moderator boolean not null default true;
+alter table public.panel_settings add column if not exists show_member boolean not null default false;
+insert into public.panel_settings (show_admin, show_moderator, show_member)
+select true, true, false where not exists (select 1 from public.panel_settings);
+alter table public.panel_settings enable row level security;
+do $$
+declare pol record;
+begin
+  -- read by everybody, written by nobody through the API
+  for pol in select policyname from pg_policies
+              where schemaname = 'public' and tablename = 'panel_settings' and cmd in ('INSERT', 'UPDATE', 'DELETE', 'ALL') loop
+    execute format('drop policy %I on public.panel_settings', pol.policyname);
+  end loop;
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'panel_settings' and cmd = 'SELECT') then
+    create policy "open select" on public.panel_settings for select to anon, authenticated using (true);
+  end if;
+end $$;
+revoke insert, update, delete, truncate on public.panel_settings from anon, authenticated;
+grant select on public.panel_settings to anon, authenticated;
+
+-- -> { ok: true, settings: { show_admin, show_moderator, show_member } } (staff_forbidden: not the Super Admin)
+create or replace function public.panel_settings_save(p_token text, p_show_admin boolean, p_show_moderator boolean,
+  p_show_member boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare s public.staff; r record;
+begin
+  s := public._staff(p_token);
+  if s.role <> 'super' then raise exception 'staff_forbidden'; end if;
+  update public.panel_settings
+     set show_admin = coalesce(p_show_admin, true), show_moderator = coalesce(p_show_moderator, true),
+         show_member = coalesce(p_show_member, false);
+  if not found then
+    begin
+      insert into public.panel_settings (id, show_admin, show_moderator, show_member)
+      values (1, coalesce(p_show_admin, true), coalesce(p_show_moderator, true), coalesce(p_show_member, false));
+    exception when others then
+      insert into public.panel_settings (show_admin, show_moderator, show_member)
+      values (coalesce(p_show_admin, true), coalesce(p_show_moderator, true), coalesce(p_show_member, false));
+    end;
+  end if;
+  select show_admin, show_moderator, show_member into r from public.panel_settings limit 1;
+  return jsonb_build_object('ok', true, 'settings', jsonb_build_object('show_admin', r.show_admin,
+    'show_moderator', r.show_moderator, 'show_member', r.show_member));
+end $$;
+
+-- ------------------------------------------------------------------ 9. who may call what
 do $$
 declare f text;
 begin
@@ -428,7 +498,8 @@ begin
   foreach f in array array[
     'public.site_banner_get()', 'public.site_banner_admin(text)', 'public.site_banner_save(text, jsonb)',
     'public.announce_preview(text, text, text)', 'public.announce_send(text, text, text, text, text, text)',
-    'public.announce_list(text, int)', 'public.panel_overview(text)', 'public.panel_member_summary(text, text)']
+    'public.announce_list(text, int)', 'public.panel_overview(text)', 'public.panel_member_summary(text, text)',
+    'public.panel_settings_save(text, boolean, boolean, boolean)']
   loop
     execute format('revoke all on function %s from public', f);
     execute format('grant execute on function %s to anon, authenticated', f);

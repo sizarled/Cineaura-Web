@@ -458,7 +458,7 @@ end $$;
 -- ------------------------------------------------------------------ 3. member RPCs
 create or replace function public.prize_coupon_check(p_member text, p_prize bigint, p_code text)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare b public.prize_code_blocks; c public.prize_codes; m public.members; valid boolean := false; f int;
+declare b public.prize_code_blocks; c public.prize_codes; m public.members; valid boolean := false; f int; pk jsonb;
 begin
   select * into m from public.members where member_id = p_member;
   if not found then return jsonb_build_object('ok', false, 'error', 'member'); end if;
@@ -476,7 +476,20 @@ begin
   if valid then
     insert into public.prize_code_blocks (member_id, fails, blocked_until) values (p_member, 0, null)
     on conflict (member_id) do update set fails = 0, blocked_until = null, updated_at = now();
-    return jsonb_build_object('ok', true, 'id', c.id, 'code', c.code, 'percent', c.percent);
+    return jsonb_build_object('ok', true, 'kind', 'coupon', 'id', c.id, 'code', c.code, 'percent', c.percent);
+  end if;
+  -- a prize code of Panel > Packages (sql/packages.sql): points off the cost, in every mode. A real
+  -- code this member cannot use says why, without counting as a wrong code.
+  if c.id is null and to_regprocedure('public._prize_pack_check(text, text)') is not null then
+    pk := public._prize_pack_check(p_member, p_code);
+    if coalesce((pk->>'ok')::boolean, false) then
+      insert into public.prize_code_blocks (member_id, fails, blocked_until) values (p_member, 0, null)
+      on conflict (member_id) do update set fails = 0, blocked_until = null, updated_at = now();
+      return jsonb_build_object('ok', true, 'kind', 'pack', 'code', pk->>'code', 'points_off', (pk->>'points_off')::int);
+    end if;
+    if pk->>'reason' <> 'not_found' then
+      return jsonb_build_object('ok', false, 'error', 'pack', 'reason', pk->>'reason', 'why', pk->>'why');
+    end if;
   end if;
   f := coalesce(b.fails, 0) + 1;
   if f >= 3 then
@@ -494,7 +507,7 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; pz public.prizes; md public.prize_modes; c public.prize_codes;
   w record; today date := current_date; cost int; base int; cap int; taken int;
-  lim int; per text; used int; entry_id bigint; st text; drawn boolean := false; names text[];
+  lim int; per text; used int; entry_id bigint; st text; drawn boolean := false; names text[]; pk jsonb; pack text;
 begin
   if p_mode not in ('gift', 'challenge', 'lottery') then return jsonb_build_object('ok', false, 'error', 'mode'); end if;
   -- Serialise every join of the same member (also guards the balance).
@@ -556,14 +569,30 @@ begin
 
   base := coalesce(md.points_cost, 0);
   cost := base;
-  if p_code is not null and trim(p_code) <> '' and p_mode = 'gift' then
-    select * into c from public.prize_codes where prize_id = p_prize and lower(code) = lower(trim(p_code)) for update;
-    if not found or not c.active or (c.expires_at is not null and c.expires_at <= now())
-       or (c.max_uses is not null and c.uses >= c.max_uses) or not public._aud_ok(public._code_aud(c), m)
-       or exists (select 1 from public.prize_code_uses where code_id = c.id and member_id = p_member) then
+  if p_code is not null and trim(p_code) <> '' then
+    -- the discount coupon of this prize (gift mode) …
+    if p_mode = 'gift' then
+      select * into c from public.prize_codes where prize_id = p_prize and lower(code) = lower(trim(p_code)) for update;
+    end if;
+    if c.id is not null then
+      if not c.active or (c.expires_at is not null and c.expires_at <= now())
+         or (c.max_uses is not null and c.uses >= c.max_uses) or not public._aud_ok(public._code_aud(c), m)
+         or exists (select 1 from public.prize_code_uses where code_id = c.id and member_id = p_member) then
+        return jsonb_build_object('ok', false, 'error', 'coupon');
+      end if;
+      cost := greatest(0, ceil(base * (100 - c.percent) / 100.0)::int);
+    -- … or a prize code of Panel > Packages (sql/packages.sql): its points off the cost, in every mode
+    elsif to_regprocedure('public._prize_pack_check(text, text)') is not null then
+      pk := public._prize_pack_check(p_member, p_code);
+      if not coalesce((pk->>'ok')::boolean, false) then
+        return jsonb_build_object('ok', false, 'error', 'coupon', 'reason', pk->>'reason', 'why', pk->>'why');
+      end if;
+      if base <= 0 then return jsonb_build_object('ok', false, 'error', 'coupon', 'reason', 'free'); end if;
+      pack := pk->>'code';
+      cost := greatest(0, base - (pk->>'points_off')::int);
+    else
       return jsonb_build_object('ok', false, 'error', 'coupon');
     end if;
-    cost := greatest(0, ceil(base * (100 - c.percent) / 100.0)::int);
   end if;
 
   if not public._spend_prize(p_member, cost, pz.title, p_mode) then return jsonb_build_object('ok', false, 'error', 'points', 'need', cost); end if;
@@ -577,6 +606,9 @@ begin
   if c.id is not null then
     insert into public.prize_code_uses (code_id, prize_id, member_id, points_saved) values (c.id, p_prize, p_member, base - cost);
     update public.prize_codes set uses = uses + 1 where id = c.id;
+  end if;
+  if pack is not null then
+    perform public._prize_pack_take(p_member, pack, p_prize, p_mode, entry_id, base - cost);
   end if;
   if p_mode = 'gift' then
     insert into public.winners (prize_title, member_id, minutes_paid, group_name, ends_at)
@@ -1150,8 +1182,11 @@ end $$;
 do $$
 declare f record;
 begin
+  -- (not _account_ban_due of account_deadline.sql: the trigger of the members table runs as whoever
+  -- writes a member — the activation page, the Panel — and calls it; it only does date arithmetic)
   for f in select p.oid::regprocedure as sig, p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and (p.proname like '\_%' or p.proname in ('prize_run_scheduled'))
+             and p.proname <> '_account_ban_due'
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f.sig);
   end loop;
@@ -1168,5 +1203,13 @@ end $$;
 
 revoke all on function public._notify_prize_staff(bigint, text, text) from public, anon, authenticated;
 revoke all on function public._notify_new_prize(bigint) from public, anon, authenticated;
+-- an older version of this file took it away from the members' trigger (sql/account_deadline.sql):
+-- given back, or members could no longer be changed by the activation page and the Panel
+do $$
+begin
+  if to_regprocedure('public._account_ban_due(text, timestamptz, timestamptz, timestamptz, timestamptz)') is not null then
+    grant execute on function public._account_ban_due(text, timestamptz, timestamptz, timestamptz, timestamptz) to public, anon, authenticated;
+  end if;
+end $$;
 
 notify pgrst, 'reload schema';

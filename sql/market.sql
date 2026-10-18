@@ -28,9 +28,11 @@
 --   purchase lists  market_lists, market_list_items   products a member gathers, with an audience
 --   recommendations market_recs      of a product, or again of a public recommendation / list
 --   requests     market_requests     "can you get this item?" / a question about a product
+--   coupons      market_coupons, market_coupon_wallet   the coupons a store gives, and the coupons
+--                                    of each buyer (Market.html > Coupons; section 17)
 --
 -- Ids: stores STR + 9 digits, products PRD + 10, categories CAT + 7, orders ORD + 10,
--- purchase lists MPL + 9, recommendations REC + 10.
+-- purchase lists MPL + 9, recommendations REC + 10, coupons CPN + 9.
 --
 -- An order, and its points:
 --
@@ -92,6 +94,20 @@
 --     member recommended it again from somebody else's recommendation or purchase list, it is
 --     shared equally with the member who first recommended it (root_referrer_id): the first
 --     and the last of the chain, whoever passed it on in between.
+--
+-- Coupons (Market.html > Coupons, section 17): a seller gives coupons (Sales coupons): a code (typed
+-- or drawn), how many orders it can be used in (once by default; each buyer once), what it takes
+-- off (the price of the products, the shipping, or both) and how much (1 to 100%), an end date
+-- (optional), and who may use it: anybody (public: the store page and its product pages show it,
+-- with "Get"), or the buyers who meet every criterion set (exclusive): their country, the orders
+-- they received from the store, their positive reviews of its products (more good points than bad
+-- ones) and their negative reviews (more bad points than good ones), each "at least" or "at most".
+-- An exclusive coupon goes by itself to the coupons of every buyer who meets it (the buyers and
+-- reviewers of the store hear about it in their bell). A buyer's coupons (Purchase coupons):
+-- waiting or used; copy, download (a picture) or delete them. At checkout the coupon takes its part
+-- off the total (market_orders.discount): the seller receives the total less the share commission,
+-- which is counted on the price of the products after the coupon. A cancelled, declined or returned
+-- order gives the coupon back to the buyer with the points.
 --
 -- Who sees what: nothing here is open to the public API; the browser calls the functions
 -- (security definer), which check the member, the owner and the order of every action.
@@ -226,7 +242,7 @@ create table if not exists public.market_orders (
   qty integer not null default 1,
   unit_price integer not null,
   shipping_cost integer not null default 0,
-  total integer not null,                             -- unit_price x qty + shipping_cost
+  total integer not null,                             -- unit_price x qty + shipping_cost - discount (a coupon)
   commission integer not null default 0,              -- commission_pct % of unit_price x qty for the referrer
   commission_pct smallint,                            -- the product's share commission that day (0: none), paid by
                                                       -- the seller; empty: an order of the first version (the site paid 25%)
@@ -534,6 +550,62 @@ begin
   end loop;
 end $$;
 
+-- Added in the sixth version: the coupons (section 17). A store gives them (the seller), a buyer
+-- keeps the ones they got (the Get button), were given (an exclusive coupon they meet) or typed at
+-- checkout, until they use them in an order or delete them from their list.
+create table if not exists public.market_coupons (
+  id text primary key,                                -- CPN + 9 digits
+  store_id text not null references public.market_stores(id) on delete cascade,
+  owner_id text not null,
+  code text not null,                                 -- capitals and digits, one of its kind per store
+  scope text not null default 'product',              -- product (the price of the products) | shipping | both
+  pct smallint not null,                              -- 1 … 100 % off
+  max_uses integer not null default 1,                -- the orders it can be used in (each buyer once)
+  uses integer not null default 0,
+  audience text not null default 'public',            -- public | exclusive
+  countries text not null default '',                 -- exclusive: 'MA,FR' (empty: any country)
+  min_purchases integer,                              -- exclusive: the orders the buyer received from the store
+  max_purchases integer,
+  min_positive integer,                               -- exclusive: the buyer's reviews of its products with more
+  max_positive integer,                               --   good points than bad ones …
+  min_negative integer,                               -- … and with more bad points than good ones
+  max_negative integer,
+  expires_at timestamptz,                             -- empty: no end
+  status text not null default 'active',              -- active | paused (by the seller) | deleted
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint market_coupons_scope check (scope in ('product', 'shipping', 'both')),
+  constraint market_coupons_pct check (pct between 1 and 100),
+  constraint market_coupons_uses check (max_uses between 1 and 100000 and uses >= 0),
+  constraint market_coupons_audience check (audience in ('public', 'exclusive')),
+  constraint market_coupons_status check (status in ('active', 'paused', 'deleted'))
+);
+create unique index if not exists market_coupons_code_idx on public.market_coupons (store_id, code) where status <> 'deleted';
+create index if not exists market_coupons_store_idx on public.market_coupons (store_id, status, created_at desc);
+create index if not exists market_coupons_live_idx on public.market_coupons (audience, created_at desc) where status = 'active';
+
+create table if not exists public.market_coupon_wallet (
+  member_id text not null,
+  coupon_id text not null references public.market_coupons(id) on delete cascade,
+  how text not null default 'got',                    -- got (Get) | given (exclusive, met) | typed (at checkout)
+  got_at timestamptz not null default now(),
+  used_at timestamptz,                                -- used in an order (empty again when the order is refunded)
+  order_id text,
+  removed_at timestamptz,                             -- deleted from the buyer's list
+  primary key (member_id, coupon_id),
+  constraint market_coupon_wallet_how check (how in ('got', 'given', 'typed'))
+);
+create index if not exists market_coupon_wallet_coupon_idx on public.market_coupon_wallet (coupon_id);
+create index if not exists market_coupon_wallet_member_idx on public.market_coupon_wallet (member_id, got_at desc);
+
+-- an order made with a coupon: which one, and what it took off the total
+alter table public.market_orders add column if not exists coupon_id text;
+alter table public.market_orders add column if not exists coupon_code text not null default '';
+alter table public.market_orders add column if not exists coupon_scope text;
+alter table public.market_orders add column if not exists coupon_pct smallint;
+alter table public.market_orders add column if not exists discount integer not null default 0;
+create index if not exists market_orders_coupon_idx on public.market_orders (coupon_id) where coupon_id is not null;
+
 -- Faster "contains" searches when pg_trgm can be installed (optional).
 do $$
 begin
@@ -551,7 +623,8 @@ declare t text; pol record;
 begin
   foreach t in array array['market_stores', 'market_categories', 'market_products', 'market_product_categories',
                            'market_saved', 'market_orders', 'market_reviews', 'market_requests', 'market_addresses',
-                           'market_reports', 'market_lists', 'market_list_items', 'market_recs']
+                           'market_reports', 'market_lists', 'market_list_items', 'market_recs', 'market_coupons',
+                           'market_coupon_wallet']
   loop
     execute format('alter table public.%I enable row level security', t);
     for pol in select policyname from pg_policies where schemaname = 'public' and tablename = t loop
@@ -889,10 +962,17 @@ begin
   return true;
 end $$;
 
--- Gives the price of an order back to the buyer.
+-- Gives the price of an order back to the buyer, and the coupon it was bought with.
 create or replace function public._mkt_refund(o public.market_orders) returns void
 language plpgsql security definer set search_path = public as $$
 begin
+  if o.coupon_id is not null then
+    update public.market_coupon_wallet set used_at = null, order_id = null
+     where member_id = o.buyer_id and coupon_id = o.coupon_id and order_id = o.id;
+    if found then
+      update public.market_coupons set uses = greatest(0, uses - 1), updated_at = now() where id = o.coupon_id;
+    end if;
+  end if;
   if o.total <= 0 then return; end if;
   update public.profiles set points_spent = greatest(0, coalesce(points_spent, 0) - o.total) where member_id = o.buyer_id;
   insert into public.point_spends (member_id, amount, prize_title, mode) values (o.buyer_id, -o.total, o.title, 'market_refund');
@@ -1043,6 +1123,9 @@ language sql stable security definer set search_path = public as $$
     -- the team refunded the buyer or paid the seller (Panel > Market), and why
     'staff', case when o.staff_action <> '' then jsonb_build_object('action', o.staff_action, 'reason', o.staff_reason, 'at', o.staff_at) end,
     'actions', public._mkt_actions(o, p_viewer))
+  -- a coupon: its code and what it took off the total
+  || jsonb_build_object('discount', o.discount,
+       'coupon', case when coalesce(o.coupon_code, '') <> '' then jsonb_build_object('code', o.coupon_code, 'pct', o.coupon_pct, 'scope', o.coupon_scope) end)
 $$;
 
 -- An order that has just been sold (bought in an instant store, or accepted):
@@ -1137,7 +1220,14 @@ begin
         'received', (select count(*) from public.market_reviews where seller_id = me)),
       'requests', jsonb_build_object(
         'sent', (select count(*) from public.market_requests where from_id = me and status = 'answered'),
-        'received', (select count(*) from public.market_requests where to_id = me and status = 'open'))),
+        'received', (select count(*) from public.market_requests where to_id = me and status = 'open')),
+      -- coupons waiting to be used; the store's coupons that can be used
+      'coupons', jsonb_build_object(
+        'purchases', (select count(*) from public.market_coupon_wallet w join public.market_coupons c on c.id = w.coupon_id
+                       where w.member_id = me and w.removed_at is null and w.used_at is null and c.status = 'active'
+                         and c.uses < c.max_uses and (c.expires_at is null or c.expires_at > now())),
+        'sales', (select count(*) from public.market_coupons c where c.owner_id = me and c.status = 'active'
+                    and c.uses < c.max_uses and (c.expires_at is null or c.expires_at > now())))),
     'unread', case when to_regclass('public.notifications') is null then 0 else
       (select count(*) from public.notifications n where n.member_id = me and n.kind like 'market%' and not n.read) end);
 end $$;
@@ -1732,15 +1822,22 @@ end $$;
 -- The delivery address itself never comes with the purchase: once the order is sold (at once in
 -- an instant store, when the seller accepts in the others) the address saved in the buyer's
 -- profile goes with it, or the buyer gives it in Your purchases (market_order_address).
--- p_ref = the username of the share link the buyer came from.
---   -> { ok: true, id, status, total, available, needs_address, delivered } | { ok: false, reason: member |
---      blocked | not_found | own | closed | stock | qty | scope | city | limit | points (need, have) }
-create or replace function public.market_buy(p_member text, p_product text, p_qty int, p_address jsonb, p_ref text default '')
+-- p_ref = the username of the share link the buyer came from. p_coupon = a coupon of the store
+-- (section 17): it takes its part off the products and / or the shipping.
+--   -> { ok: true, id, status, total, discount, available, needs_address, delivered } | { ok: false, reason: member |
+--      blocked | not_found | own | closed | stock | qty | scope | city | limit | points (need, have) |
+--      coupon (why: not_found | own | paused | expired | used_up | used | country | purchases | positive |
+--      negative | nothing) }
+drop function if exists public.market_buy(text, text, int, jsonb, text);
+create or replace function public.market_buy(p_member text, p_product text, p_qty int, p_address jsonb, p_ref text default '',
+                                              p_coupon text default '')
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; p public.market_products; st public.market_stores; q int := coalesce(p_qty, 1); addr jsonb;
   a_city text; a_note text; ship_on boolean; v_total int; ref text; oid text; st_code text;
   pts jsonb; c_pct int; dlv text; after text := ''; final text; root text; v_comm int;
+  v_sub int; v_ship int; cr jsonb; cpo record; v_cid text; v_ccode text := ''; v_cscope text; v_cpct int; v_disc int := 0;
+  off_p int := 0;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
@@ -1773,7 +1870,23 @@ begin
   end if;
   addr := jsonb_strip_nulls(jsonb_build_object('note', nullif(a_note, '')));
 
-  v_total := p.price * q + case when ship_on then p.shipping_cost else 0 end;
+  v_sub := p.price * q;
+  v_ship := case when ship_on then p.shipping_cost else 0 end;
+  -- a coupon of the store
+  if btrim(coalesce(p_coupon, '')) <> '' then
+    cr := public._mkt_cpn_find(m.member_id, st.id, p_coupon, m.country);
+    if not coalesce((cr->>'ok')::boolean, false) then
+      return jsonb_build_object('ok', false, 'reason', 'coupon', 'why', cr->>'reason');
+    end if;
+    select * into cpo from public._mkt_cpn_off(cr->>'scope', (cr->>'pct')::int, v_sub, v_ship);
+    if cpo.off_products + cpo.off_shipping <= 0 then
+      return jsonb_build_object('ok', false, 'reason', 'coupon', 'why', 'nothing');
+    end if;
+    v_cid := cr->>'id'; v_ccode := cr->>'code'; v_cscope := cr->>'scope'; v_cpct := (cr->>'pct')::int;
+    off_p := cpo.off_products;
+    v_disc := cpo.off_products + cpo.off_shipping;
+  end if;
+  v_total := v_sub + v_ship - v_disc;
   if not public._mkt_spend(m.member_id, v_total, p.title) then
     pts := public._points(m.member_id);
     return jsonb_build_object('ok', false, 'reason', 'points', 'need', v_total, 'have', coalesce((pts->>'available')::bigint, 0));
@@ -1786,7 +1899,8 @@ begin
    limit 1;
   -- the product's share commission today (the seller pays it when the order is paid)
   c_pct := case when ref is not null and p.commission_on then p.commission_pct else 0 end;
-  v_comm := floor(p.price::numeric * q * c_pct / 100)::int;
+  -- counted on the price of the products, after a coupon
+  v_comm := floor((v_sub - off_p)::numeric * c_pct / 100)::int;
   -- the referrer recommended it again: shared equally with the member who first recommended it
   if ref is not null and v_comm > 0 then
     root := public._mkt_root_of(ref, p.id);
@@ -1803,12 +1917,21 @@ begin
   end loop;
   insert into public.market_orders (id, product_id, store_id, seller_id, buyer_id, referrer_id, title, image, kind, qty, unit_price,
                                     shipping_cost, total, commission, commission_pct, root_referrer_id, root_commission,
-                                    buyer_country, address, delivery, status, return_days, accepted_at)
+                                    buyer_country, address, delivery, status, return_days, accepted_at,
+                                    coupon_id, coupon_code, coupon_scope, coupon_pct, discount)
   values (oid, p.id, st.id, st.owner_id, m.member_id, ref, p.title, coalesce(p.images->>0, ''), p.kind, q, p.price,
-          case when ship_on then p.shipping_cost else 0 end, v_total, v_comm, c_pct,
+          v_ship, v_total, v_comm, c_pct,
           root, case when root is not null then v_comm / 2 else 0 end,
           upper(coalesce(m.country, '')), addr, dlv, st_code, case when st.returns then st.return_days else 0 end,
-          case when st_code = 'sold' then now() end);
+          case when st_code = 'sold' then now() end,
+          v_cid, v_ccode, v_cscope, v_cpct, v_disc);
+  -- the coupon is used (each buyer once): in the buyer's coupons, used with this order
+  if v_cid is not null then
+    update public.market_coupons set uses = uses + 1, updated_at = now() where id = v_cid;
+    insert into public.market_coupon_wallet (member_id, coupon_id, how, used_at, order_id)
+    values (m.member_id, v_cid, 'typed', now(), oid)
+    on conflict (member_id, coupon_id) do update set used_at = now(), order_id = oid, removed_at = null;
+  end if;
   update public.market_products set stock = stock - q, sales = sales + case when st_code = 'sold' then q else 0 end, updated_at = now() where id = p.id;
   delete from public.market_saved where member_id = m.member_id and product_id = p.id;
   -- sold at once: the saved address goes with it, or a download link delivers it
@@ -1820,7 +1943,8 @@ begin
     q::text || ' × ' || p.title,
     './Market.html#sales/' || case final when 'requested' then 'requests' when 'shipped' then 'shipped' else 'sold' end, m.member_id);
   pts := public._points(m.member_id);
-  return jsonb_build_object('ok', true, 'id', oid, 'status', final, 'total', v_total, 'available', coalesce((pts->>'available')::bigint, 0),
+  return jsonb_build_object('ok', true, 'id', oid, 'status', final, 'total', v_total, 'discount', v_disc,
+                            'available', coalesce((pts->>'available')::bigint, 0),
                             'needs_address', after = 'ask', 'delivered', after = 'online');
 end $$;
 
@@ -3452,6 +3576,408 @@ returns jsonb language sql stable security definer set search_path = public as $
            limit least(greatest(coalesce(p_limit, 8), 1), 24)) x
 $$;
 
+-- ------------------------------------------------------------------ 17. coupons
+-- (the tables: section 2, sixth version; at checkout: market_buy, section 9)
+
+-- What a buyer has with a store: the orders received from it, and their positive and negative
+-- reviews of its products (positive: more good points than bad ones; negative: more bad points).
+create or replace function public._mkt_cpn_stats(p_member text, p_store text, out purchases int, out positive int, out negative int)
+language sql stable security definer set search_path = public as $$
+  select (select count(*)::int from public.market_orders o
+           where o.buyer_id = p_member and o.store_id = p_store and o.status = 'delivered'),
+         (select count(*)::int from public.market_reviews r
+           where r.member_id = p_member and r.store_id = p_store and r.suspended_at is null
+             and jsonb_array_length(r.pros) > jsonb_array_length(r.cons)),
+         (select count(*)::int from public.market_reviews r
+           where r.member_id = p_member and r.store_id = p_store and r.suspended_at is null
+             and jsonb_array_length(r.cons) > jsonb_array_length(r.pros))
+$$;
+
+-- Does a member meet the audience of a coupon? -> 'ok' | 'country' | 'purchases' | 'positive' | 'negative'
+create or replace function public._mkt_cpn_fits(c public.market_coupons, p_member text, p_country text) returns text
+language plpgsql stable security definer set search_path = public as $$
+declare x record;
+begin
+  if c.audience = 'public' then return 'ok'; end if;
+  if btrim(c.countries) <> '' and not (upper(btrim(coalesce(p_country, ''))) = any (string_to_array(c.countries, ','))) then
+    return 'country';
+  end if;
+  if c.min_purchases is null and c.max_purchases is null and c.min_positive is null and c.max_positive is null
+     and c.min_negative is null and c.max_negative is null then
+    return 'ok';
+  end if;
+  select * into x from public._mkt_cpn_stats(p_member, c.store_id);
+  if x.purchases < coalesce(c.min_purchases, 0) or x.purchases > coalesce(c.max_purchases, 2147483647) then return 'purchases'; end if;
+  if x.positive < coalesce(c.min_positive, 0) or x.positive > coalesce(c.max_positive, 2147483647) then return 'positive'; end if;
+  if x.negative < coalesce(c.min_negative, 0) or x.negative > coalesce(c.max_negative, 2147483647) then return 'negative'; end if;
+  return 'ok';
+end $$;
+
+-- active | paused | expired | used_up (every use taken) | deleted
+create or replace function public._mkt_cpn_state(c public.market_coupons) returns text language sql stable as $$
+  select case when c.status = 'deleted' then 'deleted' when c.status = 'paused' then 'paused'
+              when c.uses >= c.max_uses then 'used_up'
+              when c.expires_at is not null and c.expires_at <= now() then 'expired'
+              else 'active' end
+$$;
+
+-- What a coupon takes off: the price of the products (p_sub) and the shipping (p_ship).
+create or replace function public._mkt_cpn_off(p_scope text, p_pct int, p_sub int, p_ship int,
+                                               out off_products int, out off_shipping int)
+language sql immutable as $$
+  select case when p_scope in ('product', 'both') then floor(greatest(p_sub, 0)::numeric * p_pct / 100)::int else 0 end,
+         case when p_scope in ('shipping', 'both') then floor(greatest(p_ship, 0)::numeric * p_pct / 100)::int else 0 end
+$$;
+
+-- A coupon as a card; its seller also gets the audience, the members who have it and what it took off.
+create or replace function public._mkt_cpn_json(c public.market_coupons, p_viewer text) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', c.id, 'code', c.code, 'scope', c.scope, 'pct', c.pct, 'max_uses', c.max_uses, 'uses', c.uses,
+    'left', greatest(0, c.max_uses - c.uses), 'audience', c.audience, 'expires_at', c.expires_at,
+    'state', public._mkt_cpn_state(c), 'created_at', c.created_at,
+    'store', (select jsonb_build_object('id', s.id, 'name', s.name, 'logo_url', s.logo_url, 'country', s.country,
+                                        'tier', public._mkt_tier(s.sales_points))
+                from public.market_stores s where s.id = c.store_id))
+  || case when c.owner_id = coalesce(p_viewer, '') then jsonb_build_object(
+       'mine', true,
+       'criteria', jsonb_strip_nulls(jsonb_build_object(
+         'countries', case when btrim(c.countries) <> '' then to_jsonb(string_to_array(c.countries, ',')) end,
+         'min_purchases', c.min_purchases, 'max_purchases', c.max_purchases,
+         'min_positive', c.min_positive, 'max_positive', c.max_positive,
+         'min_negative', c.min_negative, 'max_negative', c.max_negative)),
+       'holders', (select count(*) from public.market_coupon_wallet w where w.coupon_id = c.id and w.removed_at is null),
+       'discount_total', coalesce((select sum(o.discount) from public.market_orders o
+                                    where o.coupon_id = c.id and o.status not in ('cancelled', 'declined', 'returned')), 0))
+     else '{}'::jsonb end
+$$;
+
+-- The exclusive coupons a member meets go to their coupons by themselves (once: a coupon they
+-- deleted from their list does not come back). p_store: only the coupons of that store. -> how many
+create or replace function public._mkt_cpn_grant(p_member text, p_store text default null) returns int
+language plpgsql security definer set search_path = public as $$
+declare m public.members; c public.market_coupons; n int := 0;
+begin
+  select * into m from public.members where member_id = btrim(coalesce(p_member, ''))
+     and lower(btrim(coalesce(status, ''))) = 'active';
+  if not found then return 0; end if;
+  for c in
+    select x.* from public.market_coupons x
+      join public.market_stores s on s.id = x.store_id and not s.suspended
+     where x.status = 'active' and x.audience = 'exclusive' and x.uses < x.max_uses
+       and (x.expires_at is null or x.expires_at > now()) and x.owner_id <> m.member_id
+       and (p_store is null or x.store_id = p_store)
+       and not exists (select 1 from public.market_coupon_wallet w where w.member_id = m.member_id and w.coupon_id = x.id)
+     order by x.created_at desc
+     limit 200
+  loop
+    if public._mkt_cpn_fits(c, m.member_id, m.country) = 'ok' then
+      insert into public.market_coupon_wallet (member_id, coupon_id, how) values (m.member_id, c.id, 'given') on conflict do nothing;
+      n := n + 1;
+    end if;
+  end loop;
+  return n;
+end $$;
+
+-- The coupon a buyer gives for an order in p_store, if they may use it now (locked: the order
+-- follows in the same transaction).
+--   -> { ok: true, id, code, scope, pct } | { ok: false, reason: not_found | own | paused | expired | used |
+--      used_up | country | purchases | positive | negative }
+create or replace function public._mkt_cpn_find(p_member text, p_store text, p_code text, p_country text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare c public.market_coupons; norm text := upper(regexp_replace(coalesce(p_code, ''), '[^A-Za-z0-9]', '', 'g')); why text;
+begin
+  select * into c from public.market_coupons where store_id = p_store and code = norm and status <> 'deleted' for update;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  if c.owner_id = p_member then return jsonb_build_object('ok', false, 'reason', 'own'); end if;
+  if c.status = 'paused' then return jsonb_build_object('ok', false, 'reason', 'paused'); end if;
+  if c.expires_at is not null and c.expires_at <= now() then return jsonb_build_object('ok', false, 'reason', 'expired'); end if;
+  if exists (select 1 from public.market_coupon_wallet w where w.member_id = p_member and w.coupon_id = c.id and w.used_at is not null) then
+    return jsonb_build_object('ok', false, 'reason', 'used');
+  end if;
+  if c.uses >= c.max_uses then return jsonb_build_object('ok', false, 'reason', 'used_up'); end if;
+  why := public._mkt_cpn_fits(c, p_member, p_country);
+  if why <> 'ok' then return jsonb_build_object('ok', false, 'reason', why); end if;
+  return jsonb_build_object('ok', true, 'id', c.id, 'code', c.code, 'scope', c.scope, 'pct', c.pct);
+end $$;
+
+-- ---- the seller: Market.html > Coupons > Sales coupons
+-- A new coupon of the member's store.
+--   d = { code (empty: drawn), max_uses (1), scope (product | shipping | both), pct (1-100),
+--         audience (public | exclusive), countries [], min_purchases, max_purchases, min_positive, max_positive,
+--         min_negative, max_negative, expires (YYYY-MM-DD: the last day; empty: no end) }
+--   -> { ok: true, coupon, given } | { ok: false, reason: member | blocked | store | many | code | taken | uses |
+--      scope | pct | audience | criteria | range | expires }
+create or replace function public.market_coupon_save(p_member text, d jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  m public.members; st public.market_stores; c public.market_coupons; r record;
+  v jsonb := case when jsonb_typeof(d) = 'object' then d else '{}'::jsonb end;
+  v_code text; v_uses int; v_scope text; v_pct int; v_aud text; v_ctys text[] := '{}'; v_exp timestamptz; cid text;
+  lo1 int; hi1 int; lo2 int; hi2 int; lo3 int; hi3 int; n int := 0; tries int := 0;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  if public._mkt_blocked(m.member_id, true) then return jsonb_build_object('ok', false, 'reason', 'blocked'); end if;
+  select * into st from public.market_stores where owner_id = m.member_id;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'store'); end if;
+  if (select count(*) from public.market_coupons where store_id = st.id and status <> 'deleted') >= 200 then
+    return jsonb_build_object('ok', false, 'reason', 'many');
+  end if;
+  v_code := upper(regexp_replace(coalesce(v->>'code', ''), '[^A-Za-z0-9]', '', 'g'));
+  if v_code <> '' and (length(v_code) < 4 or length(v_code) > 20) then return jsonb_build_object('ok', false, 'reason', 'code'); end if;
+  v_uses := case when btrim(coalesce(v->>'max_uses', '')) = '' then 1 else public._mkt_int(v->>'max_uses') end;
+  if v_uses is null or v_uses < 1 or v_uses > 100000 then return jsonb_build_object('ok', false, 'reason', 'uses'); end if;
+  v_scope := lower(btrim(coalesce(nullif(v->>'scope', ''), 'product')));
+  if v_scope not in ('product', 'shipping', 'both') then return jsonb_build_object('ok', false, 'reason', 'scope'); end if;
+  v_pct := public._mkt_int(v->>'pct');
+  if v_pct is null or v_pct < 1 or v_pct > 100 then return jsonb_build_object('ok', false, 'reason', 'pct'); end if;
+  v_aud := lower(btrim(coalesce(nullif(v->>'audience', ''), 'public')));
+  if v_aud not in ('public', 'exclusive') then return jsonb_build_object('ok', false, 'reason', 'audience'); end if;
+  if v_aud = 'exclusive' then
+    select coalesce(array_agg(distinct upper(btrim(x))) filter (where upper(btrim(x)) ~ '^[A-Z]{2}$'), '{}') into v_ctys
+      from jsonb_array_elements_text(case when jsonb_typeof(v->'countries') = 'array' then v->'countries' else '[]'::jsonb end) x;
+    lo1 := public._mkt_int(v->>'min_purchases'); hi1 := public._mkt_int(v->>'max_purchases');
+    lo2 := public._mkt_int(v->>'min_positive');  hi2 := public._mkt_int(v->>'max_positive');
+    lo3 := public._mkt_int(v->>'min_negative');  hi3 := public._mkt_int(v->>'max_negative');
+    if least(lo1, hi1, lo2, hi2, lo3, hi3) < 0 or greatest(lo1, hi1, lo2, hi2, lo3, hi3) > 100000
+       or lo1 > hi1 or lo2 > hi2 or lo3 > hi3 then
+      return jsonb_build_object('ok', false, 'reason', 'range');
+    end if;
+    if cardinality(v_ctys) = 0 and lo1 is null and hi1 is null and lo2 is null and hi2 is null and lo3 is null and hi3 is null then
+      return jsonb_build_object('ok', false, 'reason', 'criteria');
+    end if;
+  end if;
+  if btrim(coalesce(v->>'expires', '')) <> '' then
+    begin
+      v_exp := ((v->>'expires')::date + 1)::timestamptz;    -- until the end of that day
+    exception when others then
+      return jsonb_build_object('ok', false, 'reason', 'expires');
+    end;
+    if v_exp <= now() or v_exp > now() + interval '5 years' then return jsonb_build_object('ok', false, 'reason', 'expires'); end if;
+  end if;
+  if v_code = '' then
+    loop
+      select string_agg(substr('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 1 + floor(random() * 32)::int, 1), '') into v_code
+        from generate_series(1, 8);
+      exit when not exists (select 1 from public.market_coupons where store_id = st.id and code = v_code and status <> 'deleted');
+      tries := tries + 1;
+      if tries > 50 then raise exception 'could not draw a free coupon code'; end if;
+    end loop;
+  elsif exists (select 1 from public.market_coupons where store_id = st.id and code = v_code and status <> 'deleted') then
+    return jsonb_build_object('ok', false, 'reason', 'taken');
+  end if;
+  loop
+    cid := 'CPN' || lpad(floor(random() * 1e9)::bigint::text, 9, '0');
+    exit when not exists (select 1 from public.market_coupons where id = cid);
+  end loop;
+  insert into public.market_coupons (id, store_id, owner_id, code, scope, pct, max_uses, audience, countries,
+                                     min_purchases, max_purchases, min_positive, max_positive, min_negative, max_negative, expires_at)
+  values (cid, st.id, m.member_id, v_code, v_scope, v_pct, v_uses, v_aud, array_to_string(v_ctys, ','),
+          lo1, hi1, lo2, hi2, lo3, hi3, v_exp)
+  returning * into c;
+  -- an exclusive coupon goes at once to the buyers and reviewers of the store who meet it, and their bell says so
+  if v_aud = 'exclusive' then
+    for r in
+      select x.member_id, mm.country
+        from (select o.buyer_id as member_id from public.market_orders o where o.store_id = st.id
+              union select rv.member_id from public.market_reviews rv where rv.store_id = st.id) x
+        join public.members mm on mm.member_id = x.member_id and lower(btrim(coalesce(mm.status, ''))) = 'active'
+       where x.member_id <> m.member_id
+       limit 2000
+    loop
+      if public._mkt_cpn_fits(c, r.member_id, r.country) = 'ok' then
+        insert into public.market_coupon_wallet (member_id, coupon_id, how) values (r.member_id, c.id, 'given') on conflict do nothing;
+        if found then
+          n := n + 1;
+          if n <= 500 then
+            perform public._mkt_notify(r.member_id, 'market_coupon', 'A store gave you a coupon',
+              st.name || ' · -' || c.pct::text || '%', './Market.html#coupons/purchases', m.member_id);
+          end if;
+        end if;
+      end if;
+    end loop;
+  end if;
+  return jsonb_build_object('ok', true, 'coupon', public._mkt_cpn_json(c, m.member_id), 'given', n);
+end $$;
+
+-- Pause, use again or delete a coupon of the member's store (a deleted coupon leaves the buyers'
+-- lists; the orders keep what it took off).
+--   -> { ok: true, coupon } | { ok: false, reason: member | not_found | status }
+create or replace function public.market_coupon_status(p_member text, p_id text, p_status text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members; c public.market_coupons;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  if p_status is null or p_status not in ('active', 'paused', 'deleted') then return jsonb_build_object('ok', false, 'reason', 'status'); end if;
+  update public.market_coupons set status = p_status, updated_at = now()
+   where id = btrim(coalesce(p_id, '')) and owner_id = m.member_id and status <> 'deleted'
+  returning * into c;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  return jsonb_build_object('ok', true, 'coupon', public._mkt_cpn_json(c, m.member_id));
+end $$;
+
+-- The coupons of the member's store, newest first.
+--   p_filter: active (can be used) | paused | ended (past their date, or every use taken) | all
+--   -> { ok, store, total, counts: { active, paused, ended, all }, items: [ coupon ] }
+create or replace function public.market_coupons_sales(p_member text, p_filter text default 'active', p_limit int default 20,
+                                                       p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members; f text := lower(coalesce(nullif(btrim(p_filter), ''), 'active')); res jsonb;
+  lim int := least(greatest(coalesce(p_limit, 20), 1), 100); off int := greatest(coalesce(p_offset, 0), 0);
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  with base as (
+    select c, public._mkt_cpn_state(c) as st, c.created_at as t_at, c.id as cid
+      from public.market_coupons c where c.owner_id = m.member_id and c.status <> 'deleted'
+  ), pick as (
+    select * from base
+     where f = 'all' or (f = 'active' and st = 'active') or (f = 'paused' and st = 'paused')
+        or (f = 'ended' and st in ('expired', 'used_up'))
+  )
+  select jsonb_build_object('ok', true,
+    'store', (select public._mkt_store_card(s) from public.market_stores s where s.owner_id = m.member_id),
+    'total', (select count(*) from pick),
+    'counts', (select jsonb_build_object('all', count(*), 'active', count(*) filter (where st = 'active'),
+                                         'paused', count(*) filter (where st = 'paused'),
+                                         'ended', count(*) filter (where st in ('expired', 'used_up'))) from base),
+    'items', coalesce((select jsonb_agg(public._mkt_cpn_json(z.c, m.member_id) order by z.t_at desc, z.cid)
+                         from (select * from pick order by t_at desc, cid offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- ---- the buyer: Market.html > Coupons > Purchase coupons
+-- The member's coupons (the exclusive coupons they meet come in first).
+--   p_filter: pending (not used yet) | used
+--   -> { ok, total, counts: { pending, used }, items: [ coupon + { how, got_at, used_at, order_id, order } ] }
+create or replace function public.market_coupons_mine(p_member text, p_filter text default 'pending', p_limit int default 20,
+                                                      p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members; f text := case when p_filter = 'used' then 'used' else 'pending' end; res jsonb;
+  lim int := least(greatest(coalesce(p_limit, 20), 1), 100); off int := greatest(coalesce(p_offset, 0), 0);
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  perform public._mkt_cpn_grant(m.member_id);
+  with base as (
+    select w.*, c, public._mkt_cpn_state(c) as st
+      from public.market_coupon_wallet w
+      join public.market_coupons c on c.id = w.coupon_id
+      join public.market_stores s on s.id = c.store_id and not s.suspended
+     where w.member_id = m.member_id and w.removed_at is null and c.status <> 'deleted'
+  ), pick as (
+    select * from base where (f = 'used') = (used_at is not null)
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from pick),
+    'counts', (select jsonb_build_object('pending', count(*) filter (where used_at is null),
+                                         'used', count(*) filter (where used_at is not null)) from base),
+    'items', coalesce((select jsonb_agg(public._mkt_cpn_json(z.c, m.member_id)
+                                        || jsonb_build_object('how', z.how, 'got_at', z.got_at, 'used_at', z.used_at,
+                                                              'order_id', z.order_id,
+                                                              'order', (select jsonb_build_object('id', o.id, 'title', o.title, 'discount', o.discount,
+                                                                                                  'status', o.status)
+                                                                          from public.market_orders o where o.id = z.order_id))
+                                        order by z.ord)
+                         from (select p.*, row_number() over (order by case when f = 'used' then 0 when p.st = 'active' then 0 else 1 end,
+                                                                       coalesce(p.used_at, p.got_at) desc, p.coupon_id) as ord
+                                 from pick p order by ord offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- "Get": a coupon of a store page / product page goes to the member's coupons.
+--   -> { ok: true, coupon, already } | { ok: false, reason: member | not_found | own | paused | expired |
+--      used_up | used | country | purchases | positive | negative }
+create or replace function public.market_coupon_get(p_member text, p_id text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members; c public.market_coupons; why text; had boolean;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  select x.* into c from public.market_coupons x join public.market_stores s on s.id = x.store_id and not s.suspended
+   where x.id = btrim(coalesce(p_id, '')) and x.status <> 'deleted';
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  if c.owner_id = m.member_id then return jsonb_build_object('ok', false, 'reason', 'own'); end if;
+  if c.status = 'paused' then return jsonb_build_object('ok', false, 'reason', 'paused'); end if;
+  if c.expires_at is not null and c.expires_at <= now() then return jsonb_build_object('ok', false, 'reason', 'expired'); end if;
+  if exists (select 1 from public.market_coupon_wallet w where w.member_id = m.member_id and w.coupon_id = c.id and w.used_at is not null) then
+    return jsonb_build_object('ok', false, 'reason', 'used');
+  end if;
+  if c.uses >= c.max_uses then return jsonb_build_object('ok', false, 'reason', 'used_up'); end if;
+  why := public._mkt_cpn_fits(c, m.member_id, m.country);
+  if why <> 'ok' then return jsonb_build_object('ok', false, 'reason', why); end if;
+  had := exists (select 1 from public.market_coupon_wallet w where w.member_id = m.member_id and w.coupon_id = c.id and w.removed_at is null);
+  insert into public.market_coupon_wallet (member_id, coupon_id, how) values (m.member_id, c.id, 'got')
+  on conflict (member_id, coupon_id) do update set removed_at = null;
+  return jsonb_build_object('ok', true, 'coupon', public._mkt_cpn_json(c, m.member_id), 'already', had);
+end $$;
+
+-- Delete a coupon from the member's list (it can still be typed at checkout while it lasts).
+--   -> { ok: true } | { ok: false, reason: member | not_found }
+create or replace function public.market_coupon_remove(p_member text, p_id text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  update public.market_coupon_wallet set removed_at = now()
+   where member_id = m.member_id and coupon_id = btrim(coalesce(p_id, '')) and removed_at is null;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- The coupons of a store that a visitor may use now (the store page, its product pages, checkout):
+-- the public ones, and the exclusive ones the member meets (they go to the member's coupons).
+--   -> { ok, items: [ coupon + { held: in the member's list, used: used by the member } ] }
+create or replace function public.market_coupons_store(p_member text, p_store text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare me text := btrim(coalesce(p_member, '')); cty text; st public.market_stores;
+begin
+  select * into st from public.market_stores where id = btrim(coalesce(p_store, '')) and not suspended;
+  if not found then return jsonb_build_object('ok', true, 'items', '[]'::jsonb); end if;
+  if me <> '' then
+    select upper(coalesce(country, '')) into cty from public.members where member_id = me and lower(btrim(coalesce(status, ''))) = 'active';
+    if not found then me := ''; else perform public._mkt_cpn_grant(me, st.id); end if;
+  end if;
+  return jsonb_build_object('ok', true, 'items', coalesce((
+    select jsonb_agg(public._mkt_cpn_json(c, me)
+                     || jsonb_build_object('held', w.member_id is not null and w.removed_at is null, 'used', w.used_at is not null)
+                     order by c.pct desc, c.created_at desc)
+      from public.market_coupons c
+      left join public.market_coupon_wallet w on w.coupon_id = c.id and w.member_id = me
+     where c.store_id = st.id and c.status = 'active' and c.uses < c.max_uses
+       and (c.expires_at is null or c.expires_at > now())
+       and (c.audience = 'public' or (me <> '' and c.owner_id <> me and public._mkt_cpn_fits(c, me, cty) = 'ok'))), '[]'::jsonb));
+end $$;
+
+-- Checkout: what a coupon takes off this order (market_buy does the same when it buys).
+--   -> { ok: true, coupon: { id, code, scope, pct }, off_products, off_shipping, total }
+--      { ok: false, reason: member | not_found (the product) | coupon (why, as market_buy) }
+create or replace function public.market_coupon_check(p_member text, p_product text, p_code text, p_qty int default 1)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare m public.members; p public.market_products; st public.market_stores; q int; v_sub int; v_ship int; cr jsonb; cpo record;
+begin
+  m := public._mkt_member(p_member);
+  if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  select * into p from public.market_products where id = btrim(coalesce(p_product, '')) and status = 'active';
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  select * into st from public.market_stores where id = p.store_id and not suspended;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  q := least(greatest(coalesce(p_qty, 1), 1), 100);
+  v_sub := p.price * q;
+  v_ship := case when p.kind <> 'digital' and st.shipping then p.shipping_cost else 0 end;
+  cr := public._mkt_cpn_find(m.member_id, st.id, p_code, m.country);
+  if not coalesce((cr->>'ok')::boolean, false) then return jsonb_build_object('ok', false, 'reason', 'coupon', 'why', cr->>'reason'); end if;
+  select * into cpo from public._mkt_cpn_off(cr->>'scope', (cr->>'pct')::int, v_sub, v_ship);
+  if cpo.off_products + cpo.off_shipping <= 0 then return jsonb_build_object('ok', false, 'reason', 'coupon', 'why', 'nothing'); end if;
+  return jsonb_build_object('ok', true, 'coupon', jsonb_build_object('id', cr->>'id', 'code', cr->>'code', 'scope', cr->>'scope', 'pct', (cr->>'pct')::int),
+                            'off_products', cpo.off_products, 'off_shipping', cpo.off_shipping,
+                            'total', v_sub + v_ship - cpo.off_products - cpo.off_shipping);
+end $$;
+
 -- ------------------------------------------------------------------ 14. who may call what
 do $$
 declare f text;
@@ -3468,7 +3994,10 @@ begin
     'public._mkt_review_json(public.market_reviews, text)', 'public._mkt_list_json(public.market_lists, text)',
     'public._mkt_rec_json(public.market_recs, text)', 'public._mkt_root_of(text, text)', 'public._mkt_published(text[], text)',
     'public._mkt_published_json(text, text, text)', 'public._mkt_pay(public.market_orders, boolean)',
-    'public._mkt_admin_can(public.market_orders)']
+    'public._mkt_admin_can(public.market_orders)', 'public._mkt_cpn_stats(text, text)',
+    'public._mkt_cpn_fits(public.market_coupons, text, text)', 'public._mkt_cpn_state(public.market_coupons)',
+    'public._mkt_cpn_off(text, int, int, int)', 'public._mkt_cpn_json(public.market_coupons, text)',
+    'public._mkt_cpn_grant(text, text)', 'public._mkt_cpn_find(text, text, text, text)']
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;
@@ -3479,7 +4008,7 @@ begin
     'public.market_my_products(text, int, int)', 'public.market_categories(text, int)', 'public.market_home(text)',
     'public.market_search(text, text, text, text, text, text, text, text, int, int)', 'public.market_category(text)',
     'public.market_product(text, text, text)', 'public.market_suggest(text, int)', 'public.market_later(text, text, boolean)',
-    'public.market_buy(text, text, int, jsonb, text)', 'public.market_order_action(text, text, text, text)',
+    'public.market_buy(text, text, int, jsonb, text, text)', 'public.market_order_action(text, text, text, text)',
     'public.market_orders(text, text, text, int, int)', 'public.market_review_save(text, text, jsonb, jsonb, jsonb)',
     'public.market_review_delete(text, text)', 'public.market_list_save(text, jsonb)', 'public.market_list_delete(text, text)',
     'public.market_list_item(text, text, text, boolean)', 'public.market_lists_mine(text, text)', 'public.market_list(text, text)',
@@ -3496,7 +4025,11 @@ begin
     'public.market_admin_orders(text, text, text, int, int)', 'public.market_admin_order(text, text, text, text)',
     'public.market_admin_categories(text, text, text, int, int)', 'public.market_admin_category(text, text, text, text)',
     'public.market_admin_social(text, text, text, text, int, int)',
-    'public.market_admin_social_moderate(text, text, text, text, text)', 'public.market_top_stores(text, int)']
+    'public.market_admin_social_moderate(text, text, text, text, text)', 'public.market_top_stores(text, int)',
+    'public.market_coupon_save(text, jsonb)', 'public.market_coupon_status(text, text, text)',
+    'public.market_coupons_sales(text, text, int, int)', 'public.market_coupons_mine(text, text, int, int)',
+    'public.market_coupon_get(text, text)', 'public.market_coupon_remove(text, text)',
+    'public.market_coupons_store(text, text)', 'public.market_coupon_check(text, text, text, int)']
   loop
     execute format('revoke all on function %s from public', f);
     execute format('grant execute on function %s to anon, authenticated', f);
