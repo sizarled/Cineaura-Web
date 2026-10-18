@@ -98,11 +98,13 @@
     "return_days", "title", "kind", "price", "shipping_cost", "stock", "categories", "images", "video", "limit",
     "not_found", "own", "closed", "qty", "address", "points", "state", "note", "window", "empty", "text", "body",
     "product", "orders", "commission", "download", "suspended", "reason", "already", "phone",
-    "people", "visibility", "private", "full",
+    "people", "visibility", "private", "full", "level",
   ];
   M.errText = (data) => {
     const r = String(data?.reason || "");
     if (r === "points") return t("mkt.err.points", { need: M.fmt(data.need), have: M.fmt(data.have) });
+    // (round 30) opening a store needs LV1 (10 points earned)
+    if (r === "level") return t("mkt.err.level", { have: M.fmt(data.earned ?? 0), need: M.fmt(data.need_points ?? 10) });
     // a coupon (js/market-coupons.js) that cannot be used for this order
     if (r === "coupon" && M.couponWhy) return M.couponWhy(data.why);
     if (r === "stock" && data?.stock != null) return t("mkt.err.stockLeft", { n: M.fmt(data.stock) });
@@ -132,12 +134,24 @@
   M.pt = (n) => `${M.fmt(n)} PT`;
   // an amount inside a sentence: kept as "7,780 PT" in Arabic too (a bidi isolate)
   M.ptIn = (n) => `\u2066${M.pt(n)}\u2069`;
-  // 1 point = 1 cent
+  // The value of a point: Panel > Withdrawals > Settings (sql/withdrawals.sql), the rate members
+  // withdraw at; 100 points = 1 USD (one point is one cent) until the team changes it.
+  M.value = { rate: 100, currency: "USD" };
+  C.pointValue?.().then((v) => {
+    if (v && Number(v.rate) > 0) M.value = { rate: Number(v.rate), currency: v.currency || "USD" };
+    // a price drawn before the value arrived (the product page): its money again
+    document.querySelectorAll("[data-usd]").forEach((el) => {
+      el.textContent = `≈ ${M.usd(el.dataset.usd)}`;
+    });
+  });
+  M.rateText = () => `${M.fmt(M.value.rate)} PT = ${C.moneyText ? C.moneyText(1, M.value.currency) : "$1.00"}`;
   M.usd = (points) => {
+    const v = (Number(points) || 0) / M.value.rate;
+    if (C.moneyText) return C.moneyText(v, M.value.currency);
     try {
-      return new Intl.NumberFormat(locale(), { style: "currency", currency: "USD" }).format((Number(points) || 0) / 100);
+      return new Intl.NumberFormat(locale(), { style: "currency", currency: M.value.currency }).format(v);
     } catch {
-      return `$${((Number(points) || 0) / 100).toFixed(2)}`;
+      return `${v.toFixed(2)} ${M.value.currency}`;
     }
   };
   M.date = (v) => (v ? C.formatDate(v) : "");
@@ -508,7 +522,7 @@
           ${nets.map(([k, name, href]) => `<a class="mkt-net n-${k}" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a>`).join("")}
           ${navigator.share ? `<button class="mkt-net n-more" type="button" data-native>${esc(t("mkt.shareMore"))}</button>` : ""}
         </div>
-        ${me && pct && !own ? `<p class="muted mkt-share-note">${esc(t("mkt.shareNote", { pct }))}</p>` : ""}
+        ${me && pct && !own ? `<p class="muted mkt-share-note">${esc(t("mkt.shareNote", { pct, rate: M.rateText() }))}</p>` : ""}
       </div>`, { cls: "mkt-modal-sm", label: t("mkt.shareTitle") });
     wrap.querySelector("[data-copy]").addEventListener("click", async () => {
       const input = wrap.querySelector("[data-share-link]");
@@ -675,7 +689,7 @@
     // the price in dollars, and what the commission takes from one piece
     const showPrice = () => {
       const v = Number(form.price.value) || 0;
-      priceHint.textContent = v > 0 ? t("mkt.f.priceUsd", { usd: M.usd(v) }) : "";
+      priceHint.textContent = v > 0 ? t("mkt.f.priceUsd", { usd: M.usd(v), rate: M.rateText() }) : "";
       const on = commissionIsOn();
       form.querySelector("[data-commission]").hidden = !on;
       if (!on) {

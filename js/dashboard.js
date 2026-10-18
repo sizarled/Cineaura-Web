@@ -332,6 +332,7 @@
     const map = {
       overview: viewOverview,
       points: viewPoints,
+      withdraw: viewWithdraw,
       playlists: viewPlaylists,
       links: viewLinks,
       reports: viewReports,
@@ -2790,15 +2791,17 @@
   }
 
   // ---------- Points (moved here from the profile) ----------
-  // Balance, level, where the points came from and where they went, plus three ways on:
+  // Balance, level, where the points came from and where they went, plus four ways on:
   //   Earn points   a points code — the serial of a points package (sql/point_codes.sql) —
   //                 adds the points stored with it, once
   //   Buy points    Patreon (the link is set in Panel > Settings)
   //   Earn prizes   Prize.html, where points enter the prizes
+  //   Shop now      Market.html, where points buy the members' products
   const PT_ICONS = {
     earn: '<path d="M3.5 8.5V6A1.5 1.5 0 0 1 5 4.5h14A1.5 1.5 0 0 1 20.5 6v2.5a2.5 2.5 0 0 0 0 5V16a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 16v-2.5a2.5 2.5 0 0 0 0-5z"/><path d="M14 4.5v13" stroke-dasharray="2 2"/><path d="M8 9.5l1 2 2 .3-1.5 1.4.4 2L8 14.2l-1.9 1 .4-2L5 11.8l2-.3z"/>',
     buy: '<circle cx="14.5" cy="9.5" r="5.5"/><path d="M4.5 4v16"/>',
     prizes: '<rect x="3.5" y="8" width="17" height="4.5" rx="1"/><path d="M5 12.5V20.5h14v-8M12 8v12.5"/><path d="M12 8C10.5 4.5 6.5 4 6.5 6.3S9.5 8 12 8zM12 8c1.5-3.5 5.5-4 5.5-1.7S14.5 8 12 8z"/>',
+    shop: '<path d="M4.5 8.5h15l-1.2 11a1.6 1.6 0 0 1-1.6 1.5H7.3a1.6 1.6 0 0 1-1.6-1.5z"/><path d="M8.8 8.5V7a3.2 3.2 0 0 1 6.4 0v1.5"/><path d="M9.5 13.5a2.5 2.5 0 0 0 5 0"/>',
   };
   const ptIcon = (k) => `<svg class="pts-act-ico" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PT_ICONS[k]}</svg>`;
 
@@ -2814,6 +2817,9 @@
       // Market.html (sql/market.sql): a purchase, and the points given back (negative amount)
       market: t("mkt.spendMode"),
       market_refund: t("mkt.refundMode"),
+      // Dashboard > Withdraw (sql/withdrawals.sql): the points of a request, and the points back
+      withdraw: t("wd.spendMode"),
+      withdraw_refund: t("wd.refundMode"),
     };
     const rows = spends.rows.map((r) => {
       const when = String(r.created_at || "").slice(0, 10);
@@ -2873,6 +2879,7 @@
           <button class="btn btn-lg btn-primary pts-act" id="pt-earn" type="button">${ptIcon("earn")}<span><b>${t("points.earnBtn")}</b><small>${t("points.earnSub")}</small></span></button>
           <a class="btn btn-lg btn-ghost pts-act" id="pt-buy" href="${escapeHtml(C.PATREON_DEFAULT)}" target="_blank" rel="noopener noreferrer">${ptIcon("buy")}<span><b>${t("points.buyBtn")}</b><small>${t("points.buySub")}</small></span></a>
           <a class="btn btn-lg btn-ghost pts-act" id="pt-prizes" href="./Prize.html">${ptIcon("prizes")}<span><b>${t("points.prizesBtn")}</b><small>${t("points.prizesSub")}</small></span></a>
+          <a class="btn btn-lg btn-ghost pts-act" id="pt-shop" href="./Market.html">${ptIcon("shop")}<span><b>${t("points.shopBtn")}</b><small>${t("points.shopSub")}</small></span></a>
         </div>
       </div>
       <div id="pt-body"><p class="muted">${t("points.loading")}</p></div>`;
@@ -3043,6 +3050,18 @@
       ov.querySelector(".pts-ok [data-close]").focus();
       toast(t("points.added", { n: Number(r.points || 0) }));
     });
+  }
+
+  // ---------- Withdraw: points exchanged for real money (js/withdraw.js, sql/withdrawals.sql) ----------
+  // LV3 and an account old enough for its membership (Free 12 months, Silver 6, Gold 3, Diamond 1);
+  // a bank transfer or a money transfer agency such as Western Union.
+  async function viewWithdraw(main) {
+    const W = window.CineAuraWithdraw;
+    if (!W) {
+      main.innerHTML = `<p class="eyebrow">${t("dash.nav.withdraw")}</p><h1>${t("wd.title")}</h1><div class="form-alert show warn">${t("wd.loadFail")}</div>`;
+      return;
+    }
+    await W.view(main, { member: state.member, current: () => state.section === "withdraw" && main.isConnected });
   }
 
   // ---- Settings > Profile: the delivery address of the Market (sql/market.sql market_addresses).
@@ -3260,8 +3279,9 @@
     };
   }
 
-  // "points" (Earn points / Buy points / Earn prizes, the sources and the spends) moved here from the profile
-  const SECTIONS = ["overview","points","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"];
+  // "points" (Earn points / Buy points / Earn prizes / Shop now, the sources and the spends) moved here from the profile;
+  // "withdraw": points exchanged for money (js/withdraw.js, sql/withdrawals.sql)
+  const SECTIONS = ["overview","points","withdraw","playlists","links","reports","codes","iptv","views","analytics","prizes","history","settings"];
   // dashboard.html#claims: Prizes > Prize claims (where the claim notifications lead)
   // dashboard.html#devices: Codes > Linked devices (named by the watch page)
   // dashboard.html#iptv-lists: IPTV > Your lists

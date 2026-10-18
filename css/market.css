@@ -1027,3 +1027,34 @@ html[dir="rtl"] .cpn-chip { padding: 6px 12px 6px 8px; }
 }
 .cpn-code-field input::placeholder { text-transform: none; letter-spacing: normal; font-family: inherit; }
 .cpn-form .mkt-field { align-content: start; }
+
+/* round 30: a store is opened from LV1 (10 points earned) — Store settings say how far the member is */
+.mkt-lv-lock {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(247, 185, 40, 0.45);
+  background: rgba(247, 185, 40, 0.07);
+}
+.mkt-lv-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 58px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--cyan), var(--green));
+  color: #04131f;
+  font-weight: 800;
+  font-size: 15px;
+}
+.mkt-lv-main { display: grid; gap: 8px; min-width: 0; }
+.mkt-lv-main h2 { margin: 0; font-size: 18px; }
+.mkt-lv-main p { margin: 0; font-size: 14px; line-height: 1.55; }
+.mkt-lv-main .muted { font-size: 13px; }
+@media (max-width: 520px) {
+  .mkt-lv-lock { grid-template-columns: minmax(0, 1fr); }
+}

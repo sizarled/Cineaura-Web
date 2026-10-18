@@ -13,6 +13,8 @@
  *                  (sql/packages.sql, sql/point_codes.sql)
  *   Announcements  the bar at the top of the home page and messages to the members' bell
  *                  (sql/panel_admin.sql)
+ *   Withdrawals    js/panel-withdraw.js, with the helpers of this file (CineAuraPanelAdmin.kit,
+ *                  CineAuraPanelAdmin.add): the members' requests and the settings (sql/withdrawals.sql)
  *
  * panel.js calls CineAuraPanelAdmin.view(name, main, ctx) with
  *   ctx = { state, token(), go(section, opts), roleLabel(role) }.
@@ -227,6 +229,8 @@
     messages: ["pa.att.messages", "messages"],
     returns: ["pa.att.returns", "market", { marketTab: "orders", filter: "return_requested" }],
     requests_old: ["pa.att.requestsOld", "market", { marketTab: "orders", filter: "requested" }],
+    // withdrawal requests waiting for the team (sql/withdrawals.sql)
+    withdrawals: ["pw.att", "withdrawals", { filter: "pending" }],
   };
 
   async function viewOverview(main) {
@@ -292,6 +296,15 @@
         tile(t("pk.ov.used30"), num(p.used_30d), t("pk.ov.pointsSub", { pts: pt(p.points_30d) }), "packages", { packTab: "points", filter: "all" }),
       ]]);
     }
+    if (d.withdrawals) {
+      const w = d.withdrawals;
+      const money = (n) => `\u2066${C.moneyText(n, w.currency)}\u2069`;
+      groups.push([t("panel.nav.withdrawals"), [
+        tile(t("pw.ov.pending"), num(w.pending), t("pw.ov.heldSub", { pts: pt(w.held) }), "withdrawals", { filter: "pending" }, Number(w.pending) ? "warn" : ""),
+        tile(t("pw.ov.processing"), num(w.processing), "", "withdrawals", { filter: "processing" }),
+        tile(t("pw.ov.paid30"), money(Number(w.paid_30d_cents || 0) / 100), esc(t("pw.ov.paid30Sub", { n: num(w.paid_30d) })), "withdrawals", { filter: "paid" }),
+      ]]);
+    }
     const misc = [];
     if (d.prizes) misc.push(tile(t("pa.ov.claims"), num(Number(d.prizes.submitted || 0) + Number(d.prizes.review || 0)), "", "prizes", null, Number(d.prizes.submitted || 0) + Number(d.prizes.review || 0) ? "warn" : ""));
     if (d.messages) misc.push(tile(t("pa.ov.unread"), num(d.messages.unread), esc(t("pa.ov.messagesSub", { n: num(d.messages.all) })), "messages", null, d.messages.unread ? "warn" : ""));
@@ -304,6 +317,7 @@
     const quick = [
       secs.has("announce") && [t("pa.ov.qAnnounce"), "announce"],
       secs.has("packages") && [t("pk.ov.quick"), "packages"],
+      secs.has("withdrawals") && [t("pw.ov.quick"), "withdrawals", { filter: "pending" }],
       secs.has("market") && [t("pa.ov.qOrders"), "market", { marketTab: "orders", filter: "open" }],
       secs.has("content") && [t("pa.ov.qContent"), "content"],
     ].filter(Boolean);
@@ -1341,14 +1355,25 @@
         ${row(t("pa.sum.codes"), t("pa.sum.codesV", { n: num(d.codes?.used), pts: pt(d.codes?.points) }))}
         ${d.codes?.accounts != null ? row(t("pk.sum.packs"), t("pk.sum.packsV", { a: num(d.codes.accounts), p: num(d.codes.prizes) })) : ""}
         ${row(t("pa.sum.claims"), t("pa.sum.claimsV", { n: num(d.claims?.all), open: num(d.claims?.open) }))}
+        ${d.withdrawals ? row(t("pw.sum"), t("pw.sumV", { n: num(d.withdrawals.paid), pts: pt(d.withdrawals.points), open: num(d.withdrawals.open) })) : ""}
       </div>`;
   }
 
   const VIEWS = { overview: viewOverview, content: viewContent, market: viewMarket, packages: viewPackages, announce: viewAnnounce };
 
   window.CineAuraPanelAdmin = {
-    SECTIONS: Object.keys(VIEWS),
+    get SECTIONS() {
+      return Object.keys(VIEWS);
+    },
     has: (name) => Boolean(VIEWS[name]),
+    // another file's view (js/panel-withdraw.js), drawn with the helpers below
+    add(name, fn) {
+      VIEWS[name] = fn;
+    },
+    kit: {
+      ctx: () => ctx, num, pt, when, day, rpc, data, errKey, failToast, who, tag, img, head, tabsHtml, reasonForm,
+      openSlot, reasonOf, busy, drawList, PAGE,
+    },
     async view(name, main, context) {
       ctx = context;
       await VIEWS[name](main);

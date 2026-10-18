@@ -667,7 +667,7 @@
           ${p.status === "suspended" ? suspendedHtml("product", p.suspended_reason, { withStore: p.suspended_with_store })
             : p.status !== "active" ? `<p class="mkt-badge b-hidden">${esc(t("mkt.hiddenNote"))}</p>` : ""}
           <h1 class="mkt-ptitle" dir="auto">${esc(p.title)}</h1>
-          <div class="mkt-pprice"><b dir="ltr">${esc(M.pt(p.price))}</b><small dir="ltr">≈ ${esc(M.usd(p.price))}</small></div>
+          <div class="mkt-pprice"><b dir="ltr">${esc(M.pt(p.price))}</b><small dir="ltr" data-usd="${Number(p.price) || 0}">≈ ${esc(M.usd(p.price))}</small></div>
           <div class="mkt-pstats">
             <span>${esc(t(Number(p.sales) === 1 ? "mkt.salesOne" : "mkt.salesN", { n: M.fmt(p.sales) }))}</span>
             <span class="${Number(p.stock) > 0 ? "" : "bad"}">${esc(Number(p.stock) > 0 ? t("mkt.leftN", { n: M.fmt(p.stock) }) : t("mkt.soldOut"))}</span>
@@ -1480,11 +1480,34 @@
     }
   }
 
+  // (round 30) a member below LV1 cannot open a store yet: how far they are, and how to earn points
+  function levelLockHtml(me) {
+    const lv = me?.store_level || {};
+    const need = Number(lv.need_points) || 10;
+    const have = Math.min(need, Number(lv.earned) || 0);
+    const pct = Math.round((have / need) * 100);
+    return `
+      <div class="mkt-lv-lock" data-store-lock>
+        <span class="mkt-lv-badge" dir="ltr">LV${Number(lv.need) || 1}</span>
+        <div class="mkt-lv-main">
+          <h2>${esc(t("mkt.lv.title"))}</h2>
+          <p>${esc(t("mkt.lv.text", { level: `LV${Number(lv.level) || 0}`, have: M.fmt(Number(lv.earned) || 0), need: M.fmt(need) }))}</p>
+          <div class="pt-lv-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${esc(t("mkt.lv.title"))}"><span style="width:${pct}%"></span></div>
+          <p class="muted">${esc(t("mkt.lv.hint"))}</p>
+          <p><a class="btn btn-sm btn-primary" href="./dashboard.html#points">${esc(t("mkt.lv.earn"))}</a></p>
+        </div>
+      </div>`;
+  }
+
   // --- Store settings
   function drawSettings(r) {
     const box = main();
     const me = state.me;
     const store = me?.store || null;
+    if (!store && me && me.can_open === false) {
+      box.innerHTML = panelShell(r, levelLockHtml(me), { tabs: false });
+      return;
+    }
     box.innerHTML = panelShell(
       r,
       `${store?.suspended ? suspendedHtml("store", store.suspended_reason) : ""}${store ? "" : `<p class="mkt-panel-hint">${esc(t("mkt.s.intro"))}</p>`}${M.storeFormHtml(store, me?.member || { username: M.username(), country: "" })}`,
@@ -1516,13 +1539,21 @@
     return drawHome();
   }
 
-  function sell() {
+  async function sell() {
     if (!signedIn()) {
       location.href = M.signinHref("Market.html#sales/products");
       return;
     }
+    // clicked before the side menu arrived: the store and the level first
+    if (!state.meDone) await refreshMe();
     if (state.me?.store?.suspended) {
       C.toast(t("mkt.err.suspendedStore"));
+      return;
+    }
+    // (round 30) no store yet and below LV1: Store settings say how to get there
+    if (!state.me?.store && state.me?.can_open === false) {
+      C.toast(t("mkt.lv.toast"));
+      go("./Market.html#settings");
       return;
     }
     M.openProductForm({

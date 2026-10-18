@@ -2203,6 +2203,12 @@
     prize_gift: "notif.prizeGift",
     // a store gave the member an exclusive coupon (sql/market.sql); the body is "Store · -20%"
     market_coupon: "notif.mktCoupon",
+    // a withdrawal (sql/withdrawals.sql); the body is "WDR0123456789 · 12.50 USD", then the reference
+    // of the transfer (sent) or the reason (rejected)
+    withdraw_new: "notif.wdNew",
+    withdraw_processing: "notif.wdProcessing",
+    withdraw_paid: "notif.wdPaid",
+    withdraw_rejected: "notif.wdRejected",
   };
   // a review, a purchase list or a recommendation: the Market tab of the profile it links to
   function socialKind(n) {
@@ -3003,6 +3009,46 @@
     return /^https:\/\/[^\s<>"'`]+$/i.test(url) ? url : fallback;
   }
 
+  /* ---------- The value of a point (sql/withdrawals.sql, Panel > Withdrawals > Settings) ----------
+     How many points make one unit of the currency members withdraw in: 100 points = 1 USD (one
+     point is one cent) until the team changes it. The Market shows its prices in money with it.
+     Kept for 10 minutes in this tab; without the SQL: the default. */
+  const POINT_VALUE_KEY = "cineaura_point_value";
+  const POINT_VALUE_DEFAULT = { rate: 100, currency: "USD" };
+  let pointValueReq = null;
+  function pointValue() {
+    if (!pointValueReq) {
+      pointValueReq = (async () => {
+        try {
+          const kept = JSON.parse(sessionStorage.getItem(POINT_VALUE_KEY) || "null");
+          if (kept && Date.now() - kept.at < 600000 && kept.rate > 0) return { ...POINT_VALUE_DEFAULT, ...kept.info };
+        } catch {
+          /* nothing kept */
+        }
+        const res = await rpc("withdraw_info", {}).catch(() => null);
+        const info = res?.ok && res.data && Number(res.data.rate) > 0 ? res.data : null;
+        if (!info) return { ...POINT_VALUE_DEFAULT };
+        try {
+          sessionStorage.setItem(POINT_VALUE_KEY, JSON.stringify({ at: Date.now(), rate: Number(info.rate), info }));
+        } catch {
+          /* storage full or blocked */
+        }
+        return { ...POINT_VALUE_DEFAULT, ...info };
+      })();
+    }
+    return pointValueReq;
+  }
+  // An amount of money in the reader's language ("$12.50", "12,50 €"), Latin digits.
+  function moneyText(amount, currency = "USD") {
+    const n = Number(amount) || 0;
+    const cur = /^[A-Z]{3}$/.test(String(currency || "")) ? currency : "USD";
+    try {
+      return new Intl.NumberFormat(`${getLocale()}-u-nu-latn`, { style: "currency", currency: cur }).format(n);
+    } catch {
+      return `${n.toFixed(2)} ${cur}`;
+    }
+  }
+
   /* ---------- Activation deadline (sql/account_deadline.sql) ----------
      An account that is not activated within 30 days of signing up, or not
      re-activated within 30 days after its membership ends, is fully banned.
@@ -3691,6 +3737,9 @@
   NAV_ICONS.announce = '<path d="M4 10.2v3.6a1 1 0 0 0 1 1h2.2L12.5 19V5L7.2 9.2H5a1 1 0 0 0-1 1z"/><path d="M16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/>';
   // the Panel: Packages (account, points and prize codes)
   NAV_ICONS.packages = '<path d="M3.5 7.5L12 3.2l8.5 4.3v9L12 20.8l-8.5-4.3z"/><path d="M3.5 7.5L12 11.8l8.5-4.3M12 11.8v9M7.8 5.3l8.4 4.3"/>';
+  // Dashboard > Withdraw and Panel > Withdrawals (sql/withdrawals.sql): a banknote going out
+  NAV_ICONS.withdraw = '<rect x="2.5" y="4.5" width="19" height="11" rx="2"/><circle cx="12" cy="10" r="2.4"/><path d="M6 7.5v5M18 7.5v5M12 17.5v4M9.6 19.4L12 21.8l2.4-2.4"/>';
+  NAV_ICONS.withdrawals = NAV_ICONS.withdraw;
 
   function navIcon(name) {
     const body = NAV_ICONS[name];
@@ -4789,6 +4838,8 @@
     POINT_RATES,
     STORED_POINT_COLUMNS,
     siteLink,
+    pointValue,
+    moneyText,
     PATREON_DEFAULT,
     countRows,
     pointParts,
