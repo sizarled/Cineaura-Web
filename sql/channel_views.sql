@@ -216,9 +216,81 @@ returns jsonb language sql stable security definer set search_path = public as $
   select coalesce(jsonb_agg(item order by pos), '[]'::jsonb) from items
 $$;
 
+-- ------------------------------------------------------------------ (round 31) watched minutes
+-- The ranking points of Search.html > Channels count the minutes members watch a channel. The
+-- channel player calls channel_minute() once a minute of moving picture on CineAura's own lists
+-- (the free and the premium list, the packages of Panel > IPTV), and iptv_list_minute()
+-- (sql/iptv_lists.sql) on a list a member published. One clock per member for both: one minute
+-- every 45 seconds at most, so two players open at once still count one minute at a time.
+create table if not exists public.channel_minutes (
+  channel_key text not null,
+  day date not null default current_date,
+  minutes integer not null default 0,
+  primary key (channel_key, day)
+);
+comment on table public.channel_minutes is 'Minutes members watched each channel of CineAura''s own lists, per day (Search.html ranking points)';
+
+create table if not exists public.channel_minute_clock (
+  viewer_id text primary key,
+  counted_at timestamptz not null default now()
+);
+
+alter table public.channel_minutes enable row level security;
+alter table public.channel_minute_clock enable row level security;
+revoke all on public.channel_minutes from anon, authenticated;
+revoke all on public.channel_minute_clock from anon, authenticated;
+
+-- One watched minute of p_channel (its name) for an active member.
+-- -> { ok: true, counted: true } | { ok: false, error: bad_request | unknown_member | too_soon }
+create or replace function public.channel_minute(p_member text, p_channel text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare mid text; k text := public.channel_key(p_channel);
+begin
+  if btrim(coalesce(p_member, '')) = '' or k = '' or length(p_channel) > 200 then
+    return jsonb_build_object('ok', false, 'error', 'bad_request');
+  end if;
+  select m.member_id into mid from public.members m
+   where m.member_id = btrim(p_member) and coalesce(m.status, 'active') = 'active';
+  if mid is null then return jsonb_build_object('ok', false, 'error', 'unknown_member'); end if;
+  insert into public.channel_minute_clock as c (viewer_id, counted_at) values (mid, now())
+  on conflict (viewer_id) do update set counted_at = excluded.counted_at
+   where c.counted_at <= now() - interval '45 seconds';
+  if not found then return jsonb_build_object('ok', false, 'error', 'too_soon'); end if;
+  insert into public.channel_minutes as x (channel_key, day, minutes) values (k, current_date, 1)
+  on conflict (channel_key, day) do update set minutes = x.minutes + 1;
+  return jsonb_build_object('ok', true, 'counted', true);
+end $$;
+
+-- The numbers of the ranking points of CineAura's channels (Search.html > Channels): for each
+-- channel name (3 000 at most), the minutes watched and the valid reports (a report of the
+-- channel the team marked resolved in Panel > Reports > Channels).
+--   -> { "<channel key>": { minutes, reports }, … } (only the channels with a number)
+create or replace function public.channel_ranks(p_names text[])
+returns jsonb language sql stable security definer set search_path = public as $$
+  with keys as (
+    select distinct public.channel_key(n) as k from unnest(coalesce(p_names[1:3000], '{}')) as n
+    where public.channel_key(n) <> ''
+  ), mins as (
+    select x.channel_key as k, sum(x.minutes)::bigint as minutes
+      from public.channel_minutes x join keys on keys.k = x.channel_key group by x.channel_key
+  ), reps as (
+    select public.channel_key(r.channel_name) as k, count(*)::bigint as reports
+      from public.channel_reports r
+     where r.status = 'resolved' and public.channel_key(r.channel_name) in (select k from keys)
+     group by 1
+  )
+  select coalesce(jsonb_object_agg(keys.k, jsonb_build_object('minutes', coalesce(mins.minutes, 0), 'reports', coalesce(reps.reports, 0))), '{}'::jsonb)
+  from keys left join mins on mins.k = keys.k left join reps on reps.k = keys.k
+  where mins.k is not null or reps.k is not null
+$$;
+
 revoke all on function public.channel_view_add(text, text, text) from public, anon, authenticated;
 grant execute on function public.channel_view_add(text, text, text) to anon, authenticated;
 revoke all on function public.channel_top(integer, integer) from public, anon, authenticated;
 grant execute on function public.channel_top(integer, integer) to anon, authenticated;
+revoke all on function public.channel_minute(text, text) from public, anon, authenticated;
+grant execute on function public.channel_minute(text, text) to anon, authenticated;
+revoke all on function public.channel_ranks(text[]) from public, anon, authenticated;
+grant execute on function public.channel_ranks(text[]) to anon, authenticated;
 
 notify pgrst, 'reload schema';

@@ -3,7 +3,7 @@
 -- settings of the Panel button
 -- Run this in the Supabase SQL editor (safe to run more than once), LAST: after
 -- prize_secure.sql, profile.sql, content.sql, iptv_lists.sql, point_codes.sql, market.sql,
--- packages.sql and withdrawals.sql.
+-- packages.sql, withdrawals.sql and search.sql.
 --
 --   Panel > Overview        panel_overview(): the numbers of the site and what is waiting for
 --                           the team. Each staff member sees the numbers of their own sections
@@ -288,13 +288,17 @@ begin
     res := res || jsonb_build_object('reports', jsonb_build_object(
       'links', public._panel_n('select count(*) from public.reportlinks where verdict = ''valid'''),
       'channels', public._panel_n('select count(*) from public.channel_reports where status = ''open'''),
-      'market', public._panel_n('select count(*) from public.market_reports where status = ''open''')));
+      'market', public._panel_n('select count(*) from public.market_reports where status = ''open'''),
+      -- (round 31) videos, playlists, IPTV lists and posts (sql/search.sql)
+      'content', public._panel_n('select count(*) from public.content_reports where status = ''open''')));
     n := (res->'reports'->>'links')::bigint;
     if n > 0 then att := att || jsonb_build_object('key', 'reports_links', 'count', n, 'section', 'reports', 'tab', 'links'); end if;
     n := (res->'reports'->>'channels')::bigint;
     if n > 0 then att := att || jsonb_build_object('key', 'reports_channels', 'count', n, 'section', 'reports', 'tab', 'channels'); end if;
     n := (res->'reports'->>'market')::bigint;
     if n > 0 then att := att || jsonb_build_object('key', 'reports_market', 'count', n, 'section', 'reports', 'tab', 'market'); end if;
+    n := (res->'reports'->>'content')::bigint;
+    if n > 0 then att := att || jsonb_build_object('key', 'reports_content', 'count', n, 'section', 'reports', 'tab', 'content'); end if;
   end if;
 
   if 'prizes' = any (secs) then
