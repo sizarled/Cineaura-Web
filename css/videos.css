@@ -520,6 +520,21 @@ html[dir="rtl"] .vw-play-orb svg { margin-inline-start: 0; margin-inline-end: -5
 .vw-gate-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 4px; }
 .vw-under { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; min-height: 0; }
 .vw-under:empty { display: none; }
+.vw-yt-error {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 176, 32, 0.08);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.vw-yt-error .vw-open { color: var(--cyan); font-weight: 600; }
 .vw-minutes,
 .vw-open { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
 .vw-open:hover { color: var(--cyan); }

@@ -165,6 +165,37 @@
     return map[lang] || "en";
   }
 
+  // The player frame and what it sends as Referer. The film hosts get nothing (no-referrer), but a
+  // member's YouTube link plays in YouTube's embed player, which must know the site: without the
+  // site in the Referer it stops with "Error 153: Video player configuration error". A YouTube page
+  // link (watch?v=, youtu.be, shorts) becomes the embed player, which may be framed.
+  function setFrame(url) {
+    const frame = $("#player-frame");
+    const yt = youTubeEmbed(url);
+    frame.setAttribute("referrerpolicy", yt ? "strict-origin-when-cross-origin" : "no-referrer");
+    frame.src = yt || url;
+  }
+  function youTubeEmbed(raw) {
+    let u;
+    try {
+      u = new URL(String(raw || ""));
+    } catch {
+      return "";
+    }
+    const host = u.hostname.toLowerCase().replace(/^(www|m)\./, "");
+    if (!/(^|\.)youtube(-nocookie)?\.com$/.test(host) && host !== "youtu.be") return "";
+    let id = "";
+    let m;
+    if (host === "youtu.be") id = u.pathname.split("/")[1] || "";
+    else if ((m = u.pathname.match(/^\/(?:embed|shorts|live|v)\/([\w-]{11})/))) id = m[1];
+    else id = u.searchParams.get("v") || "";
+    if (!/^[\w-]{11}$/.test(id)) return "";
+    const t = String(u.searchParams.get("t") || u.searchParams.get("start") || "");
+    const hms = t.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);
+    const start = hms ? Number(hms[1] || 0) * 3600 + Number(hms[2] || 0) * 60 + Number(hms[3] || 0) : 0;
+    return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&playsinline=1&modestbranding=1&origin=${encodeURIComponent(location.origin)}${start ? `&start=${start}` : ""}`;
+  }
+
   function embedUrl() {
     const sub = subtitleLang();
     if (mediaType === "tv") {
@@ -687,7 +718,7 @@
     hideIdle();
     // (the link list may still be loading: the main link is known by its flag)
     state.playingLink = state.mainRow || { isMain: true };
-    $("#player-frame").src = embedUrl();
+    setFrame(embedUrl());
     if (state.needsCode && !state.unlocked) startCountdown();
     else stopTimer();
     // Opened from a post (&post=...): credit the watched minutes to the post owner.
@@ -713,7 +744,7 @@
     hideGate();
     hideIdle();
     state.playingLink = row;
-    $("#player-frame").src = url;
+    setFrame(url);
     if (state.needsCode && !state.unlocked) startCountdown();
     else stopTimer();
     ensureViewRow(row.member_id || "", url).then(() => startMinuteTicker());

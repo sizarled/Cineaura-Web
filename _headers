@@ -1,0 +1,6 @@
+# Response headers of the site on Netlify (and Cloudflare Pages, which reads the same file).
+# The embedded YouTube player needs the site in the Referer of its requests, or it stops with
+# "Error 153: Video player configuration error". strict-origin-when-cross-origin sends only the
+# origin of the site (https://example.org/), never the page.
+/*
+  Referrer-Policy: strict-origin-when-cross-origin

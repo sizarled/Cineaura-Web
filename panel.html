@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- YouTube needs the site in the Referer of its player (else error 153): this policy wins over
+       a stricter one a host or a CDN may add (Referrer-Policy: no-referrer or same-origin) -->
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <script src="js/prefs.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title data-i18n-title="nav.panel">Panel — CineAura</title>

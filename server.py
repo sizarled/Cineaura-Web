@@ -1834,6 +1834,12 @@ class Handler(SimpleHTTPRequestHandler):
         ".sql": "text/plain; charset=utf-8",
     }
 
+    def end_headers(self):
+        # The embedded YouTube player needs the site in the Referer (error 153 without it): the
+        # policy browsers use by default, stated so that nothing in front of this server makes it stricter.
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        super().end_headers()
+
     def proxy_m3u(self, parsed):
         url = (parse_qs(parsed.query).get("url") or [""])[0]
         try:

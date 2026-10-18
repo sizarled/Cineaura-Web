@@ -381,10 +381,26 @@
       } catch {
         return;
       }
+      if (data?.event === "onError") return showYtError(Number(data.info));
       const st = data?.event === "onStateChange" ? data.info : data?.info?.playerState;
       if (typeof st !== "number") return;
       setPlaying(st === 1);
     });
+  }
+
+  // YouTube could not play the video here: what it said, under the player (never over it), and
+  // the video on YouTube itself. 153 = the site did not reach YouTube in the Referer (a privacy
+  // extension or setting of the browser); 101/150 = the owner keeps it off other sites.
+  function showYtError(code) {
+    const under = $(".vw-under");
+    const info = state.info;
+    if (!under || !info || info.provider !== "youtube") return;
+    setPlaying(false);
+    const key = code === 153 ? "vid.yt153" : code === 101 || code === 150 ? "vid.ytNoEmbed" : code === 100 ? "vid.ytGone" : "vid.ytError";
+    const href = `https://www.youtube.com/watch?v=${encodeURIComponent(info.id)}${info.start ? `&t=${info.start}s` : ""}`;
+    under.querySelector(".vw-yt-error")?.remove();
+    under.insertAdjacentHTML("afterbegin", `<p class="vw-yt-error" role="alert"><span>${esc(t(key, { code: Number.isFinite(code) ? code : "?" }))}</span>
+      <a class="vw-open" href="${esc(href)}" target="_blank" rel="noopener">${icon("ext", 14)}<span>${esc(t("vid.ytOpen"))}</span></a></p>`);
   }
 
   async function startPlayback() {
@@ -416,6 +432,7 @@
       }
       video.play().catch(() => {});
     } else {
+      $(".vw-under .vw-yt-error")?.remove();
       const src = V.embedSrc(info, { autoplay: true });
       box.innerHTML = `<iframe class="vw-frame" src="${esc(src)}" title="${esc(c.title)}" allow="autoplay; encrypted-media; fullscreen; picture-in-picture; clipboard-write; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
       const frame = box.querySelector("iframe");
