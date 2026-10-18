@@ -557,6 +557,14 @@ html[data-theme="day"] .vis-private { color: #c62f35; }
   border-radius: 10px;
   display: block;
 }
+/* (round 31) a member's video in a post: its 16:9 thumbnail */
+.rich-item.is-video { grid-template-columns: 200px minmax(0, 1fr); }
+.rich-item.is-video .rich-poster img { aspect-ratio: 16 / 9; }
+.rich-item.is-video.compact,
+.composer-preview .rich-item.is-video { grid-template-columns: 140px minmax(0, 1fr); }
+.tp-row .tp-vid { display: inline-block; margin-inline-start: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: rgba(1, 180, 228, 0.16); color: var(--cyan); vertical-align: middle; }
+.tp-row img.is-video { aspect-ratio: 16 / 9; object-fit: cover; }
+.tp-src { display: flex; flex-wrap: wrap; gap: 6px; }
 .rich-poster .score {
   position: absolute;
   top: 6px;
@@ -863,6 +871,7 @@ html[data-theme="day"] .vis-private { color: #c62f35; }
 }
 @media (max-width: 640px) {
   .rich-item, .rich-item.compact { grid-template-columns: 84px minmax(0, 1fr); gap: 10px; }
+  .rich-item.is-video, .rich-item.is-video.compact { grid-template-columns: 120px minmax(0, 1fr); }
   .review-lists, .pc-grid { grid-template-columns: 1fr; }
   .pm-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pa-row { grid-template-columns: minmax(0, 1fr) repeat(5, 46px); gap: 4px; }

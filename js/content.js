@@ -56,6 +56,8 @@
     ext: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
     edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+    flag: '<path d="M5 21V4"/><path d="M5 4.5h11.5l-2.2 4 2.2 4H5"/>',
+    star: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
   };
   const icon = (k, size = 18) =>
     `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON[k]}</svg>`;
@@ -529,6 +531,10 @@
           <button class="btn btn-sm btn-ghost vw-btn" type="button" id="vw-share-btn" aria-expanded="false" aria-controls="vw-share">${icon("share", 16)}<span>${esc(t("share.title"))}</span></button>
           <button class="btn btn-sm btn-ghost vw-btn" type="button" id="vw-pl-btn">${icon("pl", 16)}<span>${esc(t("vid.addToPl"))}</span></button>
           ${mine ? `<a class="btn btn-sm btn-ghost vw-btn" href="./Profile.html#content/manage">${icon("edit", 16)}<span>${esc(t("vid.manage"))}</span></a>` : ""}
+          ${access === "ok" ? `
+          <a class="btn btn-sm btn-ghost vw-btn" id="vw-rec-btn" href="./Profile.html#create/recommendation/${encodeURIComponent(c.id)}">${icon("star", 16)}<span>${esc(t("vid.recPost"))}</span></a>
+          <a class="btn btn-sm btn-ghost vw-btn" id="vw-rev-btn" href="./Profile.html#create/review/${encodeURIComponent(c.id)}">${icon("edit", 16)}<span>${esc(t("vid.reviewPost"))}</span></a>` : ""}
+          ${mine ? "" : `<button class="btn btn-sm btn-ghost vw-btn vw-report" type="button" id="vw-report-btn">${icon("flag", 16)}<span>${esc(t("rep.btn"))}</span></button>`}
         </div>
       </div>
       <div class="glass vw-share" id="vw-share" hidden>${C.shareRowHtml(href, c.title, { label: t("vid.shareLabel") })}</div>
@@ -594,6 +600,10 @@
       if (e.target.closest("#vw-pl-btn")) {
         if (state.data.access !== "ok") return toast(t("vid.lockedAction"));
         V.playlistDialog(state.id);
+        return;
+      }
+      if (e.target.closest("#vw-report-btn")) {
+        C.reportDialog({ kind: "video", id: state.id, title: state.data.content?.title || "" });
         return;
       }
       if (e.target.closest("#vw-more")) {

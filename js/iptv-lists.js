@@ -9,8 +9,10 @@
  *                                  bucket IPTV, folder Playlist), the programme guide and
  *                                  who sees the list (public / exclusive / private)
  *   L.refresh(list)                reads the playlist again and saves its channels
- *   L.cardHtml(list, opts)         a list as a card
+ *   L.cardHtml(list, opts)         a list as a card (a lock when the visitor may not open it yet;
+ *                                  a private list: Request to join)
  *   L.channelHtml(item)            a channel found by Search.html > Channels
+ *   L.wireJoin(root, onSent)       the Request to join buttons inside root (a note, then Send)
  *
  * Saving reads the playlist in the browser first (a link that refuses the browser goes
  * through /api/m3u of server.py), so a list without channels is never published. The
@@ -40,6 +42,10 @@
     link: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>',
     upload: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>',
     close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    join: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 19a6 6 0 0 0-12 0"/><circle cx="9" cy="8" r="3.5"/><path d="M19 8v6M16 11h6"/></svg>',
+    check: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+    key: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/></svg>',
+    bell: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
   };
   const VIS_ICON = { public: ICON.globe, exclusive: ICON.star, private: ICON.lock };
 
@@ -127,7 +133,11 @@
     return (words.length > 1 ? words[0][0] + words[1][0] : (words[0] || "TV").slice(0, 2)).toUpperCase();
   }
 
-  // "Followers of @bob · Morocco, France · العربية"
+  // the name of a level and of a plan: "LV3", "LV Max"; "Gold"
+  const levelName = (n) => (Number(n) >= 10 ? "LV Max" : `LV${Math.max(0, Number(n) || 0)}`);
+  const planName = (p) => t(`ipl.plan.${["Silver", "Gold", "Diamond"].includes(p) ? p : "Free"}`);
+
+  // "Followers of @bob · Morocco, France · العربية · LV3 or higher · Gold or higher · Password"
   function criteriaParts(l) {
     const out = [];
     if (l.followers) out.push(t("ipl.crit.followersOf", { name: `@${l.owner || ""}` }));
@@ -135,8 +145,34 @@
     if (ctys.length) out.push(ctys.join(", "));
     const langs = codes(l.languages).map(langName);
     if (langs.length) out.push(langs.join(", "));
+    if (Number(l.level) > 0) out.push(t("ipl.crit.level", { level: levelName(l.level) }));
+    if (l.plan) out.push(t("ipl.crit.plan", { plan: planName(l.plan) }));
+    if (l.password) out.push(t("ipl.crit.password"));
     return out;
   }
+
+  // why a list stays shut for this visitor (a lock on its card)
+  function lockText(l) {
+    const why = l.locked;
+    if (!why) return "";
+    if (why === "private") return t(l.request === "pending" ? "ipl.lock.pending" : "ipl.lock.private");
+    if (why === "signin") return t("ipl.lock.signin");
+    if (why === "followers") return t("ipl.no.followers", { name: `@${l.owner || ""}` });
+    if (why === "country") return t("ipl.no.country", { list: codes(l.countries).map(countryName).join(", ") });
+    if (why === "language") return t("ipl.no.language", { list: codes(l.languages).map(langName).join(", ") });
+    if (why === "level") return t("ipl.lock.level", { level: levelName(l.level) });
+    if (why === "plan") return t("ipl.lock.plan", { plan: planName(l.plan) });
+    if (why === "password") return t("ipl.lock.password");
+    return t("ipl.no.found");
+  }
+
+  // the Request to join button of a private list (or where its request stands)
+  function joinHtml(l) {
+    if (l.locked !== "private") return "";
+    if (l.request === "pending" || joinSent.has(l.id)) return `<span class="ipl-join-sent">${ICON.check}<span>${esc(t("ipl.join.sent"))}</span></span>`;
+    return `<button class="btn btn-sm btn-primary ipl-join" type="button" data-ipl-join="${esc(l.id)}">${ICON.join}<span>${esc(t("ipl.join.btn"))}</span></button>`;
+  }
+  const joinSent = new Set();
 
   const badgeHtml = (l) =>
     `<span class="ipl-badge is-${esc(l.visibility || "public")}">${VIS_ICON[l.visibility] || ICON.globe}<span>${esc(visLabel(l.visibility))}</span></span>`;
@@ -167,9 +203,11 @@
   }
 
   // ---------------------------------------------------------------- a list as a card
-  // opts: { manage: true (Dashboard: Edit / Refresh / Copy / Delete), owner: false }
+  // opts: { manage: true (Dashboard: Edit / Refresh / Copy / Delete), owner: false, rank: html (Search.html) }
+  // l.locked: why the visitor may not open it yet (a lock; a private one: Request to join)
   function cardHtml(l, opts = {}) {
     const ready = l.ready !== false && Number(l.channels) > 0;
+    const lock = lockText(l);
     const owner = opts.owner === false ? "" : `
           <a class="ipl-owner" href="${esc(C.profileHref(l.owner))}">
             <span class="ipl-owner-ava">${C.avatarImg(l.owner_id || "", l.owner || "", l.owner_avatar || "")}</span>
@@ -189,8 +227,14 @@
       : l.mine
         ? `<a class="btn btn-sm btn-ghost" href="${MANAGE_HREF}">${esc(t("ipl.manage"))}</a>`
         : "";
+    const extra = opts.manage ? [
+      Number(l.requests) > 0 ? `<span class="ipl-badge is-req">${ICON.bell}<span>${esc(t(Number(l.requests) === 1 ? "ipl.reqOne" : "ipl.reqN", { n: fmt(l.requests) }))}</span></span>` : "",
+      Number(l.passwords) > 0 ? `<span class="ipl-badge is-pw">${ICON.key}<span>${esc(t(Number(l.passwords) === 1 ? "ipl.pwOne" : "ipl.pwN", { n: fmt(l.passwords) }))}</span></span>` : "",
+      l.hidden ? `<span class="ipl-badge is-hidden">${esc(t("ipl.hiddenBadge"))}</span>` : "",
+    ].join("") : "";
+    const private_ = l.locked === "private";
     return `
-      <article class="ipl-card${ready ? "" : " is-waiting"}" data-ipl-id="${esc(l.id)}">
+      <article class="ipl-card${ready ? "" : " is-waiting"}${lock ? " is-locked" : ""}" data-ipl-id="${esc(l.id)}">
         <a class="ipl-card-main" href="${esc(listHref(l.id))}">
           <span class="ipl-cover" style="--ipl-h:${hueOf(l.id)}" aria-hidden="true">
             ${ICON.tv}
@@ -198,21 +242,93 @@
             <small>${esc(t("common.channels"))}</small>
           </span>
           <span class="ipl-card-text">
-            <span class="ipl-badges">${badgeHtml(l)}${l.epg ? `<span class="ipl-badge is-epg">${esc(t("iptv.epg"))}</span>` : ""}${l.mine && !opts.manage ? `<span class="ipl-badge is-mine">${esc(t("ipl.yours"))}</span>` : ""}</span>
+            <span class="ipl-badges">${badgeHtml(l)}${l.password && !private_ ? `<span class="ipl-badge is-pw">${ICON.key}<span>${esc(t("ipl.crit.password"))}</span></span>` : ""}${l.epg ? `<span class="ipl-badge is-epg">${esc(t("iptv.epg"))}</span>` : ""}${l.mine && !opts.manage ? `<span class="ipl-badge is-mine">${esc(t("ipl.yours"))}</span>` : ""}${extra}</span>
             <h3 dir="auto">${esc(l.name)}</h3>
-            ${l.description ? `<span class="ipl-desc" dir="auto">${esc(l.description)}</span>` : ""}
+            ${l.description && !private_ ? `<span class="ipl-desc" dir="auto">${esc(l.description)}</span>` : ""}
           </span>
         </a>
-        ${audienceHtml(l)}
-        ${kindsHtml(l)}
+        ${lock ? `<p class="ipl-lock" role="note">${ICON.lock}<span>${esc(lock)}</span></p>` : ""}
+        ${private_ ? "" : audienceHtml(l)}
+        ${private_ ? "" : kindsHtml(l)}
         ${ready ? "" : `<p class="ipl-warn" role="note">${esc(t("ipl.notReady"))}</p>`}
         ${l.suspended ? `<p class="ipl-warn ipl-susp" role="note"><b>${esc(t("ipl.suspended"))}</b> ${esc(t("vid.suspendedWhy", { reason: l.suspended.reason || "" }))}</p>` : ""}
         <div class="ipl-meta">${owner}<span class="ipl-facts">${facts.map((f) => `<span>${esc(f)}</span>`).join("")}</span></div>
         <footer class="ipl-actions">
-          <a class="btn btn-sm btn-primary" href="${esc(listHref(l.id))}">${ICON.play}<span>${esc(t("ipl.open"))}</span></a>
+          ${private_ ? joinHtml(l) : `<a class="btn btn-sm ${lock ? "btn-ghost" : "btn-primary"}" href="${esc(listHref(l.id))}">${lock ? ICON.lock : ICON.play}<span>${esc(t(lock ? "ipl.openLocked" : "ipl.open"))}</span></a>`}
           ${manage}
+          ${opts.rank || ""}
         </footer>
+        <div class="ipl-join-slot" data-ipl-join-slot></div>
       </article>`;
+  }
+
+  // ---------------------------------------------------------------- Request to join (a private list)
+  // -> { ok: true } | { ok: false, reason }
+  async function requestJoin(id, note = "") {
+    const res = await call("iptv_list_request", { p_member: memberId(), p_id: id, p_note: note });
+    if (!res.ok) return { ok: false, reason: res.setup ? "setup" : "network" };
+    if (res.data?.ok) joinSent.add(id);
+    return res.data || { ok: false, reason: "failed" };
+  }
+  const joinError = (r) => t({ member: "ipl.join.signin", pending: "ipl.join.pending", already: "ipl.join.already", wait: "ipl.join.wait",
+    blocked: "ipl.join.blocked", limit: "ipl.join.limit", not_private: "ipl.join.notPrivate", not_found: "ipl.no.found",
+    note: "ipl.join.note", setup: "ipl.err.setup", network: "ipl.err.network" }[r?.reason] || "ipl.err.failed");
+
+  // The buttons Request to join inside root: a note (optional), then Send. onSent(id) once sent.
+  function wireJoin(root, onSent) {
+    if (!root || root.dataset.iplJoinWired) return;
+    root.dataset.iplJoinWired = "1";
+    root.addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-ipl-join]");
+      const card = e.target.closest("[data-ipl-id]");
+      if (btn) {
+        if (!memberId()) {
+          location.href = `./login.html?next=${encodeURIComponent(`${location.pathname.replace(/^\//, "")}${location.search}${location.hash}`)}`;
+          return;
+        }
+        const slot = card?.querySelector("[data-ipl-join-slot]");
+        if (!slot) return;
+        slot.innerHTML = `
+          <form class="ipl-join-form" data-ipl-join-form="${esc(btn.dataset.iplJoin)}">
+            <label class="field-label" for="ipl-jn-${esc(btn.dataset.iplJoin)}">${esc(t("ipl.join.noteLabel"))}</label>
+            <textarea id="ipl-jn-${esc(btn.dataset.iplJoin)}" rows="2" maxlength="300" placeholder="${esc(t("ipl.join.notePh"))}"></textarea>
+            <div class="ipl-join-acts">
+              <button class="btn btn-sm btn-primary" type="submit">${esc(t("ipl.join.send"))}</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-ipl-join-cancel>${esc(t("common.cancel"))}</button>
+            </div>
+            <p class="ipl-join-msg" role="status"></p>
+          </form>`;
+        btn.hidden = true;
+        slot.querySelector("textarea").focus();
+        return;
+      }
+      if (e.target.closest("[data-ipl-join-cancel]") && card) {
+        card.querySelector("[data-ipl-join-slot]").innerHTML = "";
+        const b = card.querySelector("[data-ipl-join]");
+        if (b) b.hidden = false;
+      }
+    });
+    root.addEventListener("submit", async (e) => {
+      const form = e.target.closest("[data-ipl-join-form]");
+      if (!form) return;
+      e.preventDefault();
+      const id = form.dataset.iplJoinForm;
+      const send = form.querySelector('button[type="submit"]');
+      send.disabled = true;
+      const r = await requestJoin(id, form.querySelector("textarea").value.trim());
+      send.disabled = false;
+      if (!r.ok) {
+        form.querySelector(".ipl-join-msg").textContent = joinError(r);
+        return;
+      }
+      const card = form.closest("[data-ipl-id]");
+      const acts = card?.querySelector(".ipl-actions");
+      card?.querySelector("[data-ipl-join]")?.remove();
+      if (acts) acts.insertAdjacentHTML("afterbegin", `<span class="ipl-join-sent">${ICON.check}<span>${esc(t("ipl.join.sent"))}</span></span>`);
+      form.remove();
+      C.toast(t("ipl.join.done"));
+      onSent?.(id);
+    });
   }
 
   // ---------------------------------------------------------------- a channel found by the search
@@ -373,6 +489,7 @@
     type: "ipl.err.type",
     criteria: "ipl.err.criteria",
     people: "ipl.err.people",
+    password: "ipl.err.password",
     suspended: "ipl.err.suspended",
     not_found: "ipl.err.notFound",
     read: "ipl.err.read",
@@ -399,8 +516,15 @@
     if (reason === "followers") return t("ipl.no.followers", { name: `@${r.owner || ""}` });
     if (reason === "country") return t("ipl.no.country", { list: codes(r.countries).map(countryName).join(", ") });
     if (reason === "language") return t("ipl.no.language", { list: codes(r.languages).map(langName).join(", ") });
+    if (reason === "level") return t("ipl.no.level", { level: levelName(r.level), mine: levelName(r.my_level) });
+    if (reason === "plan") return t("ipl.no.plan", { plan: planName(r.plan), mine: planName(r.my_plan) });
+    if (reason === "password") return t("ipl.no.password");
     if (reason === "signin") return t("ipl.no.signin");
-    if (reason === "private") return t("ipl.no.private");
+    if (reason === "private") {
+      if (r.request === "pending") return t("ipl.no.privatePending", { name: `@${r.owner || ""}` });
+      if (r.request === "rejected") return t("ipl.no.privateRejected", { name: `@${r.owner || ""}` });
+      return t(r.member === false ? "ipl.no.privateSignin" : "ipl.no.privateAsk", { name: `@${r.owner || ""}` });
+    }
     return t("ipl.no.found");
   }
 
@@ -432,6 +556,12 @@
       countries: codes(l?.countries),
       languages: codes(l?.languages),
       people: Array.isArray(l?.people) ? l.people.map((p) => p.username || p.id).join(", ") : "",
+      level: Math.max(0, Math.min(10, Number(l?.level) || 0)),
+      plan: ["Silver", "Gold", "Diamond"].includes(l?.plan) ? l.plan : "",
+      passwords: "", // new passwords, one a line; empty while editing: the list keeps its own
+      pwCount: Number(l?.passwords) || 0,
+      pwClear: false,
+      hidden: Boolean(l?.hidden),
       ready: l ? l.ready !== false : false,
     };
   }
@@ -496,12 +626,29 @@
             <div class="ipl-langs" role="group" aria-labelledby="ipl-lang-l">
               ${LANG_CODES.map((c) => `<label class="ipl-check ipl-lang"><input type="checkbox" name="ipl-lang" value="${c}" ${d.languages.includes(c) ? "checked" : ""} /> <span lang="${c}">${esc(langName(c))}</span></label>`).join("")}
             </div>
+            <div class="ipl-row2">
+              <div class="ipl-field">
+                <label class="field-label" for="ipl-level">${esc(t("ipl.f.level"))}</label>
+                <select id="ipl-level">${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => `<option value="${n}" ${d.level === n ? "selected" : ""}>${esc(n ? t("ipl.crit.level", { level: levelName(n) }) : t("ipl.f.anyLevel"))}</option>`).join("")}</select>
+              </div>
+              <div class="ipl-field">
+                <label class="field-label" for="ipl-plan">${esc(t("ipl.f.plan"))}</label>
+                <select id="ipl-plan">${["", "Silver", "Gold", "Diamond"].map((p) => `<option value="${p}" ${d.plan === p ? "selected" : ""}>${esc(p ? t("ipl.crit.plan", { plan: planName(p) }) : t("ipl.f.anyPlan"))}</option>`).join("")}</select>
+              </div>
+            </div>
+            <label class="field-label" for="ipl-pw">${esc(t("ipl.f.passwords"))}</label>
+            <textarea id="ipl-pw" rows="2" maxlength="700" dir="ltr" spellcheck="false" autocomplete="off" placeholder="${esc(t("ipl.f.passwordsPh"))}">${esc(d.passwords)}</textarea>
+            ${d.pwCount ? `<p class="ipl-hint ipl-pw-now">${esc(t(d.pwCount === 1 ? "ipl.f.pwKeptOne" : "ipl.f.pwKeptN", { n: fmt(d.pwCount) }))}
+              <label class="ipl-check ipl-pw-clear"><input type="checkbox" id="ipl-pw-clear" /> <span>${esc(t("ipl.f.pwClear"))}</span></label></p>` : ""}
+            <p class="ipl-hint">${esc(t("ipl.f.passwordsHint"))}</p>
             <p class="ipl-hint">${esc(t("ipl.f.exclHint"))}</p>
           </div>
           <div class="ipl-aud-box" id="ipl-priv" ${d.visibility === "private" ? "" : "hidden"}>
             <label class="field-label" for="ipl-people">${esc(t("ipl.f.people"))}</label>
             <textarea id="ipl-people" rows="2" maxlength="4000" dir="ltr" spellcheck="false" placeholder="${esc(t("ipl.f.peoplePh"))}">${esc(d.people)}</textarea>
             <p class="ipl-hint">${esc(t("ipl.f.peopleHint"))}</p>
+            <label class="ipl-check"><input type="checkbox" id="ipl-hidden" ${d.hidden ? "checked" : ""} /> <span>${esc(t("ipl.f.hidden"))}</span></label>
+            <p class="ipl-hint">${esc(t("ipl.f.hiddenHint"))}</p>
           </div>
         </div>
       </div>
@@ -608,6 +755,11 @@
       d.followers = $("#ipl-fol").checked;
       d.languages = [...form.querySelectorAll('input[name="ipl-lang"]:checked')].map((x) => x.value);
       d.people = $("#ipl-people").value;
+      d.level = Number($("#ipl-level").value) || 0;
+      d.plan = $("#ipl-plan").value;
+      d.passwords = $("#ipl-pw").value;
+      d.pwClear = Boolean($("#ipl-pw-clear")?.checked);
+      d.hidden = $("#ipl-hidden").checked;
     };
     const sync = () => {
       read();
@@ -655,7 +807,11 @@
         if (d.file && d.file.name && !/\.(m3u8?|txt)$/i.test(d.file.name)) return fail(t(ERR.type), "#ipl-file");
       }
       if (d.epg && !/^https?:\/\/[^\s/?#]+/i.test(d.epg)) return fail(t("ipl.err.epg"), "#ipl-epg");
-      if (d.visibility === "exclusive" && !d.followers && !d.countries.length && !d.languages.length) return fail(t(ERR.criteria), "#ipl-fol");
+      const pws = [...new Set(d.passwords.split(/\n+/).map((x) => x.trim()).filter(Boolean))];
+      if (pws.length > 10 || pws.some((x) => x.length < 4 || x.length > 64)) return fail(t(ERR.password), "#ipl-pw");
+      const keepPw = editing && !pws.length && !d.pwClear;
+      const anyPw = pws.length > 0 || (keepPw && d.pwCount > 0);
+      if (d.visibility === "exclusive" && !d.followers && !d.countries.length && !d.languages.length && !d.level && !d.plan && !anyPw) return fail(t(ERR.criteria), "#ipl-fol");
       const people = d.people.split(/[,;\s]+/).map((x) => x.trim().replace(/^@+/, "")).filter(Boolean);
       if (d.visibility === "private" && !people.length) return fail(t(ERR.people), "#ipl-people");
 
@@ -703,12 +859,17 @@
           followers: d.followers,
           countries: d.countries,
           languages: d.languages,
+          level: d.level,
+          plan: d.plan,
+          // left out while editing with nothing typed: the list keeps its passwords
+          ...(keepPw ? {} : { passwords: pws }),
           people,
+          hidden: d.hidden,
         },
       });
       if (!res.ok || res.data?.ok === false) {
         const r = res.ok ? res.data : res;
-        const focus = { name: "#ipl-name", url: "#ipl-url", people: "#ipl-people", criteria: "#ipl-fol", file: "#ipl-file", path: "#ipl-file" }[r?.reason];
+        const focus = { name: "#ipl-name", url: "#ipl-url", people: "#ipl-people", criteria: "#ipl-fol", password: "#ipl-pw", file: "#ipl-file", path: "#ipl-file" }[r?.reason];
         return fail(errText(r), focus);
       }
       const id = res.data.id;
@@ -775,6 +936,12 @@
     upload,
     errText,
     refusalText,
+    lockText,
+    levelName,
+    planName,
+    requestJoin,
+    joinError,
+    wireJoin,
     openForm,
     closeForm: closeDialog,
   };

@@ -2209,6 +2209,11 @@
     withdraw_processing: "notif.wdProcessing",
     withdraw_paid: "notif.wdPaid",
     withdraw_rejected: "notif.wdRejected",
+    // (round 31) a request to join a private IPTV list (sql/iptv_lists.sql): to its publisher (the body is
+    // "@member · list · note"), then the answer to the member (the body is the name of the list)
+    iptv_join: "notif.iptvJoin",
+    iptv_join_ok: "notif.iptvJoinOk",
+    iptv_join_no: "notif.iptvJoinNo",
   };
   // a review, a purchase list or a recommendation: the Market tab of the profile it links to
   function socialKind(n) {
@@ -2960,12 +2965,13 @@
     refitHeader();
   }
 
-  // The member videos (Search.html, Content.html) get a place in the header menu of every
-  // page, after Series, and in the phone menu.
+  // The member videos (Content.html) get a place in the header menu of every page, after
+  // Series, and in the phone menu.
   // "Videos" in every header: Content.html, the search box and the 50 videos with the
-  // most watched minutes, recommendations or shares.
+  // most watched minutes, recommendations or shares. (Search.html searches the whole site
+  // since round 31: no longer marked as Videos.)
   function addVideosNav() {
-    const here = /\/(search|content)(\.html)?$/i.test(location.pathname);
+    const here = /\/content(\.html)?$/i.test(location.pathname);
     const make = () => {
       const a = document.createElement("a");
       a.href = "./Content.html";
@@ -4643,6 +4649,92 @@
   // "1.0", "v1.0" and "1.0v" all read 1.0
   const appVersion = (value) => String(value || "").trim().replace(/^v\s*/i, "").replace(/\s*v$/i, "").slice(0, 20);
 
+  /* ---------- Report (round 31, sql/search.sql: content_report) ----------
+     The Report button of a video, a playlist, an IPTV list and a post: a reason and a note. The team
+     reads the reports in Panel > Reports > Content; a report it finds valid costs the item 60 ranking
+     points in Search.html.
+       reportDialog({ kind: video | playlist | iptv_list | post, id, title, onDone(ok) }) */
+  const REPORT_REASONS = ["spam", "misleading", "offensive", "violent", "copyright", "broken", "other"];
+  function reportDialog({ kind, id, title = "", onDone } = {}) {
+    const me = getSession()?.member_id;
+    if (!me) {
+      location.href = `./login.html?next=${encodeURIComponent(`${location.pathname.replace(/^\//, "")}${location.search}${location.hash}`)}`;
+      return;
+    }
+    document.querySelector(".rep-modal")?.remove();
+    const wrap = document.createElement("div");
+    wrap.className = "rep-modal";
+    wrap.innerHTML = `
+      <form class="glass rep-dialog" role="dialog" aria-modal="true" aria-labelledby="rep-title" novalidate>
+        <h2 id="rep-title">${escapeHtml(t(`rep.title.${kind}`))}</h2>
+        ${title ? `<p class="rep-what" dir="auto">${escapeHtml(title)}</p>` : ""}
+        <fieldset class="rep-reasons">
+          <legend>${escapeHtml(t("rep.why"))}</legend>
+          ${REPORT_REASONS.map((r, i) => `<label class="rep-reason"><input type="radio" name="rep-r" value="${r}" ${i === 0 ? "checked" : ""} /> <span>${escapeHtml(t(`rep.r.${r}`))}</span></label>`).join("")}
+        </fieldset>
+        <label class="field-label" for="rep-note">${escapeHtml(t("rep.note"))}</label>
+        <textarea id="rep-note" rows="3" maxlength="500" placeholder="${escapeHtml(t("rep.notePh"))}"></textarea>
+        <p class="rep-hint">${escapeHtml(t("rep.hint"))}</p>
+        <p class="rep-msg" role="alert"></p>
+        <div class="rep-acts">
+          <button class="btn btn-sm btn-ghost" type="button" data-rep-close>${escapeHtml(t("common.cancel"))}</button>
+          <button class="btn btn-sm btn-danger" type="submit">${escapeHtml(t("rep.send"))}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(wrap);
+    const form = wrap.querySelector("form");
+    const opener = document.activeElement;
+    const close = (ok = false) => {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      if (opener && document.contains(opener)) opener.focus();
+      if (typeof onDone === "function") onDone(ok);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close(false);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    wrap.addEventListener("mousedown", (e) => {
+      if (e.target === wrap) close(false);
+    });
+    form.addEventListener("click", (e) => {
+      if (e.target.closest("[data-rep-close]")) close(false);
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('button[type="submit"]');
+      const msg = form.querySelector(".rep-msg");
+      btn.disabled = true;
+      let res = null;
+      try {
+        res = await rpc("content_report", {
+          p_member: String(me), p_kind: kind, p_id: String(id || ""),
+          p_reason: form.querySelector('input[name="rep-r"]:checked')?.value || "other",
+          p_note: form.querySelector("#rep-note").value.trim(),
+        });
+      } catch {
+        res = null;
+      }
+      btn.disabled = false;
+      if (res?.ok && res.data?.ok) {
+        toast(t("rep.sent"));
+        close(true);
+        return;
+      }
+      const reason = res?.status === 404 || res?.data?.code === "PGRST202" ? "setup" : res?.data?.reason || "failed";
+      if (reason === "already") {
+        toast(t("rep.already"));
+        close(true);
+        return;
+      }
+      msg.textContent = t({ own: "rep.own", limit: "rep.limit", not_found: "rep.notFound", member: "rep.member", note: "rep.noteLong", setup: "rep.setup" }[reason] || "rep.failed");
+    });
+    form.querySelector('input[name="rep-r"]')?.focus();
+  }
+
   window.CineAura = {
     API_KEY,
     API,
@@ -4709,6 +4801,7 @@
     sortLinksForViewer,
     countLinkClick,
     stableGuestId,
+    reportDialog,
     sumColumn,
     detectGeo,
     manualCountry,

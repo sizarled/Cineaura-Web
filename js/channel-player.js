@@ -10,6 +10,8 @@
  *                 accounts: [...],     iptv rows of the package (stream lookup)
  *                 onChange(index),     the dialog moved to another channel
  *                 onResult(row, ok),   a channel started (true) or failed (false)
+ *                 onMinute(row),       a minute of moving picture on that channel (the ranking
+ *                                      points of Search.html: channel_minute, iptv_list_minute)
  *                 onClose() }
  *   CineAuraChannels.close()
  *   CineAuraChannels.resolveStream(row, accounts)  -> Promise<stream link | "">
@@ -866,6 +868,7 @@
     okSince: 0,
     watchMs: 0, // moving picture on the current channel (countViews)
     watchAt: 0,
+    minuteMs: 0, // moving picture since the last counted minute (onMinute)
     // what the viewer sees
     speed: 0,
     speedIdle: true,
@@ -1287,10 +1290,23 @@
 
   function watchTime(at) {
     const v = S.video;
-    const moving = S.opts.countViews && S.state === "playing" && S.phase === "play" && v && !v.paused && !v.seeking && !v.ended;
-    if (moving) {
-      S.watchMs += Math.min(1000, at - (S.watchAt || at));
+    const playing = S.state === "playing" && S.phase === "play" && v && !v.paused && !v.seeking && !v.ended;
+    const step = Math.min(1000, at - (S.watchAt || at));
+    if (playing && S.opts.countViews) {
+      S.watchMs += step;
       if (S.watchMs >= VIEW_AFTER) countView(current());
+    }
+    // a minute of moving picture: the page counts it (Search.html ranking points)
+    if (playing && typeof S.opts.onMinute === "function") {
+      S.minuteMs += step;
+      if (S.minuteMs >= 60000) {
+        S.minuteMs -= 60000;
+        try {
+          S.opts.onMinute(current());
+        } catch {
+          /* the page's own business */
+        }
+      }
     }
     S.watchAt = at;
   }
@@ -2324,6 +2340,7 @@
     window.addEventListener("resize", onResize);
     S.card.focus({ preventScroll: true });
     S.ticks = 0;
+    S.minuteMs = 0;
     S.ticker = setInterval(tick, TICK);
     showControls();
     play(Math.max(0, Math.min(rows.length - 1, Number(index) || 0)));

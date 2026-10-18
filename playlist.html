@@ -89,6 +89,7 @@
         <h1>${escapeHtml(pl.name)}</h1>
         <p class="muted">${escapeHtml(pl.description||"")} · ${t("common.nViewers", { n: Number(pl.viewers||0) })}</p>
         <div class="pl-share">${shareRowHtml(`./Playlist.html?ID=${encodeURIComponent(id)}`, `${pl.name} — @${pl.owner_username} · CineAura`)}</div>
+        ${session?.member_id && session.member_id !== pl.owner_id ? `<p><button class="btn btn-sm btn-ghost" type="button" id="pl-report">${t("rep.btn")}</button></p>` : ""}
         ${pl.rules && vis === "exclusive" ? `<p class="muted">${t("common.conditions")}: ${escapeHtml(pl.rules)}</p>` : ""}
         ${list.map((it)=>`<div class="item-row">
           <img src="${it.poster_path?imgUrl(it.poster_path,"w92"):initialsAvatar(it.title)}" alt="" />
@@ -96,6 +97,8 @@
           <a class="btn btn-sm btn-primary" href="./watch.html?${it.media_type}=${it.tmdb_id}&Playlist=${id}">${t("common.watch")}</a>
         </div>`).join("") || `<p class='empty'>${t("pl.empty")}</p>`}
       </section>`;
+      // (round 31) Report the playlist: Panel > Reports > Content (a valid report costs it ranking points in Search.html)
+      document.getElementById("pl-report")?.addEventListener("click", () => CineAura.reportDialog({ kind: "playlist", id, title: pl.name }));
     });
   </script>
 </body>

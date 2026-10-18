@@ -93,6 +93,82 @@ html[data-theme="day"] .ipl-badge.is-private { color: #5a3fd1; }
 .ipl-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
 .ipl-actions .btn { gap: 6px; }
 
+/* ---------- (round 31) a list shut for the visitor: its lock, its passwords, Request to join ---------- */
+.ipl-card.is-locked { border-style: dashed; }
+.ipl-lock { margin: 0; display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; color: #f2b536; font-weight: 600; line-height: 1.45; }
+.ipl-lock svg { flex: none; margin-top: 2px; }
+.ipl-badge.is-pw { background: rgba(233, 163, 0, 0.16); color: #f2b536; }
+.ipl-badge.is-req { background: rgba(255, 107, 112, 0.16); color: #ff8a8e; }
+.ipl-badge.is-hidden { background: rgba(123, 92, 240, 0.18); color: #a891ff; }
+.ipl-join-sent { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-weight: 600; font-size: 13px; }
+.ipl-join-form { display: grid; gap: 6px; }
+.ipl-join-form textarea { width: 100%; resize: vertical; }
+.ipl-join-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.ipl-join-msg { margin: 0; color: #ff8a8e; font-size: 12.5px; }
+.ipl-join-msg:empty { display: none; }
+.ipl-join-slot:empty { display: none; }
+
+.ipl-row2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ipl-pw-now { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.ipl-pw-clear { font-weight: 600; }
+@media (max-width: 560px) { .ipl-row2 { grid-template-columns: minmax(0, 1fr); } }
+
+/* the list page: recommend / don't recommend, share, report; the gate's password and Request to join */
+.ipl-head-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.ipl-vote {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ipl-vote:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+.ipl-vote.on { background: rgba(1, 180, 228, 0.14); border-color: var(--cyan); color: var(--cyan); }
+.ipl-vote:disabled { opacity: 0.55; cursor: default; }
+.ipl-head-share .share-row { margin: 0; }
+.ipl-report { gap: 6px; }
+.ipl-gate-by { margin: -4px 0 0; color: var(--muted); }
+.ipl-pw-form, .ipl-gate-join { width: min(420px, 100%); display: grid; gap: 6px; text-align: start; }
+.ipl-pw-row { display: flex; gap: 8px; }
+.ipl-pw-row input { flex: 1; min-width: 0; }
+.ipl-pw-form input, .ipl-gate-join textarea, .ipl-join-form textarea {
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.ipl-pw-form input:focus, .ipl-join-form textarea:focus { outline: none; border-color: var(--cyan); }
+.ipl-pw-msg { margin: 0; min-height: 1em; color: #ff8a8e; font-size: 13px; }
+.ipl-pw-msg:empty { display: none; }
+
+/* Dashboard > IPTV > Your lists: the requests to join a private list */
+.ipl-reqs { display: grid; gap: 10px; padding: 14px; margin-bottom: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); }
+.ipl-reqs-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.ipl-reqs-head h3 { margin: 0; font-size: 16px; display: inline-flex; align-items: center; gap: 8px; }
+.ipl-req-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ipl-req { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px; border-radius: 10px; background: var(--sub-bg, rgba(255, 255, 255, 0.04)); }
+.ipl-req-ava { width: 40px; height: 40px; border-radius: 50%; overflow: hidden; display: block; background: var(--sub-bg); }
+.ipl-req-ava img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ipl-req-text { min-width: 0; display: grid; gap: 2px; font-size: 13.5px; }
+.ipl-req-text p { margin: 0; overflow-wrap: anywhere; }
+.ipl-req-text a { color: var(--text); font-weight: 600; }
+.ipl-req-note { padding: 6px 8px; border-radius: 8px; background: rgba(0, 0, 0, 0.18); font-size: 13px; }
+.ipl-req-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ipl-req-st { font-size: 12.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--sub-bg); color: var(--muted); }
+.ipl-req-st.is-approved { background: rgba(66, 183, 42, 0.16); color: #5fd34a; }
+.ipl-req-st.is-rejected { background: rgba(255, 107, 112, 0.14); color: #ff8a8e; }
+@media (max-width: 560px) { .ipl-req { grid-template-columns: 40px minmax(0, 1fr); } .ipl-req-acts, .ipl-req-st { grid-column: 1 / -1; justify-self: end; } }
+
 /* ---------- Search.html > Channels ---------- */
 .ipl-chs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 10px; }
 .ipl-ch {

@@ -132,6 +132,10 @@
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
     key: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4"/><path d="M10.4 12.6L20 3"/><path d="M16.5 6.5l2.5 2.5"/><path d="M14 9l2 2"/></svg>',
     user: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
+    thumbUp: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 11v9H4v-9z"/><path d="M7 11l4-7a2 2 0 0 1 3 1.7V9h5.2a2 2 0 0 1 2 2.4l-1.4 7A2 2 0 0 1 17.8 20H7"/></svg>',
+    thumbDown: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 13V4H4v9z"/><path d="M7 13l4 7a2 2 0 0 0 3-1.7V15h5.2a2 2 0 0 0 2-2.4l-1.4-7A2 2 0 0 0 17.8 4H7"/></svg>',
+    flag: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4"/><path d="M5 4.5h11.5l-2.2 4 2.2 4H5"/></svg>',
+    check: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   };
   const TYPE_LABEL = { all: "chan.f.all", live: "chan.f.live", movie: "chan.f.movie", series: "chan.f.series" };
 
@@ -564,12 +568,15 @@
   const pageTitle = () =>
     memberList ? state.list?.name || t("ipl.listTitle") : freeMode ? t("home.iptv.free") : premiumMode ? t("home.iptv.premium") : pack;
 
-  // ?list=: the publisher, who may see the list, the way back to IPTV.html
+  // ?list=: the publisher, who may see the list, the way back to IPTV.html; (round 31) recommend /
+  // don't recommend, the share buttons and Report (the ranking points of Search.html)
   function listMetaHtml() {
     const l = state.list;
     if (!l) return "";
     const L = LISTS();
     const crit = l.visibility === "exclusive" ? L.criteriaParts(l) : [];
+    const vote = Number(l.vote) || 0;
+    const share = C.shareRowHtml(L.listHref(l.id), `${l.name} — @${l.owner || ""} · CineAura`, { compact: true });
     return `
             <p class="ipl-head-meta">
               ${L.badgeHtml(l)}
@@ -578,25 +585,143 @@
               <a class="ipl-back" href="./IPTV.html">${escapeHtml(t("ipl.allLists"))}</a>
               ${l.mine ? `<a class="ipl-back" href="${escapeHtml(L.MANAGE_HREF)}">${escapeHtml(t("ipl.manage"))}</a>` : ""}
             </p>
-            ${l.description ? `<p class="ipl-head-desc" dir="auto">${escapeHtml(l.description)}</p>` : ""}`;
+            ${l.description ? `<p class="ipl-head-desc" dir="auto">${escapeHtml(l.description)}</p>` : ""}
+            <div class="ipl-head-acts">
+              <button class="ipl-vote${vote === 1 ? " on" : ""}" type="button" data-ipl-vote="1" aria-pressed="${vote === 1}" ${l.mine ? "disabled" : ""} title="${escapeHtml(t("ipl.recommend"))}">${ICON.thumbUp}<span>${escapeHtml(L.fmt(l.likes || 0))}</span><span class="sr-only">${escapeHtml(t("ipl.recommend"))}</span></button>
+              <button class="ipl-vote${vote === -1 ? " on" : ""}" type="button" data-ipl-vote="-1" aria-pressed="${vote === -1}" ${l.mine ? "disabled" : ""} title="${escapeHtml(t("ipl.dontRecommend"))}">${ICON.thumbDown}<span>${escapeHtml(L.fmt(l.dislikes || 0))}</span><span class="sr-only">${escapeHtml(t("ipl.dontRecommend"))}</span></button>
+              <div class="ipl-head-share" data-ipl-share>${share}</div>
+              ${l.mine ? "" : `<button class="btn btn-sm btn-ghost ipl-report" type="button" data-ipl-report>${ICON.flag}<span>${escapeHtml(t("rep.btn"))}</span></button>`}
+            </div>`;
   }
 
-  // ?list=: the visitor may not see this list (or it is gone)
+  // ?list=: the visitor may not see this list (or it is gone). (round 31) A password list asks for one
+  // of its passwords; a private list offers Request to join; a level or a membership says how to get it.
   function refusedHtml() {
     const r = state.refused || {};
     const L = LISTS();
     const acts = [];
-    if (r.reason === "signin") acts.push(`<a class="btn btn-sm btn-primary" href="${escapeHtml(signinUrl())}" data-signin>${escapeHtml(t("common.signin"))}</a>`);
+    let form = "";
+    const signin = `<a class="btn btn-sm btn-primary" href="${escapeHtml(signinUrl())}" data-signin>${escapeHtml(t("common.signin"))}</a>`;
+    if (r.reason === "signin") acts.push(signin);
     if (r.reason === "followers" && r.owner) acts.push(`<a class="btn btn-sm btn-primary" href="${escapeHtml(C.profileHref(r.owner))}">${escapeHtml(t("ipl.seeProfile", { name: `@${r.owner}` }))}</a>`);
+    if (r.reason === "level") acts.push(`<a class="btn btn-sm btn-primary" href="./dashboard.html#points">${escapeHtml(t("ipl.howEarn"))}</a>`);
+    if (r.reason === "plan") acts.push(`<a class="btn btn-sm btn-primary" href="./activate.html">${escapeHtml(t("common.upgrade"))}</a>`);
+    if (r.reason === "password") {
+      const wait = Number(state.pwWait ?? r.wait) || 0;
+      form = `
+        <form class="ipl-pw-form" id="ipl-pw-form" autocomplete="off">
+          <label class="field-label" for="ipl-pw-in">${escapeHtml(t("ipl.pw.label"))}</label>
+          <div class="ipl-pw-row">
+            <input id="ipl-pw-in" type="password" maxlength="64" autocomplete="off" required ${wait ? "disabled" : ""} placeholder="${escapeHtml(t("ipl.pw.ph"))}" />
+            <button class="btn btn-sm btn-primary" type="submit" ${wait ? "disabled" : ""}>${escapeHtml(t("ipl.pw.open"))}</button>
+          </div>
+          <p class="ipl-pw-msg${state.pwMsg ? " show" : ""}" id="ipl-pw-msg" role="alert">${escapeHtml(state.pwMsg || (wait ? t("ipl.pw.locked", { n: Math.ceil(wait / 60) }) : ""))}</p>
+        </form>`;
+    }
+    if (r.reason === "private") {
+      if (!r.member) acts.push(signin);
+      else if (r.request === "pending" || state.joinSent) acts.push(`<span class="ipl-join-sent">${ICON.check}<span>${escapeHtml(t("ipl.join.sent"))}</span></span>`);
+      else if (r.request !== "rejected") {
+        form = `
+        <form class="ipl-join-form ipl-gate-join" id="ipl-join-gate">
+          <label class="field-label" for="ipl-join-note">${escapeHtml(t("ipl.join.noteLabel"))}</label>
+          <textarea id="ipl-join-note" rows="2" maxlength="300" placeholder="${escapeHtml(t("ipl.join.notePh"))}"></textarea>
+          <div class="ipl-join-acts"><button class="btn btn-sm btn-primary" type="submit">${escapeHtml(t("ipl.join.btn"))}</button></div>
+          <p class="ipl-join-msg" id="ipl-join-msg" role="status">${escapeHtml(state.joinMsg || "")}</p>
+        </form>`;
+      }
+    }
     acts.push(`<a class="btn btn-sm btn-ghost" href="./IPTV.html">${escapeHtml(t("ipl.allLists"))}</a>`);
+    const named = ["private", "password", "level", "plan"].includes(r.reason) && r.name;
     return `
       <section class="glass dash-main chl-page ipl-gate">
-        <span class="ipl-gate-ico" aria-hidden="true">${ICON.lock}</span>
+        <span class="ipl-gate-ico" aria-hidden="true">${r.reason === "password" ? ICON.key : ICON.lock}</span>
         <p class="eyebrow">${escapeHtml(t("ipl.listTitle"))}</p>
-        <h1>${escapeHtml(t(r.reason === "not_found" || !r.reason ? "ipl.no.foundTitle" : "ipl.no.title"))}</h1>
+        <h1>${escapeHtml(named ? r.name : t(r.reason === "not_found" || !r.reason ? "ipl.no.foundTitle" : "ipl.no.title"))}</h1>
+        ${named && r.owner ? `<p class="ipl-gate-by">${escapeHtml(t("ipl.by"))} <a href="${escapeHtml(C.profileHref(r.owner))}"><bdi>@${escapeHtml(r.owner)}</bdi></a></p>` : ""}
         <p class="muted">${escapeHtml(L ? L.refusalText(r) : t("chan.loadFail"))}</p>
+        ${form}
         <div class="ipl-gate-acts">${acts.join("")}</div>
       </section>`;
+  }
+
+  // the password of an exclusive list: right -> the list opens (the page reads it again)
+  async function submitPassword() {
+    const L = LISTS();
+    const input = document.getElementById("ipl-pw-in");
+    const btn = document.querySelector("#ipl-pw-form button[type=submit]");
+    if (!L || !input || !input.value) return;
+    btn.disabled = true;
+    const res = await L.call("iptv_list_unlock", { p_id: listId, p_member: String(getSession()?.member_id || ""), p_password: input.value });
+    btn.disabled = false;
+    const r = res.ok ? res.data || {} : { reason: res.setup ? "setup" : "network" };
+    if (r.ok) {
+      toast(t("ipl.pw.ok"));
+      location.reload();
+      return;
+    }
+    state.pwWait = r.reason === "locked" ? Number(r.wait) || 900 : 0;
+    state.pwMsg = r.reason === "wrong" ? t("ipl.pw.wrong", { n: r.left ?? 0 }) : r.reason === "locked" ? t("ipl.pw.locked", { n: Math.ceil((Number(r.wait) || 900) / 60) })
+      : r.reason === "criteria" ? L.refusalText({ ...state.refused, reason: r.why }) : t("ipl.err.failed");
+    render();
+    document.getElementById("ipl-pw-in")?.focus();
+  }
+
+  // Request to join a private list (the gate)
+  async function submitJoin() {
+    const L = LISTS();
+    const btn = document.querySelector("#ipl-join-gate button[type=submit]");
+    if (!L || !btn) return;
+    btn.disabled = true;
+    const r = await L.requestJoin(listId, document.getElementById("ipl-join-note")?.value.trim() || "");
+    btn.disabled = false;
+    if (r.ok) {
+      state.joinSent = true;
+      state.joinMsg = "";
+      toast(t("ipl.join.done"));
+    } else {
+      state.joinMsg = L.joinError(r);
+    }
+    render();
+  }
+
+  // recommend / don't recommend the list (again: take the vote back)
+  async function voteList(v) {
+    const L = LISTS();
+    const l = state.list;
+    const me = String(getSession()?.member_id || "");
+    if (!L || !l) return;
+    if (!me) {
+      location.href = signinUrl();
+      return;
+    }
+    const next = Number(l.vote) === v ? 0 : v;
+    const res = await L.call("iptv_list_vote", { p_member: me, p_id: l.id, p_vote: next });
+    if (!res.ok || !res.data?.ok) {
+      toast(t(res.data?.reason === "blocked" ? "ipl.voteBlocked" : "ipl.err.failed"));
+      return;
+    }
+    Object.assign(l, { vote: res.data.vote, likes: res.data.likes, dislikes: res.data.dislikes });
+    render();
+  }
+
+  // a share button of the list: counted once per viewer, network and 10 minutes
+  function shareList(btn) {
+    const L = LISTS();
+    const l = state.list;
+    if (!L || !l || l.mine) return;
+    const net = (btn.className.match(/share-([a-z]+)/g) || []).map((x) => x.slice(6)).find((x) => x !== "btn") || "copy";
+    L.call("iptv_list_share", { p_id: l.id, p_viewer: String(getSession()?.member_id || "") || C.stableGuestId(), p_network: net });
+  }
+
+  // a watched minute of a channel (the player, once a minute): the ranking points of Search.html
+  function countMinute(row) {
+    const me = String(getSession()?.member_id || "");
+    if (!me || !row) return;
+    const name = String(row.channel_name || "");
+    if (!name) return;
+    if (memberList) LISTS()?.call("iptv_list_minute", { p_member: me, p_id: listId, p_channel: name });
+    else C.rpc("channel_minute", { p_member: me, p_channel: name }).catch(() => {});
   }
 
   function render() {
@@ -1364,6 +1489,7 @@
     player().open(list, index, {
       report: true,
       countViews: !memberList, // home page > Most watched channels (CineAura's own lists)
+      onMinute: countMinute, // the ranking points of Search.html
       ...(account ? { accounts: [account] } : {}),
       onResult(row, ok) {
         if (!row || !row._ck) return;
@@ -1473,7 +1599,7 @@
   function openFromAddress() {
     let wanted = (params.get("channel") || "").trim();
     const byName = (params.get("name") || "").trim().slice(0, 200);
-    if (memberList && (wanted || byName) && !state.rows.some((r) => String(r.id) === wanted)) {
+    if ((memberList || (state.m3u && byName && !/^\d+$/.test(wanted))) && (wanted || byName) && !state.rows.some((r) => String(r.id) === wanted)) {
       // a result of Search.html > Channels from before the playlist changed: the same name
       const same = byName ? sameChannel({ channel_name: byName, stream_url: "" }) : null;
       if (!same) {
@@ -1763,6 +1889,17 @@
         relock();
         return;
       }
+      const vote = e.target.closest("[data-ipl-vote]");
+      if (vote) {
+        voteList(Number(vote.dataset.iplVote));
+        return;
+      }
+      if (e.target.closest("[data-ipl-report]")) {
+        C.reportDialog?.({ kind: "iptv_list", id: listId, title: state.list?.name || "" });
+        return;
+      }
+      const shareBtn = e.target.closest("[data-ipl-share] .share-btn");
+      if (shareBtn) shareList(shareBtn);
       const way = e.target.closest("[data-unlock-way]");
       if (way) {
         switchWay(way.dataset.unlockWay);
@@ -1789,6 +1926,16 @@
     });
     // the premium gate's two forms (painted again with the page)
     root.addEventListener("submit", (e) => {
+      if (e.target.id === "ipl-pw-form") {
+        e.preventDefault();
+        submitPassword();
+        return;
+      }
+      if (e.target.id === "ipl-join-gate") {
+        e.preventDefault();
+        submitJoin();
+        return;
+      }
       const kind = { "ul-login": "login", "ul-code-form": "code" }[e.target.id];
       if (!kind) return;
       e.preventDefault();

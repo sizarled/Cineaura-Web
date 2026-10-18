@@ -716,9 +716,10 @@
     };
   }
 
-  // ---------- Reports: watch links (reportlinks) + channels (channel_reports) + the Market (market_reports) ----------
+  // ---------- Reports: watch links (reportlinks) + channels (channel_reports) + the Market (market_reports)
+  // + (round 31) content: videos, playlists, IPTV lists and posts (content_reports, sql/search.sql) ----------
   async function viewReports(main) {
-    const tab = ["channels", "market"].includes(state.reportTab) ? state.reportTab : "links";
+    const tab = ["channels", "market", "content"].includes(state.reportTab) ? state.reportTab : "links";
     main.innerHTML = `
       <p class="eyebrow">${t("panel.nav.reports")}</p>
       <h1>${t("panel.reportsTitle")}</h1>
@@ -726,6 +727,7 @@
         <button type="button" role="tab" class="follow-tab${tab === "links" ? " active" : ""}" aria-selected="${tab === "links"}" data-rtab="links">${t("panel.chr.tabLinks")}</button>
         <button type="button" role="tab" class="follow-tab${tab === "channels" ? " active" : ""}" aria-selected="${tab === "channels"}" data-rtab="channels">${t("panel.chr.tabChannels")}<span class="follow-count" id="chr-open-count" hidden></span></button>
         <button type="button" role="tab" class="follow-tab${tab === "market" ? " active" : ""}" aria-selected="${tab === "market"}" data-rtab="market">${t("panel.mkr.tab")}<span class="follow-count" id="mkr-open-count" hidden></span></button>
+        <button type="button" role="tab" class="follow-tab${tab === "content" ? " active" : ""}" aria-selected="${tab === "content"}" data-rtab="content">${t("panel.ctr.tab")}<span class="follow-count" id="ctr-open-count" hidden></span></button>
       </div>
       <div class="follow-pane" id="rp-pane"></div>`;
     main.onclick = (e) => {
@@ -737,6 +739,7 @@
     const pane = main.querySelector("#rp-pane");
     if (tab === "channels") await viewChannelReports(pane);
     else if (tab === "market") await viewMarketReports(pane);
+    else if (tab === "content") await viewContentReports(pane);
     else await viewLinkReports(pane);
     refreshChannelReportCount();
   }
@@ -785,22 +788,167 @@
   // Open channel reports and open Market reports: the badge in the side menu (both) and the
   // counts on their tabs.
   async function refreshChannelReportCount() {
-    const [n, m] = await Promise.all([
+    const [n, m, c] = await Promise.all([
       window.CineAura.countRows("/rest/v1/channel_reports?status=eq.open&select=id").catch(() => 0),
       marketReportCount(),
+      contentReportCount(),
     ]);
     const nav = $('#panel-root .side-nav [data-section="reports"]');
     if (nav) {
       nav.querySelector(".crp-badge")?.remove();
-      if (n + m) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge">${n + m > 99 ? "99+" : n + m}</span>`);
+      if (n + m + c) nav.insertAdjacentHTML("beforeend", `<span class="crp-badge">${n + m + c > 99 ? "99+" : n + m + c}</span>`);
     }
-    [["#chr-open-count", n], ["#mkr-open-count", m]].forEach(([sel, v]) => {
+    [["#chr-open-count", n], ["#mkr-open-count", m], ["#ctr-open-count", c]].forEach(([sel, v]) => {
       const el = $(sel);
       if (!el) return;
       el.textContent = String(v);
       el.hidden = !v;
     });
   }
+  // (0 when sql/search.sql is not run, or the account has neither the Reports nor the Content section)
+  async function contentReportCount() {
+    const r = await window.CineAura.rpc("content_reports_count", { p_token: state.staff?.token || "" }).catch(() => null);
+    return r?.ok && Number.isFinite(Number(r.data)) ? Number(r.data) : 0;
+  }
+
+  // ---------- Reports > Content (sql/search.sql): the Report button of a video, a playlist, an IPTV list
+  // and a post. Reports on the same item form one card; the team marks them valid (each one then costs
+  // the item 60 ranking points in Search.html) or dismisses them, and opens the item to act on it
+  // (Panel > Content suspends a video, a playlist or a list).
+  const CTR_REASONS = ["spam", "misleading", "offensive", "violent", "copyright", "broken", "other"];
+  const CTR_KINDS = ["video", "playlist", "iptv_list", "post"];
+  async function viewContentReports(pane) {
+    const filter = ["open", "closed", "all"].includes(state.ctrFilter) ? state.ctrFilter : "open";
+    const kind = CTR_KINDS.includes(state.ctrKind) ? state.ctrKind : "";
+    const seq = (state.ctrSeq = (state.ctrSeq || 0) + 1);
+    const res = await window.CineAura.rpc("content_reports_admin", { p_token: state.staff?.token || "", p_filter: filter, p_kind: kind, p_limit: 600 }).catch(() => null);
+    if (seq !== state.ctrSeq || !pane.isConnected) return;
+    const chip = (k) => `<button type="button" class="crp-filter${filter === k ? " active" : ""}" data-ctr-filter="${k}">${t(`panel.chr.${k}`)}</button>`;
+    const kchip = (k) => `<button type="button" class="crp-filter${kind === k ? " active" : ""}" data-ctr-kind="${k}">${t(k ? `panel.ctr.k.${k}` : "panel.ctr.k.all")}</button>`;
+    const head = `
+      <p class="muted">${t("panel.ctr.lead")}</p>
+      <div class="crp-bar"><div class="crp-filters">${chip("open")}${chip("closed")}${chip("all")}</div><div class="crp-filters">${["", ...CTR_KINDS].map(kchip).join("")}</div></div>`;
+    if (!res?.ok || !res.data?.ok) {
+      const raw = JSON.stringify(res?.data || {});
+      const key = /staff_auth/.test(raw) ? "pza.errAuth"
+        : /staff_forbidden/.test(raw) ? "panel.ctr.forbidden"
+        : res?.status === 404 || /PGRST202|42883|schema cache|does not exist/i.test(raw) ? "panel.ctr.setup" : "panel.actFail";
+      pane.innerHTML = `${head}<div class="form-alert show warn">${t(key)}</div>`;
+      pane.onclick = (e) => onContentReportClick(e, pane, []);
+      return;
+    }
+    const groups = [];
+    const byKey = new Map();
+    (res.data.items || []).forEach((r) => {
+      const key = `${r.kind}:${r.target_id}`;
+      let g = byKey.get(key);
+      if (!g) {
+        g = { key, kind: r.kind, id: r.target_id, target: r.target, items: [] };
+        byKey.set(key, g);
+        groups.push(g);
+      }
+      g.items.push(r);
+    });
+    const reasonText = (r) => t(CTR_REASONS.includes(r) ? `rep.r.${r}` : r);
+    const statusOf = (g) => (g.items.some((x) => x.status === "open") ? "open" : g.items.some((x) => x.status === "valid") ? "valid" : "dismissed");
+    const card = (g, i) => {
+      const status = statusOf(g);
+      const tg = g.target || {};
+      const gone = !g.target;
+      const name = tg.title || g.id;
+      const counts = {};
+      g.items.forEach((x) => { counts[x.reason] = (counts[x.reason] || 0) + 1; });
+      const reasons = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      const valid = g.items.filter((x) => x.status === "valid").length;
+      return `
+        <article class="crp-card ctr-card ${status === "valid" ? "resolved" : status}" data-ctr="${i}">
+          <div class="crp-top">
+            <span class="crp-logo mkr-img"><img src="${escapeHtml(tg.thumb || initialsAvatar(name || "CA"))}" alt="" loading="lazy" referrerpolicy="no-referrer" /></span>
+            <div class="crp-title">
+              <h3>${gone ? escapeHtml(name) : `<a href="${escapeHtml(tg.href || "#")}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`}</h3>
+              <p>${t(`panel.ctr.k.${g.kind}`)} · <span dir="ltr">${escapeHtml(g.id)}</span>${tg.owner?.username ? ` · ${t("panel.owner")}: <strong>@${escapeHtml(tg.owner.username)}</strong>` : ""}</p>
+              <p>${t("panel.chr.last", { date: escapeHtml(fmtWhen(g.items[0].created_at)) })}</p>
+            </div>
+            <span class="crp-count">${t("panel.chr.reports", { n: g.items.length })}</span>
+          </div>
+          <div class="crp-tags">
+            <span class="crp-tag st-${status === "valid" ? "resolved" : status}">${t(`panel.ctr.st.${status}`)}</span>
+            ${valid ? `<span class="crp-tag ctr-pts">${t("panel.ctr.costs", { n: valid * 60 })}</span>` : ""}
+            ${tg.suspended ? `<span class="crp-tag mkr-susp">${t("panel.ctr.suspended")}</span>` : ""}
+            ${gone ? `<span class="crp-tag">${t("panel.mkr.gone")}</span>` : ""}
+            ${reasons.map(([r, n]) => `<span class="crp-tag">${escapeHtml(reasonText(r))} × ${n}</span>`).join("")}
+          </div>
+          <details class="crp-details">
+            <summary>${t("panel.chr.reporters")} (${g.items.length})</summary>
+            <ul class="crp-items">${g.items.map((x) => `
+              <li class="crp-item">
+                <strong>@${escapeHtml(x.reporter?.username || x.reporter?.id || "")}</strong>
+                <span class="muted"> · ${escapeHtml(x.reporter?.id || "")} · ${escapeHtml(reasonText(x.reason))} · ${escapeHtml(fmtWhen(x.created_at))} · ${t(`panel.ctr.st.${x.status}`)}</span>
+                ${x.note ? `<p>${escapeHtml(x.note)}</p>` : ""}
+                ${x.handled_by && x.status !== "open" ? `<p class="muted">${escapeHtml(x.handled_by)} · ${escapeHtml(fmtWhen(x.handled_at))}</p>` : ""}
+              </li>`).join("")}
+            </ul>
+          </details>
+          <div class="crp-actions">
+            ${status === "open" ? `
+              <button class="btn btn-sm btn-danger" type="button" data-ctr-set="valid">${t("panel.ctr.valid")}</button>
+              <button class="btn btn-sm btn-ghost" type="button" data-ctr-set="dismissed">${t("panel.chr.dismiss")}</button>` : `
+              <button class="btn btn-sm btn-ghost" type="button" data-ctr-set="open">${t("panel.chr.reopen")}</button>`}
+            ${(g.kind === "video" || g.kind === "iptv_list" || (g.kind === "playlist" && /^CPL/.test(g.id))) && !gone ? `<button class="btn btn-sm btn-ghost" type="button" data-ctr-content>${t("panel.ctr.toContent")}</button>` : ""}
+            <button class="btn btn-sm btn-danger" type="button" data-ctr-delete>${t("panel.chr.delete")}</button>
+          </div>
+        </article>`;
+    };
+    pane.innerHTML = `${head}<div class="crp-list">${groups.map(card).join("") || `<p class="empty">${t("panel.ctr.none")}</p>`}</div>`;
+    pane.onclick = (e) => onContentReportClick(e, pane, groups);
+  }
+
+  async function onContentReportClick(e, pane, groups) {
+    const f = e.target.closest("[data-ctr-filter]");
+    if (f) {
+      state.ctrFilter = f.dataset.ctrFilter;
+      viewContentReports(pane);
+      return;
+    }
+    const k = e.target.closest("[data-ctr-kind]");
+    if (k) {
+      state.ctrKind = k.dataset.ctrKind;
+      viewContentReports(pane);
+      return;
+    }
+    const btn = e.target.closest("[data-ctr-set], [data-ctr-delete], [data-ctr-content]");
+    const cardEl = btn?.closest("[data-ctr]");
+    const g = cardEl && groups[Number(cardEl.dataset.ctr)];
+    if (!g) return;
+    const rpc = (fn, args) => window.CineAura.rpc(fn, { p_token: state.staff?.token || "", ...args }).catch(() => null);
+    const fail = (r) => {
+      const raw = JSON.stringify(r?.data || {});
+      toast(t(/staff_auth/.test(raw) ? "pza.errAuth" : /staff_forbidden/.test(raw) ? "panel.ctr.forbidden" : "panel.actFail"));
+    };
+    if (btn.hasAttribute("data-ctr-content")) {
+      // Panel > Content, on that item (its videos, playlists or IPTV lists tab, searched by its id)
+      adminCtx().go("content", { contentTab: { video: "videos", playlist: "playlists", iptv_list: "iptv" }[g.kind] || "videos", q: g.id });
+      return;
+    }
+    if (btn.hasAttribute("data-ctr-set")) {
+      const status = btn.dataset.ctrSet;
+      const items = status === "open" ? g.items.filter((x) => x.status !== "open") : g.items.filter((x) => x.status === "open");
+      if (!items.length) return;
+      const r = await rpc("content_reports_set", { p_ids: items.map((x) => x.id), p_status: status });
+      if (!(r?.ok && r.data?.ok)) return fail(r);
+      toast(t(status === "valid" ? "panel.ctr.markedValid" : "panel.chr.updated"));
+      viewContentReports(pane).then(refreshChannelReportCount);
+      return;
+    }
+    if (btn.hasAttribute("data-ctr-delete")) {
+      if (!confirm(t("panel.chr.deleteAsk"))) return;
+      const r = await rpc("content_reports_delete", { p_ids: g.items.map((x) => x.id) });
+      if (!(r?.ok && r.data?.ok)) return fail(r);
+      toast(t("panel.chr.deleted"));
+      viewContentReports(pane).then(refreshChannelReportCount);
+    }
+  }
+
   // (0 when sql/market.sql is not run, or the account has no Reports section)
   async function marketReportCount() {
     const r = await window.CineAura.rpc("market_reports_count", { p_token: state.staff?.token || "" }).catch(() => null);

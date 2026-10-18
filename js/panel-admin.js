@@ -225,6 +225,7 @@
     reports_links: ["pa.att.reportsLinks", "reports", { reportTab: "links" }],
     reports_channels: ["pa.att.reportsChannels", "reports", { reportTab: "channels" }],
     reports_market: ["pa.att.reportsMarket", "reports", { reportTab: "market" }],
+    reports_content: ["pa.att.reportsContent", "reports", { reportTab: "content" }],
     claims: ["pa.att.claims", "prizes"],
     messages: ["pa.att.messages", "messages"],
     returns: ["pa.att.returns", "market", { marketTab: "orders", filter: "return_requested" }],
@@ -308,7 +309,7 @@
     const misc = [];
     if (d.prizes) misc.push(tile(t("pa.ov.claims"), num(Number(d.prizes.submitted || 0) + Number(d.prizes.review || 0)), "", "prizes", null, Number(d.prizes.submitted || 0) + Number(d.prizes.review || 0) ? "warn" : ""));
     if (d.messages) misc.push(tile(t("pa.ov.unread"), num(d.messages.unread), esc(t("pa.ov.messagesSub", { n: num(d.messages.all) })), "messages", null, d.messages.unread ? "warn" : ""));
-    if (d.reports) misc.push(tile(t("pa.ov.reports"), num(Number(d.reports.links || 0) + Number(d.reports.channels || 0) + Number(d.reports.market || 0)), "", "reports"));
+    if (d.reports) misc.push(tile(t("pa.ov.reports"), num(Number(d.reports.links || 0) + Number(d.reports.channels || 0) + Number(d.reports.market || 0) + Number(d.reports.content || 0)), "", "reports"));
     if (d.announce) {
       const b = d.announce.banner || {};
       misc.push(tile(t("pa.ov.banner"), esc(t(b.active ? "pa.on" : "pa.off")), d.announce.last ? esc(t("pa.ov.lastAnn", { title: d.announce.last.title, date: day(d.announce.last.created_at) })) : "", "announce", null, b.active ? "ok" : ""));

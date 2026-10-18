@@ -2080,6 +2080,61 @@
     return { ok: true, rows: Array.isArray(res.data) ? res.data : [] };
   }
 
+  // (round 31) the requests to join the member's private lists (iptv_list_requests): waiting ones
+  // with Accept / Decline, and the answered ones on demand
+  async function loadJoinRequests(all) {
+    const L = window.CineAuraIptvLists;
+    if (!L || !state.member) return null;
+    const res = await L.call("iptv_list_requests", { p_member: state.member.member_id, p_filter: all ? "all" : "pending", p_limit: 100 });
+    return res.ok && res.data?.ok ? res.data : null;
+  }
+
+  function joinRequestsHtml(got, all) {
+    const L = window.CineAuraIptvLists;
+    if (!got) return "";
+    const items = Array.isArray(got.items) ? got.items : [];
+    const row = (r) => {
+      const who = r.member?.username || r.member?.id || "";
+      const status = r.status === "pending"
+        ? `<div class="ipl-req-acts">
+             <button class="btn btn-sm btn-primary" type="button" data-req-ok="${escapeHtml(r.id)}">${escapeHtml(t("ipl.req.accept"))}</button>
+             <button class="btn btn-sm btn-ghost" type="button" data-req-no="${escapeHtml(r.id)}">${escapeHtml(t("ipl.req.decline"))}</button>
+           </div>`
+        : `<span class="ipl-req-st is-${escapeHtml(r.status)}">${escapeHtml(t(`ipl.req.st.${r.status}`))}</span>`;
+      return `
+        <li class="ipl-req" data-req="${escapeHtml(r.id)}">
+          <a class="ipl-req-ava" href="${escapeHtml(C.profileHref(who))}">${C.avatarImg(r.member?.id || "", who, r.member?.avatar || "")}</a>
+          <div class="ipl-req-text">
+            <p><a href="${escapeHtml(C.profileHref(who))}"><bdi>@${escapeHtml(who)}</bdi></a>${r.member?.country ? ` · ${escapeHtml(C.countryName(r.member.country) || r.member.country)}` : ""}</p>
+            <p class="muted">${escapeHtml(t("ipl.req.asks", { name: r.list?.name || "" }))} · ${escapeHtml(L ? L.timeAgo(r.created_at) : "")}</p>
+            ${r.note ? `<p class="ipl-req-note" dir="auto">${escapeHtml(r.note)}</p>` : ""}
+          </div>
+          ${status}
+        </li>`;
+    };
+    return `
+      <section class="ipl-reqs" id="ipl-reqs">
+        <div class="ipl-reqs-head">
+          <h3>${escapeHtml(t("ipl.req.title"))} <span class="follow-count">${escapeHtml(String(got.pending || 0))}</span></h3>
+          <button class="btn btn-sm btn-ghost" type="button" data-req-all>${escapeHtml(t(all ? "ipl.req.onlyWaiting" : "ipl.req.showAll"))}</button>
+        </div>
+        ${items.length ? `<ul class="ipl-req-list">${items.map(row).join("")}</ul>` : `<p class="muted">${escapeHtml(t(all ? "ipl.req.none" : "ipl.req.noneWaiting"))}</p>`}
+      </section>`;
+  }
+
+  async function drawJoinRequests(pane) {
+    const box = pane.querySelector("#ipl-reqs-box");
+    if (!box) return;
+    const lists = pane._lists || [];
+    if (!lists.some((l) => l.visibility === "private")) {
+      box.innerHTML = "";
+      return;
+    }
+    const got = await loadJoinRequests(Boolean(pane._reqAll));
+    if (!pane.isConnected) return;
+    box.innerHTML = joinRequestsHtml(got, Boolean(pane._reqAll));
+  }
+
   function drawMyLists(pane, got) {
     const L = window.CineAuraIptvLists;
     pane._lists = got.rows;
@@ -2098,7 +2153,9 @@
             <a class="btn btn-sm btn-ghost" href="./IPTV.html">${escapeHtml(t("ipl.pageLink"))}</a>
           </div>
         </div>
+        <div id="ipl-reqs-box"></div>
         ${body}`;
+    drawJoinRequests(pane);
   }
 
   async function reloadMyLists(pane) {
@@ -2112,6 +2169,22 @@
     pane.onclick = async (e) => {
       if (e.target.closest("[data-ipl-new]")) {
         L.openForm({ onSaved: () => reloadMyLists(pane) });
+        return;
+      }
+      if (e.target.closest("[data-req-all]")) {
+        pane._reqAll = !pane._reqAll;
+        drawJoinRequests(pane);
+        return;
+      }
+      const answer = e.target.closest("[data-req-ok], [data-req-no]");
+      if (answer) {
+        const ok = answer.hasAttribute("data-req-ok");
+        answer.disabled = true;
+        const r = await L.call("iptv_list_request_answer", {
+          p_member: state.member.member_id, p_id: Number(ok ? answer.dataset.reqOk : answer.dataset.reqNo), p_action: ok ? "approve" : "reject",
+        });
+        toast(r.ok && r.data?.ok ? t(ok ? "ipl.req.accepted" : "ipl.req.declined") : t(r.data?.reason === "state" ? "ipl.req.stale" : "ipl.err.failed"));
+        await reloadMyLists(pane);
         return;
       }
       const edit = e.target.closest("[data-ipl-edit]");

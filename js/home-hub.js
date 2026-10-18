@@ -5,7 +5,7 @@
  *   What's new             the numbers under the cards: products on sale, videos, IPTV lists, your level
  *   the Market             trending products and popular categories (market_home), the top stores
  *                          with their tier (market_top_stores); hidden without sql/market.sql
- *   members' IPTV lists    the most viewed lists the visitor may see (iptv_lists_search)
+ *   members' IPTV lists    the most viewed lists the visitor may open (iptv_lists_search, filter open)
  *   Points & levels        the member's own level and the way to the next one (CineAura.memberPoints),
  *                          and the levels LV0 to LV Max with their multipliers
  * Every part stays as the page shipped it when its SQL is not run (or the call fails).
@@ -93,7 +93,7 @@
     const [prods, vids, lists] = await Promise.all([
       call("market_search", { p_member: memberId(), p_q: "", p_type: "products", p_sort: "", p_country: "", p_kind: "", p_category: "", p_store: "", p_limit: 1, p_offset: 0 }),
       call("content_search", { p_member: memberId(), p_q: "", p_sort: "date", p_limit: 1, p_offset: 0 }),
-      call("iptv_lists_search", { p_member: memberId(), p_q: "", p_sort: "views", p_filter: "", p_limit: 1, p_offset: 0 }),
+      call("iptv_lists_search", { p_member: memberId(), p_q: "", p_sort: "views", p_filter: "open", p_limit: 1, p_offset: 0 }),
     ]);
     const n = (r) => {
       const d = payload(r);
@@ -156,8 +156,8 @@
   async function lists() {
     const box = document.getElementById("hh-lists");
     if (!box) return;
-    const d = payload(await call("iptv_lists_search", { p_member: memberId(), p_q: "", p_sort: "views", p_filter: "", p_limit: 8, p_offset: 0 }));
-    const items = Array.isArray(d?.items) ? d.items.filter((l) => l.ready !== false) : [];
+    const d = payload(await call("iptv_lists_search", { p_member: memberId(), p_q: "", p_sort: "views", p_filter: "open", p_limit: 8, p_offset: 0 }));
+    const items = Array.isArray(d?.items) ? d.items.filter((l) => l.ready !== false && !l.locked) : [];
     if (!items.length) return;
     document.getElementById("hh-list-grid").innerHTML = items
       .map((l) => `

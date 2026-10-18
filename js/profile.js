@@ -1404,11 +1404,15 @@
           <p class="muted"><a href="${escapeHtml(profileHref(owner))}"><bdi>@${escapeHtml(owner)}</bdi></a> · ${escapeHtml(pcCount(p.count))} · ${escapeHtml(t("prof.pc.updated", { when: V.timeAgo(p.updated_at) }))}</p>
         </div>
         <div class="pc-plshare">${shareRowHtml(href, `«${p.name || ""}» — @${owner} · CineAura`, { compact: true })}</div>
+        ${state.me && p.owner_id !== state.me.member?.member_id ? `<button class="btn btn-sm btn-ghost pc-report" type="button" data-pl-report="${escapeHtml(p.id)}">${escapeHtml(t("rep.btn"))}</button>` : ""}
       </div>
       ${items.length
         ? `<ol class="vgrid pc-grid">${items.map((x, i) => `<li class="pc-item">${V.cardHtml(x, { rank: i + 1, vis: true })}</li>`).join("")}</ol>`
         : `<div class="glass vs-none pc-none"><p>${escapeHtml(t("prof.pc.plEmpty"))}</p></div>`}`;
     V.observeCards(pane);
+    pane.querySelector("[data-pl-report]")?.addEventListener("click", (e) => {
+      window.CineAura.reportDialog({ kind: "playlist", id: e.currentTarget.dataset.plReport, title: p.name || "" });
+    });
   }
 
   // ---------- Rich posts (TMDB info / cast / trailer) ----------
@@ -1500,6 +1504,7 @@
       ${hideVote ? "" : `<div class="prof-actions">
         <button class="btn btn-sm ${mine === "up" ? "btn-vote-on" : "btn-ghost"}" data-vote="up" data-pid="${escapeHtml(p.post_id)}" type="button">${t("prof.recommendBtn", { n: up })}</button>
         <button class="btn btn-sm ${mine === "down" ? "btn-vote-on" : "btn-ghost"}" data-vote="down" data-pid="${escapeHtml(p.post_id)}" type="button">${t("prof.dont", { n: down })}</button>
+        ${state.me && p.owner_id !== state.me.member?.member_id ? `<button class="btn btn-sm btn-ghost post-report" data-post-report="${escapeHtml(p.post_id)}" type="button">${escapeHtml(t("rep.btn"))}</button>` : ""}
       </div>`}
       <div class="stack" style="margin-top:10px">
         ${(comments || []).map((c) => `<p><a href="${profileHref(c.username)}"><strong>@${escapeHtml(c.username)}</strong></a> ${escapeHtml(c.comment)}</p>`).join("")}
@@ -1509,6 +1514,13 @@
   }
 
   async function onPostClick(e, refresh) {
+    // (round 31) Report a post (Panel > Reports > Content; a valid report costs it ranking points)
+    const rep = e.target.closest("[data-post-report]");
+    if (rep) {
+      const post = state.postCache.get(rep.dataset.postReport);
+      window.CineAura.reportDialog({ kind: "post", id: rep.dataset.postReport, title: post?.title || "" });
+      return;
+    }
     const pmEdit = e.target.closest("[data-pm-edit]");
     const pmDel = e.target.closest("[data-pm-del]");
     if (pmEdit || pmDel) {
@@ -2359,6 +2371,16 @@
     main.querySelectorAll("[data-ck]").forEach((b) => {
       b.onclick = () => draw(b.dataset.ck);
     });
+    // Content.html > Recommend in a post / Write a review: #create/recommendation/CT… | #create/review/CT…
+    const want = state.createWant;
+    state.createWant = null;
+    if (want && ["recommendation", "reclist", "review"].includes(want.kind)) {
+      main.querySelectorAll("[data-ck]").forEach((b) => {
+        b.className = `btn btn-sm ${b.dataset.ck === want.kind ? "btn-primary" : "btn-ghost"}`;
+      });
+      drawRichComposer($("#create-box"), want.kind, { video: want.video });
+      return;
+    }
     draw("playlist");
   }
 
@@ -2393,7 +2415,9 @@
   }
 
   // ---------- Rich composer: recommendation / list / review ----------
-  function drawRichComposer(box, kind) {
+  // (round 31) the items can be TMDB titles or members' videos (CineAura videos, content_search);
+  // opts.video: a video to start with (Content.html > Recommend in a post / Write a review)
+  function drawRichComposer(box, kind, opts = {}) {
     const d = (state.draft = {
       kind,
       items: [],
@@ -2492,10 +2516,29 @@
       preview();
     };
 
+    // a member's video (CT…): its card (content_get), never TMDB
+    const addVideo = async (id) => {
+      const key = `video:${id}`;
+      if (d.items.some((it) => Rich.itemKey(it) === key)) return toast(t("rich.already"));
+      const results = $("#tp-results");
+      if (results) results.hidden = true;
+      $("#tp-q").value = "";
+      const V = window.CineAuraVideos;
+      const res = V ? await V.call("content_get", { p_id: id, p_member: V.memberId() }) : { ok: false };
+      const c = res.ok ? res.data?.content : null;
+      if (!c || res.data?.access !== "ok") return toast(t("rich.videoGone"));
+      const info = Rich.fromVideo(c);
+      if (multi) d.items.push(info);
+      else d.items = [info];
+      const titleInput = $("#c-title");
+      if (titleInput && !titleInput.value.trim() && !multi && !isReview) titleInput.value = info.title;
+      preview();
+    };
     const addItem = async (type, id) => {
+      if (type === "video") return addVideo(String(id));
       if (isReview && type === "person") return toast(t("rev.onlyTitles"));
       const key = `${type}:${id}`;
-      if (d.items.some((it) => `${it.media_type}:${it.tmdb_id}` === key)) return toast(t("rich.already"));
+      if (d.items.some((it) => Rich.itemKey(it) === key)) return toast(t("rich.already"));
       const results = $("#tp-results");
       if (results) results.hidden = true;
       $("#tp-q").value = "";
@@ -2523,18 +2566,23 @@
       }
       const mine = ++seq;
       let rows = [];
-      try {
-        const res = await tmdb(`/search/multi?query=${encodeURIComponent(q)}&include_adult=false&page=1`);
-        rows = (res.results || []).filter((r) =>
-          isReview ? ["movie", "tv"].includes(r.media_type) : ["movie", "tv", "person"].includes(r.media_type)
-        );
-      } catch {
-        rows = [];
-      }
+      const V = window.CineAuraVideos;
+      const [tm, vids] = await Promise.all([
+        tmdb(`/search/multi?query=${encodeURIComponent(q)}&include_adult=false&page=1`).catch(() => null),
+        V ? V.call("content_search", { p_member: V.memberId(), p_q: q, p_sort: "relevance", p_limit: 5, p_offset: 0 }).catch(() => null) : null,
+      ]);
+      rows = (tm?.results || []).filter((r) =>
+        isReview ? ["movie", "tv"].includes(r.media_type) : ["movie", "tv", "person"].includes(r.media_type)
+      );
+      const videos = (vids?.ok && Array.isArray(vids.data?.items) ? vids.data.items : []).filter((v) => !v.locked);
       if (mine !== seq) return;
       results.hidden = false;
-      results.innerHTML = rows.length
-        ? rows
+      const videoRows = videos.map((v) => `<button type="button" class="tp-row" data-tp-type="video" data-tp-id="${escapeHtml(v.id)}">
+                <img class="is-video" src="${escapeHtml(v.thumb || initialsAvatar(v.title))}" alt="" referrerpolicy="no-referrer" />
+                <span><strong>${escapeHtml(v.title)}</strong><small><bdi>@${escapeHtml(v.owner || "")}</bdi> · ${escapeHtml(t("rich.video"))}<span class="tp-vid">CineAura</span></small></span>
+              </button>`).join("");
+      results.innerHTML = rows.length || videoRows
+        ? videoRows + rows
             .slice(0, 8)
             .map((r) => {
               const title = r.title || r.name || "";
@@ -2549,6 +2597,9 @@
             .join("")
         : `<p class="muted">${t("rich.noResults")}</p>`;
     };
+
+    // Content.html > Recommend in a post / Write a review: the video is already in
+    if (opts.video) addVideo(opts.video);
 
     $("#tp-q").addEventListener("input", () => {
       clearTimeout(timer);
@@ -2579,7 +2630,7 @@
     });
     box.onclick = (e) => {
       const row = e.target.closest("[data-tp-id]");
-      if (row) return addItem(row.dataset.tpType, Number(row.dataset.tpId));
+      if (row) return addItem(row.dataset.tpType, row.dataset.tpType === "video" ? row.dataset.tpId : Number(row.dataset.tpId));
       const add = e.target.closest("[data-pc-add]");
       if (add) return addPc(add.dataset.pcAdd);
       const del = e.target.closest("[data-pc-del]");
@@ -2592,7 +2643,7 @@
       const rm = e.target.closest("[data-rich-remove]");
       if (rm) {
         e.preventDefault();
-        d.items = d.items.filter((it) => `${it.media_type}:${it.tmdb_id}` !== rm.dataset.richRemove);
+        d.items = d.items.filter((it) => Rich.itemKey(it) !== rm.dataset.richRemove);
         return preview();
       }
       if (!e.target.closest(".tmdb-picker")) {
@@ -4186,6 +4237,12 @@
     await loadHostStatus();
     // Profile.html#content (and #content/manage, #content/stats) opens "Your content"
     if (state.me && /^#content(\/|$)/.test(location.hash)) state.section = "content";
+    // (round 31) Profile.html#create/review/CT… (Content.html > Write a review / Recommend in a post)
+    const cw = createFromHash();
+    if (state.me && cw) {
+      state.section = "create";
+      state.createWant = cw;
+    }
     // Profile.html?@name#videos, #playlists, #playlist/CPL… open the Content tab
     const pcWant = pcFromHash();
     if (pcWant && !postId) {
@@ -4204,10 +4261,23 @@
     window.addEventListener("hashchange", onHashChange);
   }
 
+  // #create/<recommendation | reclist | review>/<CT…> -> { kind, video }
+  function createFromHash() {
+    const m = /^#create\/(recommendation|reclist|review)(?:\/(CT[0-9A-Za-z]{1,20}))?$/.exec(location.hash || "");
+    return m ? { kind: m[1], video: m[2] || "" } : null;
+  }
+
   // Links and back / forward inside the page: the views of the Content tab
   // (#videos, #playlists, #playlist/CPL…) and "Your content" (#content…).
   function onHashChange() {
     if (!state.hostMember) return;
+    const cw = createFromHash();
+    if (state.me && cw) {
+      state.createWant = cw;
+      state.section = "create";
+      renderShell();
+      return;
+    }
     const mkWant = mkFromHash();
     if (mkWant) {
       const mk = mkState();

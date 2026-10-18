@@ -1,9 +1,10 @@
 /* CineAura — IPTV.html: the IPTV lists published by members (sql/iptv_lists.sql).
  *
- * A search box (name, description, publisher), then the lists the visitor may see:
- * public ones for everybody; for a signed-in member also the exclusive lists whose
- * criteria they meet (followers, country, language) and the private lists they were
- * given. Tabs All / Public / Exclusive / Private / Mine (members), sort newest, most
+ * A search box (name, description, publisher), then the lists: public ones for everybody,
+ * the exclusive ones with their criteria (a lock until the visitor meets them: followers,
+ * country, language, account level, membership, a password), the private lists the member
+ * was given, and the other private lists with a "Request to join" button, unless their
+ * publisher keeps them out of the search (round 31). Tabs All / Public / Exclusive / Private / Mine (members), sort newest, most
  * viewed, most channels, A→Z, Z→A (most relevant while searching). The address keeps
  * every choice: ?q=&sort=&show=. "Publish a list" opens the dialog of
  * js/iptv-lists.js (IPTV.html#publish opens it at once); the member manages their
@@ -180,6 +181,11 @@
     document.addEventListener("click", (e) => {
       if (e.target.closest("[data-publish]")) publish();
       if (e.target.closest("[data-more]")) load(true);
+    });
+    // (round 31) a private list shows with Request to join (unless its publisher keeps it out of the search)
+    L.wireJoin($("#ipl-results"), (id) => {
+      const l = state.items.find((x) => x.id === id);
+      if (l) l.request = "pending";
     });
     // the language changes: labels and dates follow
     document.addEventListener("cineaura:prefs", () => {
