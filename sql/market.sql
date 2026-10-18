@@ -4,7 +4,8 @@
 -- account_deadline.sql and image_uploads.sql.
 --
 -- Unlike the Prizes (published by the staff), the market is filled by the members: every
--- member can open one store and sell products for points; every member can buy.
+-- member from level LV1 (10 points earned, sql/point_levels.sql) can open one store and sell
+-- products for points; every member can buy. A store opened before that rule keeps working.
 --
 --   stores       market_stores       one per member (Market.html > Store settings): logo and
 --                                    cover (an image link, or uploaded to IPTV/Market/Logo/<id>.jpg
@@ -726,6 +727,21 @@ begin
   return 'posts' = any (feats);
 end $$;
 
+-- (round 30) Opening a store needs LV1: 10 points earned (sql/point_levels.sql). The member's level,
+-- the points earned and those LV1 needs; on an install without the levels nothing is asked.
+--   -> { level, earned, need: 1, need_points: 10, ok }
+create or replace function public._mkt_level(p_member text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare earned bigint; lv int;
+begin
+  earned := coalesce((public._points(p_member)->>'earned')::bigint, 0);
+  if to_regprocedure('public.points_level(bigint)') is null then
+    return jsonb_build_object('level', null, 'earned', earned, 'need', 1, 'need_points', 10, 'ok', true);
+  end if;
+  lv := public.points_level(earned);
+  return jsonb_build_object('level', lv, 'earned', earned, 'need', 1, 'need_points', 10, 'ok', lv >= 1);
+end $$;
+
 create or replace function public._mkt_int(p text) returns int language sql immutable as $$
   select case when btrim(coalesce(p, '')) ~ '^-?[0-9]{1,9}$' then btrim(p)::int end
 $$;
@@ -1181,22 +1197,26 @@ end $$;
 
 -- ------------------------------------------------------------------ 5. the member
 -- The side menu of Market.html.
---   -> { ok: true, member: { id, username, country }, store: {…} | null, counts: {…}, unread }
+--   -> { ok: true, member: { id, username, country }, store: {…} | null, store_level: { level, earned, need,
+--        need_points, ok }, can_open, counts: {…}, unread }
 --      { ok: false, reason: member }
 create or replace function public.market_me(p_member text)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare m public.members; st public.market_stores; me text;
+declare m public.members; st public.market_stores; me text; lv jsonb;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
   me := m.member_id;
   perform public._mkt_settle(100);
   select * into st from public.market_stores where owner_id = me;
+  lv := public._mkt_level(me);
   return jsonb_build_object(
     'ok', true,
     'member', jsonb_build_object('id', me, 'username', m.username, 'country', upper(coalesce(m.country, ''))),
     'blocked', public._mkt_blocked(me, false), 'blocked_selling', public._mkt_blocked(me, true),
     'store', case when st.id is null then null else public._mkt_store_card(st) end,
+    -- (round 30) a store is opened from LV1: { level, earned, need, need_points, ok }; can_open: has one or may open it
+    'store_level', lv, 'can_open', st.id is not null or coalesce((lv->>'ok')::boolean, true),
     'counts', jsonb_build_object(
       'products', (select count(*) from public.market_products where owner_id = me and status <> 'deleted'),
       'sales', (select jsonb_build_object(
@@ -1235,17 +1255,24 @@ end $$;
 -- ------------------------------------------------------------------ 6. the store
 -- Market.html > Store settings. d = { name, description, logo_url?, cover_url?, links: [{label,url}],
 -- is_open, scope, country, city, sale_mode, shipping, returns, return_days }
---   -> { ok: true, id, created } | { ok: false, reason: member | blocked | name | description | links |
---      logo | cover | scope | country | city | sale_mode | return_days }
+--   -> { ok: true, id, created } | { ok: false, reason: member | blocked | level (level, earned, need,
+--      need_points: a new store needs LV1) | name | description | links | logo | cover | scope | country |
+--      city | sale_mode | return_days }
 create or replace function public.market_store_save(p_member text, d jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; st public.market_stores; nm text; descr text; v_links jsonb := '[]'::jsonb; l jsonb; lbl text; url text;
   sc text; cc text; ct text; mode text; ship boolean; ret boolean; days int; logo text; cover text; created boolean := false; sid text;
+  lv jsonb;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
   if public._mkt_blocked(m.member_id, true) then return jsonb_build_object('ok', false, 'reason', 'blocked'); end if;
+  -- (round 30) opening a store needs LV1; a store that exists keeps working
+  if not exists (select 1 from public.market_stores where owner_id = m.member_id) then
+    lv := public._mkt_level(m.member_id);
+    if not (lv->>'ok')::boolean then return jsonb_build_object('ok', false, 'reason', 'level') || (lv - 'ok'); end if;
+  end if;
   d := coalesce(d, '{}'::jsonb);
   nm := public._mkt_line(d->>'name');
   if length(nm) < 2 or length(nm) > 60 then return jsonb_build_object('ok', false, 'reason', 'name'); end if;
@@ -1326,19 +1353,25 @@ end $$;
 -- delivers its sold orders that were waiting.
 --   -> { ok: true, id, created, store_id } | { ok: false, reason: member | blocked | title | description |
 --      kind | price | shipping_cost | stock | categories | images | video | commission | download | limit |
---      suspended | not_found }
+--      suspended | not_found | level (no store yet and below LV1: level, earned, need, need_points) }
 create or replace function public.market_product_save(p_member text, d jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; st public.market_stores; pr public.market_products; pid text; ttl text; descr text; knd text;
   v_price int; ship int; stk int; cats text[] := '{}'; c text; ckey text; cid text; imgs jsonb := '[]'::jsonb; x jsonb;
   vid text; created boolean := false; keys text[] := '{}'; c_on boolean; c_raw text; c_pct int; dl text; w_id text;
+  lv jsonb;
 begin
   m := public._mkt_member(p_member);
   if m.member_id is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
   if public._mkt_blocked(m.member_id, true) then return jsonb_build_object('ok', false, 'reason', 'blocked'); end if;
   d := coalesce(d, '{}'::jsonb);
   pid := nullif(btrim(coalesce(d->>'id', '')), '');
+  -- (round 30) a first product opens the store: LV1 needed (a store that exists keeps working)
+  if pid is null and not exists (select 1 from public.market_stores where owner_id = m.member_id) then
+    lv := public._mkt_level(m.member_id);
+    if not (lv->>'ok')::boolean then return jsonb_build_object('ok', false, 'reason', 'level') || (lv - 'ok'); end if;
+  end if;
   ttl := public._mkt_line(d->>'title');
   if length(ttl) < 3 or length(ttl) > 120 then return jsonb_build_object('ok', false, 'reason', 'title'); end if;
   descr := btrim(coalesce(d->>'description', ''));
@@ -3997,7 +4030,7 @@ begin
     'public._mkt_admin_can(public.market_orders)', 'public._mkt_cpn_stats(text, text)',
     'public._mkt_cpn_fits(public.market_coupons, text, text)', 'public._mkt_cpn_state(public.market_coupons)',
     'public._mkt_cpn_off(text, int, int, int)', 'public._mkt_cpn_json(public.market_coupons, text)',
-    'public._mkt_cpn_grant(text, text)', 'public._mkt_cpn_find(text, text, text, text)']
+    'public._mkt_cpn_grant(text, text)', 'public._mkt_cpn_find(text, text, text, text)', 'public._mkt_level(text)']
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;

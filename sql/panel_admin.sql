@@ -2,8 +2,8 @@
 -- CineAura — Panel: the overview, the announcements, the bar of the home page and the
 -- settings of the Panel button
 -- Run this in the Supabase SQL editor (safe to run more than once), LAST: after
--- prize_secure.sql, profile.sql, content.sql, iptv_lists.sql, point_codes.sql, market.sql and
--- packages.sql.
+-- prize_secure.sql, profile.sql, content.sql, iptv_lists.sql, point_codes.sql, market.sql,
+-- packages.sql and withdrawals.sql.
 --
 --   Panel > Overview        panel_overview(): the numbers of the site and what is waiting for
 --                           the team. Each staff member sees the numbers of their own sections
@@ -16,7 +16,8 @@
 --                             optional link, a colour, the dates it shows between), read by
 --                             everybody through site_banner_get()
 --   Panel > Accounts        panel_member_summary(): a member at a glance (Full info): points and
---                           level, videos, IPTV lists, store and orders, reviews, codes, claims.
+--                           level, videos, IPTV lists, store and orders, reviews, codes, claims,
+--                           withdrawals.
 --   Panel > Settings        panel_settings_save(): who sees the Panel button of the dashboard
 --                           (admins / moderators / members; the Super Admin only). The page
 --                           reads panel_settings; only this function writes it (section 8).
@@ -77,7 +78,7 @@ create or replace function public._panel_sections(s public.staff) returns text[]
 language sql immutable as $$
   select case when s.role = 'super'
               then array['accounts', 'links', 'iptv', 'apps', 'reports', 'prizes', 'messages', 'content', 'market', 'packages',
-                         'announce', 'staff', 'settings']
+                         'withdrawals', 'announce', 'staff', 'settings']
               else array(select x from unnest(string_to_array(replace(coalesce(s.sections, ''), ' ', ''), ',')) x where x <> '') end
 $$;
 
@@ -361,6 +362,20 @@ begin
       'points_30d', public._panel_n('select coalesce(sum(points), 0) from public.point_code_uses where used_at > now() - interval ''30 days''')));
   end if;
 
+  -- Panel > Withdrawals (sql/withdrawals.sql): the requests waiting, the points they hold, what was sent
+  -- (in the currency of the settings; cents, so that _panel_n counts them)
+  if 'withdrawals' = any (secs) and to_regclass('public.withdrawals') is not null then
+    res := res || jsonb_build_object('withdrawals', jsonb_build_object(
+      'pending', public._panel_n('select count(*) from public.withdrawals where status = ''pending'''),
+      'processing', public._panel_n('select count(*) from public.withdrawals where status = ''processing'''),
+      'held', public._panel_n('select coalesce(sum(points), 0) from public.withdrawals where status in (''pending'', ''processing'')'),
+      'paid_30d', public._panel_n('select count(*) from public.withdrawals where status = ''paid'' and paid_at > now() - interval ''30 days'''),
+      'paid_30d_cents', public._panel_n('select coalesce(round(sum(w.net) * 100), 0)::bigint from public.withdrawals w join public.withdraw_settings s on s.id = 1 and s.currency = w.currency where w.status = ''paid'' and w.paid_at > now() - interval ''30 days'''),
+      'currency', coalesce((select currency from public.withdraw_settings where id = 1), 'USD')));
+    n := (res->'withdrawals'->>'pending')::bigint;
+    if n > 0 then att := att || jsonb_build_object('key', 'withdrawals', 'count', n, 'section', 'withdrawals', 'tab', ''); end if;
+  end if;
+
   if 'announce' = any (secs) then
     res := res || jsonb_build_object('announce', jsonb_build_object(
       'banner', public.site_banner_get(),
@@ -423,7 +438,12 @@ begin
       'prizes', public._panel_n(format('select count(*) from public.prize_pack_uses where member_id = %L', v_id))),
     'claims', jsonb_build_object(
       'all', public._panel_n(format('select count(*) from public.prize_claims where member_id = %L', v_id)),
-      'open', public._panel_n(format('select count(*) from public.prize_claims where member_id = %L and status in (''submitted'', ''review'')', v_id))));
+      'open', public._panel_n(format('select count(*) from public.prize_claims where member_id = %L and status in (''submitted'', ''review'')', v_id))),
+    -- withdrawals (sql/withdrawals.sql): sent, the points they took, the one waiting
+    'withdrawals', case when to_regclass('public.withdrawals') is not null then jsonb_build_object(
+      'paid', public._panel_n(format('select count(*) from public.withdrawals where member_id = %L and status = ''paid''', v_id)),
+      'points', public._panel_n(format('select coalesce(sum(points), 0) from public.withdrawals where member_id = %L and status = ''paid''', v_id)),
+      'open', public._panel_n(format('select count(*) from public.withdrawals where member_id = %L and status in (''pending'', ''processing'')', v_id))) end);
 end $$;
 
 -- ------------------------------------------------------------------ 8. Panel > Settings: who sees the Panel button
