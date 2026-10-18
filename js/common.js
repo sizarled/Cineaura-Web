@@ -2181,7 +2181,25 @@
     // your equal share of the commission of a sale made through it
     market_rerec: (n) => (String(n?.href || "").includes("List=") ? "notif.mktRerecList" : "notif.mktRerec"),
     market_root_commission: "notif.mktRootCommission",
+    // the team (Panel > Content, Panel > Market); the body is the item and the reason
+    content_suspended: (n) => (String(n?.href || "").includes("#playlists") ? "notif.plSuspended" : "notif.videoSuspended"),
+    content_restored: (n) => (String(n?.href || "").includes("#playlists") ? "notif.plRestored" : "notif.videoRestored"),
+    content_deleted: (n) => (String(n?.href || "").includes("#playlists") ? "notif.plDeleted" : "notif.videoDeleted"),
+    iptv_list_suspended: "notif.iptvListSuspended",
+    iptv_list_restored: "notif.iptvListRestored",
+    iptv_list_deleted: "notif.iptvListDeleted",
+    market_deleted: "notif.mktDeletedProduct",
+    market_staff_refund: (n) => (String(n?.href || "").includes("#sales") ? "notif.mktStaffRefundSeller" : "notif.mktStaffRefundBuyer"),
+    market_staff_release: (n) => (String(n?.href || "").includes("#sales") ? "notif.mktStaffReleaseSeller" : "notif.mktStaffReleaseBuyer"),
+    market_social_suspended: (n) => `notif.mktSocialSuspended.${socialKind(n)}`,
+    market_social_restored: (n) => `notif.mktSocialRestored.${socialKind(n)}`,
+    market_social_deleted: (n) => `notif.mktSocialDeleted.${socialKind(n)}`,
   };
+  // a review, a purchase list or a recommendation: the Market tab of the profile it links to
+  function socialKind(n) {
+    const href = String(n?.href || "");
+    return href.includes("/reviews") ? "review" : href.includes("/lists") ? "list" : "rec";
+  }
 
   function noteTitle(n) {
     const kind = String(n?.kind || "");
@@ -3659,6 +3677,9 @@
   };
   NAV_ICONS.content = '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10.5 9.3v5.4l4.5-2.7z"/>';
   NAV_ICONS.notifications = '<path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>';
+  // the Panel: Market and Announcements
+  NAV_ICONS.market = '<path d="M4.5 8.5h15l-1.2 11a1.6 1.6 0 0 1-1.6 1.5H7.3a1.6 1.6 0 0 1-1.6-1.5z"/><path d="M8.8 8.5V7a3.2 3.2 0 0 1 6.4 0v1.5"/>';
+  NAV_ICONS.announce = '<path d="M4 10.2v3.6a1 1 0 0 0 1 1h2.2L12.5 19V5L7.2 9.2H5a1 1 0 0 0-1 1z"/><path d="M16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/>';
 
   function navIcon(name) {
     const body = NAV_ICONS[name];

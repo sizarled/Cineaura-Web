@@ -40,6 +40,10 @@
 -- the publisher's browser when the list is saved, and kept in iptv_list_channels for the
 -- channel search. The player always reads the playlist itself.
 --
+-- The team (Panel > Content > IPTV lists, section 6): every list of the site; one can be
+-- suspended (hidden from everybody but its publisher, who reads why and cannot show it
+-- again), restored or deleted (iptv_lists_admin, iptv_list_moderate).
+--
 -- Every table is closed to the public API; pages go through the functions below. Like
 -- the rest of the site (no Supabase Auth), the functions trust the member id the browser
 -- sends.
@@ -115,6 +119,11 @@ create table if not exists public.iptv_list_channels (
   ckey text not null default '',
   primary key (list_id, pos)
 );
+
+-- Panel > Content > IPTV lists: suspended by the team (hidden from everybody but the publisher)
+alter table public.iptv_lists add column if not exists suspended_at timestamptz;
+alter table public.iptv_lists add column if not exists suspended_reason text not null default '';
+alter table public.iptv_lists add column if not exists suspended_by text not null default '';
 
 -- one view per member (or visitor address) and day
 create table if not exists public.iptv_list_views (
@@ -201,13 +210,15 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- 'ok', or why the member may not see the list: gone | private | signin | followers |
--- country | language. The publisher always sees their own lists.
+-- country | language. The publisher always sees their own lists; a list the team
+-- suspended (Panel > Content) is gone for everybody else.
 create or replace function public._iptvl_access(l public.iptv_lists, p_member text) returns text
 language plpgsql stable security definer set search_path = public as $$
 declare m public.members;
 begin
   p_member := btrim(coalesce(p_member, ''));
   if p_member <> '' and l.owner_id = p_member then return 'ok'; end if;
+  if l.suspended_at is not null then return 'gone'; end if;
   if public._iptvl_banned(l.owner_id) then return 'gone'; end if;
   if l.visibility = 'public' then return 'ok'; end if;
   m := public._iptvl_viewer(p_member);
@@ -252,7 +263,10 @@ language sql stable security definer set search_path = public as $$
     'owner_id', l.owner_id,
     'owner', coalesce((select m.username from public.members m where m.member_id = l.owner_id), l.owner_username),
     'owner_avatar', coalesce((select p.avatar_url from public.profiles p where p.member_id = l.owner_id), ''),
-    'mine', l.owner_id = btrim(coalesce(p_member, '')))
+    'mine', l.owner_id = btrim(coalesce(p_member, '')),
+    -- only the publisher ever gets the card of a suspended list
+    'suspended', case when l.suspended_at is not null
+                      then jsonb_build_object('reason', l.suspended_reason, 'at', l.suspended_at) end)
 $$;
 
 -- "a, b; c" or ["a", "b"] -> the distinct values, upper or lower case
@@ -308,6 +322,11 @@ begin
     url := btrim(coalesce(d->>'url', ''));
     if url !~* '^https?://[^/?#[:space:]]+' or length(url) > 2000 or url ~ '[[:space:]<>"`]' then
       return jsonb_build_object('ok', false, 'reason', 'url');
+    end if;
+    -- the playlist of one of their lists the team suspended cannot come back in another list
+    if exists (select 1 from public.iptv_lists x where x.owner_id = m.member_id and x.m3u_url = url
+                 and x.suspended_at is not null and x.list_id is distinct from lid) then
+      return jsonb_build_object('ok', false, 'reason', 'suspended');
     end if;
   else
     pth := btrim(coalesce(d->>'path', ''));
@@ -686,14 +705,115 @@ create policy "CineAura IPTV lists: upload" on storage.objects
   for insert to anon, authenticated
   with check (public.iptv_playlist_object_ok(bucket_id, name));
 
--- ------------------------------------------------------------------ 6. who may call what
+-- ------------------------------------------------------------------ 6. Panel > Content > IPTV lists (the team)
+-- The Super Admin, or a staff member with the Content section. -> who did it
+create or replace function public._iptvl_staff(p_token text) returns text
+language plpgsql security definer set search_path = public as $$
+declare s record;
+begin
+  s := public._staff(p_token);
+  if s.role <> 'super' and position(',content,' in ',' || replace(coalesce(s.sections, ''), ' ', '') || ',') = 0 then
+    raise exception 'staff_forbidden';
+  end if;
+  return coalesce(nullif(s.username, ''), s.role);
+end $$;
+
+-- Every list of the site, whoever may see it.
+--   p_filter  all | public | exclusive | private | suspended
+--   p_q       words of the name or the description, its id, the publisher (username or member id)
+--   p_sort    new (last changed) | old | views | channels
+--   -> { ok: true, total, counts: { all, public, exclusive, private, suspended }, items: [ card + url, path, … ] }
+create or replace function public.iptv_lists_admin(p_token text, p_filter text default 'all', p_q text default '',
+  p_sort text default 'new', p_limit int default 40, p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; q text := lower(btrim(coalesce(p_q, ''))); f text := coalesce(nullif(p_filter, ''), 'all');
+  srt text := coalesce(nullif(p_sort, ''), 'new');
+  lim int := least(greatest(coalesce(p_limit, 40), 1), 200); off int := greatest(coalesce(p_offset, 0), 0); res jsonb;
+begin
+  who := public._iptvl_staff(p_token);
+  with base as (
+    select l, coalesce(m.username, l.owner_username) as uname
+      from public.iptv_lists l left join public.members m on m.member_id = l.owner_id
+     where q = '' or strpos(lower(l.name) || ' ' || lower(l.description), q) > 0 or lower(l.list_id) = q
+        or lower(l.owner_id) = q or lower(coalesce(m.username, l.owner_username)) = ltrim(q, '@')
+  ), pick as (
+    select * from base b
+     where case f when 'suspended' then (b.l).suspended_at is not null
+                  when 'public' then (b.l).visibility = 'public'
+                  when 'exclusive' then (b.l).visibility = 'exclusive'
+                  when 'private' then (b.l).visibility = 'private'
+                  else true end
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from pick),
+    'counts', jsonb_build_object(
+      'all', (select count(*) from base),
+      'public', (select count(*) from base b where (b.l).visibility = 'public'),
+      'exclusive', (select count(*) from base b where (b.l).visibility = 'exclusive'),
+      'private', (select count(*) from base b where (b.l).visibility = 'private'),
+      'suspended', (select count(*) from base b where (b.l).suspended_at is not null)),
+    'items', coalesce((select jsonb_agg(public._iptvl_card(z.l, '') || jsonb_build_object(
+        'owner', z.uname, 'url', (z.l).m3u_url, 'path', (z.l).storage_path, 'epg_url', (z.l).epg_url,
+        'suspended', case when (z.l).suspended_at is not null
+                          then jsonb_build_object('reason', (z.l).suspended_reason, 'at', (z.l).suspended_at, 'by', (z.l).suspended_by) end)
+        order by z.ord)
+      from (select pk.*, row_number() over (order by case srt when 'views' then (pk.l).views
+                                                              when 'channels' then (pk.l).channel_count end desc nulls last,
+                                                     case when srt = 'old' then (pk.l).updated_at end asc,
+                                                     (pk.l).updated_at desc, (pk.l).list_id) as ord
+              from pick pk order by ord offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- Suspend (p_reason 3 to 300 characters, which the publisher reads), restore or delete a list
+-- (p_reason 3 to 300 characters, told to the publisher). The publisher is told each time.
+--   -> { ok: true, status: suspended | active | deleted, path } | { ok: false, reason: action | reason | not_found | state }
+create or replace function public.iptv_list_moderate(p_token text, p_id text, p_action text, p_reason text default '')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; l public.iptv_lists; why text := left(btrim(regexp_replace(coalesce(p_reason, ''), '\s+', ' ', 'g')), 300);
+  tell boolean := to_regclass('public.notifications') is not null;
+begin
+  who := public._iptvl_staff(p_token);
+  if p_action not in ('suspend', 'restore', 'delete') then return jsonb_build_object('ok', false, 'reason', 'action'); end if;
+  if p_action <> 'restore' and length(why) < 3 then return jsonb_build_object('ok', false, 'reason', 'reason'); end if;
+  select * into l from public.iptv_lists where list_id = btrim(coalesce(p_id, '')) for update;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  if p_action = 'suspend' then
+    if l.suspended_at is not null then return jsonb_build_object('ok', false, 'reason', 'state'); end if;
+    update public.iptv_lists set suspended_at = now(), suspended_reason = why, suspended_by = who where list_id = l.list_id;
+    if tell then
+      insert into public.notifications (member_id, kind, title, body, href)
+      values (l.owner_id, 'iptv_list_suspended', 'The team suspended your IPTV list', left(l.name || ' · ' || why, 300), './dashboard.html#iptv-lists');
+    end if;
+    return jsonb_build_object('ok', true, 'status', 'suspended');
+  elsif p_action = 'restore' then
+    if l.suspended_at is null then return jsonb_build_object('ok', false, 'reason', 'state'); end if;
+    update public.iptv_lists set suspended_at = null, suspended_reason = '', suspended_by = '' where list_id = l.list_id;
+    if tell then
+      insert into public.notifications (member_id, kind, title, body, href)
+      values (l.owner_id, 'iptv_list_restored', 'The team restored your IPTV list', left(l.name, 300), './dashboard.html#iptv-lists');
+    end if;
+    return jsonb_build_object('ok', true, 'status', 'active');
+  end if;
+  delete from public.iptv_lists where list_id = l.list_id;
+  if tell then
+    insert into public.notifications (member_id, kind, title, body, href)
+    values (l.owner_id, 'iptv_list_deleted', 'The team deleted your IPTV list', left(l.name || ' · ' || why, 300), './dashboard.html#iptv-lists');
+  end if;
+  -- an uploaded file stays in Storage (IPTV/Playlist/…), like the files of a list its publisher deletes
+  return jsonb_build_object('ok', true, 'status', 'deleted', 'path', l.storage_path);
+end $$;
+
+-- ------------------------------------------------------------------ 7. who may call what
 do $$
 declare f text;
 begin
   foreach f in array array[
     'public._iptvl_viewer(text)', 'public._iptvl_banned(text)', 'public._iptvl_blocked(text)',
     'public._iptvl_lang(text, text)', 'public._iptvl_access(public.iptv_lists, text)',
-    'public._iptvl_card(public.iptv_lists, text)', 'public._iptvl_codes(jsonb, boolean)']
+    'public._iptvl_card(public.iptv_lists, text)', 'public._iptvl_codes(jsonb, boolean)', 'public._iptvl_staff(text)']
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;
@@ -703,7 +823,8 @@ begin
     'public.iptv_list_delete(text, text)', 'public.iptv_lists_mine(text)',
     'public.iptv_lists_search(text, text, text, text, int, int)',
     'public.iptv_list_open(text, text)',
-    'public.iptv_channel_search(text, text, text, text, int, int)']
+    'public.iptv_channel_search(text, text, text, text, int, int)',
+    'public.iptv_lists_admin(text, text, text, text, int, int)', 'public.iptv_list_moderate(text, text, text, text)']
   loop
     execute format('revoke all on function %s from public', f);
     execute format('grant execute on function %s to anon, authenticated', f);

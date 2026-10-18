@@ -75,6 +75,12 @@
 -- reads them in Panel > Reports > Market and can suspend a product or a whole store: hidden
 -- from everybody but its seller, who cannot show it again until the team restores it.
 --
+-- Panel > Market (section 16, staff with the Market or the Reports section): the numbers, the
+-- stores, the products (suspend, restore, delete), the orders, the categories (rename, merge,
+-- delete) and the reviews, purchase lists and recommendations (suspend: private to their author
+-- until restored; delete). The team can step in on an order not paid yet: refund the buyer, or
+-- pay the seller at once (market_admin_order); both are told, with the reason.
+--
 -- The social side (product page buttons; a member's page > Market; Profile > Updates):
 --   * recommendations (market_recs) of a product, purchase lists (market_lists) and reviews
 --     (market_reviews, any member but the seller; a buyer's is a verified purchase), each one
@@ -508,6 +514,26 @@ create table if not exists public.market_requests (
 create index if not exists market_requests_to_idx on public.market_requests (to_id, created_at desc);
 create index if not exists market_requests_from_idx on public.market_requests (from_id, created_at desc);
 
+-- Added in the fifth version (Panel > Market): what the team did with an order (refunded the buyer,
+-- or paid the seller before the end of the return period), and the reviews, purchase lists and
+-- recommendations the team suspended: private to their author until restored (their audience is
+-- kept in audience_before to come back with).
+alter table public.market_orders add column if not exists released_at timestamptz;
+alter table public.market_orders add column if not exists staff_action text not null default '';   -- refund | release
+alter table public.market_orders add column if not exists staff_reason text not null default '';
+alter table public.market_orders add column if not exists staff_by text not null default '';
+alter table public.market_orders add column if not exists staff_at timestamptz;
+do $$
+declare t text;
+begin
+  foreach t in array array['market_reviews', 'market_lists', 'market_recs'] loop
+    execute format('alter table public.%I add column if not exists suspended_at timestamptz', t);
+    execute format('alter table public.%I add column if not exists suspended_reason text not null default %L', t, '');
+    execute format('alter table public.%I add column if not exists suspended_by text not null default %L', t, '');
+    execute format('alter table public.%I add column if not exists audience_before jsonb', t);
+  end loop;
+end $$;
+
 -- Faster "contains" searches when pg_trgm can be installed (optional).
 do $$
 begin
@@ -900,12 +926,41 @@ language sql immutable as $$
   select o.total - case when o.referrer_id is not null and o.commission_pct is not null then greatest(o.commission, 0) else 0 end
 $$;
 
+-- Pays a delivered order: the seller, and the member who shared the link (and the member who
+-- first recommended it). Once: an order already paid is left alone. p_tell: tell the seller
+-- (the team, releasing an order, tells them itself).
+create or replace function public._mkt_pay(o public.market_orders, p_tell boolean default true) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare gets int;
+begin
+  update public.market_orders set settled_at = now(), updated_at = now() where id = o.id and settled_at is null;
+  if not found then return false; end if;
+  gets := public._mkt_seller_gets(o);
+  perform public._mkt_credit(o.seller_id, gets, false);
+  if p_tell then
+    perform public._mkt_notify(o.seller_id, 'market_paid', 'Points received for a sale',
+      '+' || gets::text || ' PT · ' || o.title, './Market.html#sales/delivered', o.buyer_id);
+  end if;
+  if o.referrer_id is not null and o.commission > 0 then
+    -- the referrer, and the member who first recommended it (an equal share, when there is one)
+    perform public._mkt_credit(o.referrer_id, o.commission - coalesce(o.root_commission, 0), true);
+    perform public._mkt_notify(o.referrer_id, 'market_commission', 'You earned points from a shared link',
+      '+' || (o.commission - coalesce(o.root_commission, 0))::text || ' PT · ' || o.title, './Market.html?Product=' || o.product_id);
+    if o.root_referrer_id is not null and coalesce(o.root_commission, 0) > 0 then
+      perform public._mkt_credit(o.root_referrer_id, o.root_commission, true);
+      perform public._mkt_notify(o.root_referrer_id, 'market_root_commission', 'You earned points from your recommendation',
+        '+' || o.root_commission::text || ' PT · ' || o.title, './Market.html?Product=' || o.product_id);
+    end if;
+  end if;
+  return true;
+end $$;
+
 -- Orders that are due: shipped for 14 days → received; delivered and past their return
--- period → the seller is paid (and the member who shared the link). Called by the market
--- functions below, and by market_settle() (pg_cron, optional).
+-- period (or released by the team, Panel > Market) → the seller is paid (and the member who
+-- shared the link). Called by the market functions below, and by market_settle() (pg_cron, optional).
 create or replace function public._mkt_settle(p_limit int default 200) returns int
 language plpgsql security definer set search_path = public as $$
-declare o public.market_orders; n int := 0; gets int;
+declare o public.market_orders; n int := 0;
 begin
   update public.market_orders
      set status = 'delivered', delivered_at = shipped_at + interval '14 days', auto_delivered = true, updated_at = now()
@@ -913,28 +968,12 @@ begin
   for o in
     select * from public.market_orders
      where status = 'delivered' and settled_at is null
-       and delivered_at + make_interval(days => return_days) <= now()
+       and (released_at is not null or delivered_at + make_interval(days => return_days) <= now())
      order by delivered_at
      limit greatest(1, coalesce(p_limit, 200))
      for update skip locked
   loop
-    update public.market_orders set settled_at = now(), updated_at = now() where id = o.id;
-    gets := public._mkt_seller_gets(o);
-    perform public._mkt_credit(o.seller_id, gets, false);
-    perform public._mkt_notify(o.seller_id, 'market_paid', 'Points received for a sale',
-      '+' || gets::text || ' PT · ' || o.title, './Market.html#sales/delivered', o.buyer_id);
-    if o.referrer_id is not null and o.commission > 0 then
-      -- the referrer, and the member who first recommended it (an equal share, when there is one)
-      perform public._mkt_credit(o.referrer_id, o.commission - coalesce(o.root_commission, 0), true);
-      perform public._mkt_notify(o.referrer_id, 'market_commission', 'You earned points from a shared link',
-        '+' || (o.commission - coalesce(o.root_commission, 0))::text || ' PT · ' || o.title, './Market.html?Product=' || o.product_id);
-      if o.root_referrer_id is not null and coalesce(o.root_commission, 0) > 0 then
-        perform public._mkt_credit(o.root_referrer_id, o.root_commission, true);
-        perform public._mkt_notify(o.root_referrer_id, 'market_root_commission', 'You earned points from your recommendation',
-          '+' || o.root_commission::text || ' PT · ' || o.title, './Market.html?Product=' || o.product_id);
-      end if;
-    end if;
-    n := n + 1;
+    if public._mkt_pay(o) then n := n + 1; end if;
   end loop;
   return n;
 end $$;
@@ -1001,6 +1040,8 @@ language sql stable security definer set search_path = public as $$
                  from public.market_reviews r
                 where r.member_id = o.buyer_id and r.product_id = o.product_id
                   and public._mkt_sees(r.member_id, r.visibility, r.excl_followers, r.excl_premium, r.excl_countries, r.allowed, p_viewer)),
+    -- the team refunded the buyer or paid the seller (Panel > Market), and why
+    'staff', case when o.staff_action <> '' then jsonb_build_object('action', o.staff_action, 'reason', o.staff_reason, 'at', o.staff_at) end,
     'actions', public._mkt_actions(o, p_viewer))
 $$;
 
@@ -1989,7 +2030,9 @@ language sql stable security definer set search_path = public as $$
                                  'username', coalesce((select mm.username from public.members mm where mm.member_id = r.seller_id), '')),
     'product', (select public._mkt_card(p) from public.market_products p where p.id = r.product_id))
   || case when r.member_id = coalesce(p_viewer, '')
-          then jsonb_build_object('audience', public._mkt_audience_out(r.visibility, r.excl_followers, r.excl_premium, r.excl_countries, r.allowed))
+          then jsonb_build_object('audience', public._mkt_audience_out(r.visibility, r.excl_followers, r.excl_premium, r.excl_countries, r.allowed),
+                                  'suspended', case when r.suspended_at is not null
+                                                    then jsonb_build_object('reason', r.suspended_reason, 'at', r.suspended_at) end)
           else '{}'::jsonb end
 $$;
 
@@ -2011,6 +2054,8 @@ begin
   select * into p from public.market_products where id = btrim(coalesce(p_product, ''));
   if not found or p.status = 'deleted' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
   select * into old from public.market_reviews where member_id = m.member_id and product_id = p.id;
+  -- suspended by the team (Panel > Market): it can only be deleted
+  if old.suspended_at is not null then return jsonb_build_object('ok', false, 'reason', 'suspended'); end if;
   -- a new review: a product on sale (one already written can still change)
   if old.id is null and p.status <> 'active' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
   select * into st from public.market_stores where id = p.store_id;
@@ -2272,13 +2317,14 @@ begin
 end $$;
 
 -- The team (staff sessions of sql/prize_secure.sql): the Super Admin, or a staff member with the
--- Reports section. -> who did it, for handled_by.
+-- Reports or the Market section. -> who did it, for handled_by.
 create or replace function public._mkt_staff(p_token text) returns text
 language plpgsql security definer set search_path = public as $$
-declare s record;
+declare s record; secs text;
 begin
   s := public._staff(p_token);
-  if s.role <> 'super' and position(',reports,' in ',' || coalesce(s.sections, '') || ',') = 0 then
+  secs := ',' || replace(coalesce(s.sections, ''), ' ', '') || ',';
+  if s.role <> 'super' and position(',reports,' in secs) = 0 and position(',market,' in secs) = 0 then
     raise exception 'staff_forbidden';
   end if;
   return coalesce(nullif(s.username, ''), s.role);
@@ -2375,11 +2421,25 @@ declare
   why text := left(btrim(regexp_replace(coalesce(p_reason, ''), '\s+', ' ', 'g')), 300); v_status text;
 begin
   who := public._mkt_staff(p_token);
-  if p_action not in ('suspend', 'restore') then return jsonb_build_object('ok', false, 'reason', 'action'); end if;
-  if p_action = 'suspend' and length(why) < 3 then return jsonb_build_object('ok', false, 'reason', 'reason'); end if;
+  if p_action not in ('suspend', 'restore', 'delete') or (p_action = 'delete' and p_kind is distinct from 'product') then
+    return jsonb_build_object('ok', false, 'reason', 'action');
+  end if;
+  if p_action in ('suspend', 'delete') and length(why) < 3 then return jsonb_build_object('ok', false, 'reason', 'reason'); end if;
   if p_kind = 'product' then
     select * into pr from public.market_products where id = v_id for update;
     if not found or pr.status = 'deleted' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    if p_action = 'delete' then
+      -- for good (Panel > Market > Products): gone from the market like a product its seller deletes;
+      -- its orders keep their title and picture
+      update public.market_products set status = 'deleted', status_before = null, suspended_reason = why,
+             suspended_with_store = false, updated_at = now() where id = pr.id;
+      delete from public.market_saved where product_id = pr.id;
+      update public.market_reports set status = 'resolved', handled_by = who, handled_at = now()
+       where kind = 'product' and target_id = pr.id and status = 'open';
+      perform public._mkt_notify(pr.owner_id, 'market_deleted', 'The team deleted your product', pr.title || ' · ' || why,
+                                 './Market.html#sales/products');
+      return jsonb_build_object('ok', true, 'status', 'deleted');
+    end if;
     if p_action = 'suspend' then
       update public.market_products
          set status_before = case when status = 'suspended' then status_before else status end,
@@ -2452,7 +2512,9 @@ language sql stable security definer set search_path = public as $$
                  and not exists (select 1 from public.market_recs x where x.member_id = p_viewer and x.kind = 'list' and x.list_id = l.id),
     'my_share', (select x.id from public.market_recs x where x.member_id = coalesce(p_viewer, '') and x.kind = 'list' and x.list_id = l.id))
   || case when l.member_id = coalesce(p_viewer, '')
-          then jsonb_build_object('audience', public._mkt_audience_out(l.visibility, l.excl_followers, l.excl_premium, l.excl_countries, l.allowed))
+          then jsonb_build_object('audience', public._mkt_audience_out(l.visibility, l.excl_followers, l.excl_premium, l.excl_countries, l.allowed),
+                                  'suspended', case when l.suspended_at is not null
+                                                    then jsonb_build_object('reason', l.suspended_reason, 'at', l.suspended_at) end)
           else '{}'::jsonb end
 $$;
 
@@ -2468,7 +2530,9 @@ language sql stable security definer set search_path = public as $$
     'author', jsonb_build_object('id', r.member_id,
                                  'username', coalesce((select mm.username from public.members mm where mm.member_id = r.member_id), '')),
     'product', case when r.kind = 'product' then (select public._mkt_card(p) from public.market_products p where p.id = r.product_id) end,
-    'list', case when r.kind = 'list' then (select public._mkt_list_json(l, p_viewer) from public.market_lists l where l.id = r.list_id) end,
+    -- a purchase list the team suspended: only its author still sees it
+    'list', case when r.kind = 'list' then (select public._mkt_list_json(l, p_viewer) from public.market_lists l
+                                             where l.id = r.list_id and (l.suspended_at is null or l.member_id = coalesce(p_viewer, ''))) end,
     'root', case when r.kind = 'product' then
               (select jsonb_build_object('id', o.id, 'author', jsonb_build_object('id', o.member_id, 'username', mm.username),
                         'note', case when public._mkt_sees(o.member_id, o.visibility, o.excl_followers, o.excl_premium, o.excl_countries,
@@ -2493,7 +2557,9 @@ language sql stable security definer set search_path = public as $$
     'my_share', (select x.id from public.market_recs x where x.member_id = coalesce(p_viewer, '') and x.kind = r.kind
                    and coalesce(x.product_id, x.list_id) = coalesce(r.product_id, r.list_id) and x.id <> r.id))
   || case when r.member_id = coalesce(p_viewer, '')
-          then jsonb_build_object('audience', public._mkt_audience_out(r.visibility, r.excl_followers, r.excl_premium, r.excl_countries, r.allowed))
+          then jsonb_build_object('audience', public._mkt_audience_out(r.visibility, r.excl_followers, r.excl_premium, r.excl_countries, r.allowed),
+                                  'suspended', case when r.suspended_at is not null
+                                                    then jsonb_build_object('reason', r.suspended_reason, 'at', r.suspended_at) end)
           else '{}'::jsonb end
 $$;
 
@@ -2539,6 +2605,10 @@ begin
   if public._mkt_blocked(m.member_id, true) then return jsonb_build_object('ok', false, 'reason', 'blocked'); end if;
   if v_id <> '' and not exists (select 1 from public.market_lists where id = v_id and member_id = m.member_id) then
     return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+  -- suspended by the team (Panel > Market): it can only be deleted
+  if v_id <> '' and exists (select 1 from public.market_lists where id = v_id and suspended_at is not null) then
+    return jsonb_build_object('ok', false, 'reason', 'suspended');
   end if;
   if length(nm) < 2 or length(nm) > 80 then return jsonb_build_object('ok', false, 'reason', 'name'); end if;
   if length(descr) > 500 then return jsonb_build_object('ok', false, 'reason', 'description'); end if;
@@ -2660,6 +2730,10 @@ begin
   aud := public._mkt_audience(x, m.member_id);
   if aud ? 'reason' then return jsonb_build_object('ok', false) || aud; end if;
   select id into rid from public.market_recs where member_id = m.member_id and kind = 'product' and product_id = p.id;
+  -- suspended by the team (Panel > Market): it can only be deleted
+  if rid is not null and exists (select 1 from public.market_recs where id = rid and suspended_at is not null) then
+    return jsonb_build_object('ok', false, 'reason', 'suspended');
+  end if;
   if rid is null then
     if (select count(*) from public.market_recs where member_id = m.member_id and created_at > now() - interval '1 day') >= 100 then
       return jsonb_build_object('ok', false, 'reason', 'limit');
@@ -2867,6 +2941,517 @@ end $$;
 
 drop function if exists public.market_review_save(text, text, jsonb, jsonb);   -- the first version: one review per order
 
+-- ------------------------------------------------------------------ 16. Panel > Market (the team)
+-- The Super Admin, or a staff member with the Market (or the Reports) section: see _mkt_staff.
+
+-- The numbers of the market. -> { ok, stores, products, orders, categories, reports, social }
+create or replace function public.market_admin_overview(p_token text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare who text;
+begin
+  who := public._mkt_staff(p_token);
+  perform public._mkt_settle(200);
+  return jsonb_build_object('ok', true,
+    'stores', (select jsonb_build_object('all', count(*), 'open', count(*) filter (where is_open and not suspended),
+                                         'closed', count(*) filter (where not is_open and not suspended),
+                                         'suspended', count(*) filter (where suspended))
+                 from public.market_stores),
+    'products', (select jsonb_build_object('all', count(*) filter (where status <> 'deleted'),
+                                           'active', count(*) filter (where status = 'active'),
+                                           'hidden', count(*) filter (where status = 'hidden'),
+                                           'suspended', count(*) filter (where status = 'suspended'))
+                   from public.market_products),
+    'orders', (select jsonb_build_object(
+                 'requested', count(*) filter (where status = 'requested'),
+                 'sold', count(*) filter (where status = 'sold'),
+                 'shipped', count(*) filter (where status = 'shipped'),
+                 'delivered', count(*) filter (where status = 'delivered' and settled_at is null),
+                 'return_requested', count(*) filter (where status = 'return_requested'),
+                 'open', count(*) filter (where settled_at is null and status in ('requested', 'sold', 'shipped', 'delivered', 'return_requested')),
+                 -- points held until the orders are paid or refunded
+                 'escrow', coalesce(sum(total) filter (where settled_at is null
+                                                         and status in ('requested', 'sold', 'shipped', 'delivered', 'return_requested')), 0),
+                 'sales_30d', coalesce(sum(total) filter (where status = 'delivered' and delivered_at > now() - interval '30 days'), 0),
+                 'orders_30d', count(*) filter (where created_at > now() - interval '30 days'),
+                 'staff', count(*) filter (where staff_action <> ''))
+               from public.market_orders),
+    'categories', (select count(*) from public.market_categories),
+    'reports', (select count(*) from public.market_reports where status = 'open'),
+    'social', jsonb_build_object(
+      'reviews', (select count(*) from public.market_reviews),
+      'lists', (select count(*) from public.market_lists),
+      'recs', (select count(*) from public.market_recs),
+      'suspended', (select count(*) from public.market_reviews where suspended_at is not null)
+                 + (select count(*) from public.market_lists where suspended_at is not null)
+                 + (select count(*) from public.market_recs where suspended_at is not null)));
+end $$;
+
+-- Panel > Market > Stores.
+--   p_filter  all | open | closed | suspended
+--   p_q       words of the name, its id, the seller (username or member id)
+--   p_sort    new | old | sales (points of the received orders: the tier) | products
+create or replace function public.market_admin_stores(p_token text, p_filter text default 'all', p_q text default '',
+  p_sort text default 'new', p_limit int default 40, p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; q text := lower(btrim(coalesce(p_q, ''))); f text := coalesce(nullif(p_filter, ''), 'all');
+  srt text := coalesce(nullif(p_sort, ''), 'new');
+  lim int := least(greatest(coalesce(p_limit, 40), 1), 200); off int := greatest(coalesce(p_offset, 0), 0); res jsonb;
+begin
+  who := public._mkt_staff(p_token);
+  with base as (
+    select s, lower(btrim(coalesce(m.status, ''))) as mstatus,
+           (select count(*) from public.market_products p where p.store_id = s.id and p.status = 'active') as nprod
+      from public.market_stores s left join public.members m on m.member_id = s.owner_id
+     where q = '' or strpos(lower(s.name), q) > 0 or lower(s.id) = q or lower(s.owner_id) = q
+        or lower(coalesce(m.username, '')) = ltrim(q, '@')
+  ), pick as (
+    select * from base b
+     where case f when 'open' then (b.s).is_open and not (b.s).suspended
+                  when 'closed' then not (b.s).is_open and not (b.s).suspended
+                  when 'suspended' then (b.s).suspended
+                  else true end
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from pick),
+    'counts', jsonb_build_object(
+      'all', (select count(*) from base),
+      'open', (select count(*) from base b where (b.s).is_open and not (b.s).suspended),
+      'closed', (select count(*) from base b where not (b.s).is_open and not (b.s).suspended),
+      'suspended', (select count(*) from base b where (b.s).suspended)),
+    'items', coalesce((select jsonb_agg(public._mkt_store_card(z.s) || jsonb_build_object(
+        'owner_status', z.mstatus, 'sales_points', (z.s).sales_points,
+        'open_orders', (select count(*) from public.market_orders o where o.store_id = (z.s).id and o.settled_at is null
+                          and o.status in ('requested', 'sold', 'shipped', 'delivered', 'return_requested')),
+        'reports', (select count(*) from public.market_reports r where r.store_id = (z.s).id and r.status = 'open'))
+        order by z.ord)
+      from (select pk.*, row_number() over (order by case srt when 'sales' then (pk.s).sales_points when 'products' then pk.nprod end desc nulls last,
+                                                     case when srt = 'old' then (pk.s).created_at end asc,
+                                                     (pk.s).created_at desc, (pk.s).id) as ord
+              from pick pk order by ord offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- Panel > Market > Products (deleted ones aside).
+--   p_filter  all | active | hidden | suspended | reported (open reports)
+--   p_q       words of the title, its id, a store (id or words of its name), the seller (username or id)
+--   p_sort    new | old | sales | price
+create or replace function public.market_admin_products(p_token text, p_filter text default 'all', p_q text default '',
+  p_sort text default 'new', p_limit int default 40, p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; q text := lower(btrim(coalesce(p_q, ''))); f text := coalesce(nullif(p_filter, ''), 'all');
+  srt text := coalesce(nullif(p_sort, ''), 'new');
+  lim int := least(greatest(coalesce(p_limit, 40), 1), 200); off int := greatest(coalesce(p_offset, 0), 0); res jsonb;
+begin
+  who := public._mkt_staff(p_token);
+  with base as (
+    select p, (select count(*) from public.market_reports r where r.kind = 'product' and r.target_id = p.id and r.status = 'open') as nrep
+      from public.market_products p
+      join public.market_stores s on s.id = p.store_id
+      left join public.members m on m.member_id = p.owner_id
+     where p.status <> 'deleted'
+       and (q = '' or strpos(lower(p.title), q) > 0 or lower(p.id) = q or lower(s.id) = q or strpos(lower(s.name), q) > 0
+            or lower(p.owner_id) = q or lower(coalesce(m.username, '')) = ltrim(q, '@'))
+  ), pick as (
+    select * from base b
+     where case f when 'active' then (b.p).status = 'active'
+                  when 'hidden' then (b.p).status = 'hidden'
+                  when 'suspended' then (b.p).status = 'suspended'
+                  when 'reported' then b.nrep > 0
+                  else true end
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from pick),
+    'counts', jsonb_build_object(
+      'all', (select count(*) from base),
+      'active', (select count(*) from base b where (b.p).status = 'active'),
+      'hidden', (select count(*) from base b where (b.p).status = 'hidden'),
+      'suspended', (select count(*) from base b where (b.p).status = 'suspended'),
+      'reported', (select count(*) from base b where b.nrep > 0)),
+    'items', coalesce((select jsonb_agg(public._mkt_card(z.p) || jsonb_build_object(
+        'suspended_reason', (z.p).suspended_reason, 'suspended_with_store', (z.p).suspended_with_store,
+        'reports', z.nrep, 'updated_at', (z.p).updated_at)
+        order by z.ord)
+      from (select pk.*, row_number() over (order by case srt when 'sales' then (pk.p).sales when 'price' then (pk.p).price end desc nulls last,
+                                                     case when srt = 'old' then (pk.p).created_at end asc,
+                                                     (pk.p).created_at desc, (pk.p).id) as ord
+              from pick pk order by ord offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- What the team may do with an order now: refund the buyer (not paid yet, not closed), or pay
+-- the seller at once (on its way or received, not paid yet).
+create or replace function public._mkt_admin_can(o public.market_orders) returns jsonb
+language sql stable as $$
+  select to_jsonb(array_remove(array[
+    case when o.settled_at is null and o.status in ('requested', 'sold', 'shipped', 'delivered', 'return_requested') then 'refund' end,
+    case when o.settled_at is null and o.status in ('shipped', 'delivered', 'return_requested') then 'release' end
+  ], null))
+$$;
+
+-- Panel > Market > Orders.
+--   p_filter  open (not paid nor closed) | requested | sold | shipped | delivered (waiting for the end of their return
+--             period) | return_requested | paid | closed (declined, cancelled, returned) | staff (the team intervened) | all
+--   p_q       its id, the product (id or words of its title), the store (id or words of its name),
+--             the buyer or the seller (username or member id)
+create or replace function public.market_admin_orders(p_token text, p_filter text default 'open', p_q text default '',
+  p_limit int default 40, p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; q text := lower(btrim(coalesce(p_q, ''))); f text := coalesce(nullif(p_filter, ''), 'open');
+  lim int := least(greatest(coalesce(p_limit, 40), 1), 200); off int := greatest(coalesce(p_offset, 0), 0); res jsonb;
+begin
+  who := public._mkt_staff(p_token);
+  perform public._mkt_settle(200);
+  with base as (
+    select o from public.market_orders o
+      left join public.market_stores s on s.id = o.store_id
+      left join public.members mb on mb.member_id = o.buyer_id
+      left join public.members ms on ms.member_id = o.seller_id
+     where q = '' or lower(o.id) = q or lower(o.product_id) = q or strpos(lower(o.title), q) > 0 or lower(o.store_id) = q
+        or strpos(lower(coalesce(s.name, '')), q) > 0 or lower(o.buyer_id) = q or lower(o.seller_id) = q
+        or lower(coalesce(mb.username, '')) = ltrim(q, '@') or lower(coalesce(ms.username, '')) = ltrim(q, '@')
+  ), tagged as (
+    select b.o,
+           case when (b.o).status in ('declined', 'cancelled', 'returned') then 'closed'
+                when (b.o).settled_at is not null then 'paid'
+                else (b.o).status end as tab
+      from base b
+  ), pick as (
+    select * from tagged t
+     where case f when 'all' then true
+                  when 'open' then t.tab in ('requested', 'sold', 'shipped', 'delivered', 'return_requested')
+                  when 'staff' then (t.o).staff_action <> ''
+                  else t.tab = f end
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from pick),
+    'counts', (select jsonb_build_object(
+        'all', count(*),
+        'open', count(*) filter (where tab in ('requested', 'sold', 'shipped', 'delivered', 'return_requested')),
+        'requested', count(*) filter (where tab = 'requested'), 'sold', count(*) filter (where tab = 'sold'),
+        'shipped', count(*) filter (where tab = 'shipped'), 'delivered', count(*) filter (where tab = 'delivered'),
+        'return_requested', count(*) filter (where tab = 'return_requested'), 'paid', count(*) filter (where tab = 'paid'),
+        'closed', count(*) filter (where tab = 'closed'), 'staff', count(*) filter (where (o).staff_action <> ''))
+      from tagged),
+    'items', coalesce((select jsonb_agg(public._mkt_order_json(z.o, '') || jsonb_build_object(
+        'can', public._mkt_admin_can(z.o), 'staff_by', (z.o).staff_by, 'released_at', (z.o).released_at,
+        'commission', (z.o).commission, 'seller_gets', public._mkt_seller_gets(z.o))
+        order by (z.o).created_at desc, (z.o).id)
+      from (select * from pick order by (pick.o).created_at desc, (pick.o).id offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- Panel > Market > Orders: the team steps in (p_reason 3 to 300 characters, which both read).
+--   refund   the buyer gets the points back: a request or a sold order → cancelled (back in stock); on its
+--            way → cancelled; received (or a return asked) → returned
+--   release  on its way, received or a return asked → received, and the seller (and who shared the link)
+--            is paid at once, without waiting for the end of the return period
+-- An order already paid (or closed) stays as it is. Both the buyer and the seller are told.
+--   -> { ok: true, status, points } | { ok: false, reason: action | reason | not_found | settled | state, status }
+create or replace function public.market_admin_order(p_token text, p_id text, p_action text, p_reason text default '')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; o public.market_orders; v_status text; gets int;
+  why text := left(btrim(regexp_replace(coalesce(p_reason, ''), '\s+', ' ', 'g')), 300);
+begin
+  who := public._mkt_staff(p_token);
+  if p_action not in ('refund', 'release') then return jsonb_build_object('ok', false, 'reason', 'action'); end if;
+  if length(why) < 3 then return jsonb_build_object('ok', false, 'reason', 'reason'); end if;
+  perform public._mkt_settle(50);
+  select * into o from public.market_orders where id = btrim(coalesce(p_id, '')) for update;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  if o.settled_at is not null then return jsonb_build_object('ok', false, 'reason', 'settled', 'status', o.status); end if;
+  if not public._mkt_admin_can(o) ? p_action then return jsonb_build_object('ok', false, 'reason', 'state', 'status', o.status); end if;
+
+  if p_action = 'refund' then
+    perform public._mkt_refund(o);
+    if o.status in ('requested', 'sold') then
+      update public.market_products set stock = least(100000, stock + o.qty),
+             sales = greatest(0, sales - case when o.status = 'sold' then o.qty else 0 end) where id = o.product_id;
+      v_status := 'cancelled';
+    else
+      update public.market_products set sales = greatest(0, sales - o.qty) where id = o.product_id;
+      v_status := case when o.status = 'shipped' then 'cancelled' else 'returned' end;
+    end if;
+    update public.market_orders
+       set status = v_status, closed_at = case when v_status = 'cancelled' then now() else closed_at end,
+           returned_at = case when v_status = 'returned' then now() else returned_at end,
+           staff_action = 'refund', staff_reason = why, staff_by = who, staff_at = now(), updated_at = now()
+     where id = o.id;
+    perform public._mkt_notify(o.buyer_id, 'market_staff_refund', 'The team refunded your order',
+      '+' || o.total::text || ' PT · ' || o.title || ' · ' || why,
+      './Market.html#purchases/' || case when v_status = 'returned' then 'returned' else 'requests' end);
+    perform public._mkt_notify(o.seller_id, 'market_staff_refund', 'The team cancelled your sale and refunded the buyer',
+      o.title || ' · ' || why, './Market.html#sales/' || case when v_status = 'returned' then 'returned' else 'requests' end);
+    return jsonb_build_object('ok', true, 'status', v_status, 'points', o.total);
+  end if;
+
+  update public.market_orders
+     set status = 'delivered', delivered_at = coalesce(delivered_at, now()), released_at = now(),
+         staff_action = 'release', staff_reason = why, staff_by = who, staff_at = now(), updated_at = now()
+   where id = o.id
+  returning * into o;
+  gets := public._mkt_seller_gets(o);
+  perform public._mkt_pay(o, false);
+  perform public._mkt_notify(o.seller_id, 'market_staff_release', 'The team released the points of your sale',
+    '+' || gets::text || ' PT · ' || o.title || ' · ' || why, './Market.html#sales/delivered');
+  perform public._mkt_notify(o.buyer_id, 'market_staff_release', 'The team closed your order and paid the seller',
+    o.title || ' · ' || why, './Market.html#purchases/received');
+  return jsonb_build_object('ok', true, 'status', 'delivered', 'points', gets);
+end $$;
+
+-- Panel > Market > Categories (made by the sellers).
+--   p_q     words of the name
+--   p_sort  products | new | name
+create or replace function public.market_admin_categories(p_token text, p_q text default '', p_sort text default 'products',
+  p_limit int default 60, p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; q text := public._mkt_norm(p_q); srt text := coalesce(nullif(p_sort, ''), 'products');
+  lim int := least(greatest(coalesce(p_limit, 60), 1), 300); off int := greatest(coalesce(p_offset, 0), 0); res jsonb;
+begin
+  who := public._mkt_staff(p_token);
+  with base as (
+    select c.*,
+           (select count(*) from public.market_product_categories pc join public.market_products p on p.id = pc.product_id and p.status = 'active'
+             where pc.category_id = c.id) as live,
+           (select count(*) from public.market_product_categories pc join public.market_products p on p.id = pc.product_id and p.status <> 'deleted'
+             where pc.category_id = c.id) as used
+      from public.market_categories c
+     where q = '' or strpos(c.name_key, q) > 0 or lower(c.id) = lower(q)
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from base),
+    'unused', (select count(*) from base where used = 0),
+    'items', coalesce((select jsonb_agg(jsonb_build_object('id', z.id, 'name', z.name, 'products', z.live, 'used', z.used,
+        'created_at', z.created_at,
+        'by', jsonb_build_object('id', z.created_by, 'username', coalesce((select m.username from public.members m where m.member_id = z.created_by), '')))
+        order by z.ord)
+      from (select b.*, row_number() over (order by case when srt = 'products' then b.live end desc nulls last,
+                                                    case when srt = 'name' then b.name_key end asc,
+                                                    b.created_at desc, b.id) as ord
+              from base b order by ord offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- Rename a category (p_value: 2 to 40 characters), merge it into another one (p_value: its id;
+-- its products move there), or delete it (only when no product uses it).
+--   -> { ok: true, id } | { ok: false, reason: action | not_found | name | exists (id, name) | target | used }
+create or replace function public.market_admin_category(p_token text, p_id text, p_action text, p_value text default '')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare who text; c public.market_categories; t public.market_categories; nm text; k text;
+begin
+  who := public._mkt_staff(p_token);
+  if p_action not in ('rename', 'merge', 'delete') then return jsonb_build_object('ok', false, 'reason', 'action'); end if;
+  select * into c from public.market_categories where id = btrim(coalesce(p_id, '')) for update;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  if p_action = 'rename' then
+    nm := public._mkt_line(p_value); k := public._mkt_norm(p_value);
+    if length(nm) < 2 or length(nm) > 40 then return jsonb_build_object('ok', false, 'reason', 'name'); end if;
+    select * into t from public.market_categories where name_key = k and id <> c.id;
+    if found then return jsonb_build_object('ok', false, 'reason', 'exists', 'id', t.id, 'name', t.name); end if;
+    update public.market_categories set name = nm, name_key = k where id = c.id;
+    return jsonb_build_object('ok', true, 'id', c.id);
+  elsif p_action = 'merge' then
+    select * into t from public.market_categories where id = btrim(coalesce(p_value, '')) and id <> c.id;
+    if not found then return jsonb_build_object('ok', false, 'reason', 'target'); end if;
+    insert into public.market_product_categories (product_id, category_id)
+      select pc.product_id, t.id from public.market_product_categories pc where pc.category_id = c.id
+    on conflict do nothing;
+    delete from public.market_categories where id = c.id;
+    return jsonb_build_object('ok', true, 'id', t.id);
+  end if;
+  if exists (select 1 from public.market_product_categories pc join public.market_products p on p.id = pc.product_id and p.status <> 'deleted'
+              where pc.category_id = c.id) then
+    return jsonb_build_object('ok', false, 'reason', 'used');
+  end if;
+  delete from public.market_categories where id = c.id;
+  return jsonb_build_object('ok', true, 'id', c.id);
+end $$;
+
+-- Panel > Market > Reviews and lists: what the members published (reviews, purchase lists,
+-- recommendations), whoever may read it.
+--   p_kind    reviews | lists | recs
+--   p_filter  all | suspended
+--   p_q       words of the text, the product or the list, the author (username or member id), its id
+create or replace function public.market_admin_social(p_token text, p_kind text default 'reviews', p_filter text default 'all',
+  p_q text default '', p_limit int default 40, p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; q text := lower(btrim(coalesce(p_q, ''))); u text; susp boolean := coalesce(p_filter, '') = 'suspended';
+  lim int := least(greatest(coalesce(p_limit, 40), 1), 200); off int := greatest(coalesce(p_offset, 0), 0); res jsonb;
+begin
+  who := public._mkt_staff(p_token);
+  u := ltrim(q, '@');
+  with base as (
+    select 'review'::text as kind, 'RV' || r.id::text as id, r.member_id as author, r.created_at, r.visibility,
+           coalesce(r.audience_before->>'visibility', r.visibility) as vis_before,
+           p.title as title, coalesce(p.images->>0, '') as image, './Market.html?Product=' || p.id as href,
+           (select string_agg(x, ' · ') from jsonb_array_elements_text(r.pros) x) as pros,
+           (select string_agg(x, ' · ') from jsonb_array_elements_text(r.cons) x) as cons,
+           r.order_id is not null as verified, r.suspended_at, r.suspended_reason, r.suspended_by
+      from public.market_reviews r left join public.market_products p on p.id = r.product_id
+     where p_kind = 'reviews'
+    union all
+    select 'list', l.id, l.member_id, l.created_at, l.visibility, coalesce(l.audience_before->>'visibility', l.visibility),
+           l.name, coalesce((select p.images->>0 from public.market_list_items i join public.market_products p on p.id = i.product_id
+                              where i.list_id = l.id and jsonb_array_length(p.images) > 0 order by i.added_at desc limit 1), ''),
+           './Market.html?List=' || l.id, l.description, '', false, l.suspended_at, l.suspended_reason, l.suspended_by
+      from public.market_lists l
+     where p_kind = 'lists'
+    union all
+    select 'rec', r.id, r.member_id, r.created_at, r.visibility, coalesce(r.audience_before->>'visibility', r.visibility),
+           coalesce(p.title, l.name, ''), coalesce(p.images->>0, ''),
+           case when r.kind = 'product' then './Market.html?Product=' || r.product_id else './Market.html?List=' || r.list_id end,
+           r.note, '', r.root_id is not null, r.suspended_at, r.suspended_reason, r.suspended_by
+      from public.market_recs r
+      left join public.market_products p on p.id = r.product_id
+      left join public.market_lists l on l.id = r.list_id
+     where p_kind = 'recs'
+  ), named as (
+    select b.*, coalesce(m.username, '') as uname from base b left join public.members m on m.member_id = b.author
+  ), pick as (
+    select * from named n
+     where (not susp or n.suspended_at is not null)
+       and (q = '' or lower(n.id) = q or lower(n.author) = q or lower(n.uname) = u or strpos(lower(coalesce(n.title, '')), q) > 0
+            or strpos(lower(coalesce(n.pros, '')), q) > 0 or strpos(lower(coalesce(n.cons, '')), q) > 0)
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from pick),
+    'counts', jsonb_build_object('all', (select count(*) from named), 'suspended', (select count(*) from named where suspended_at is not null)),
+    'items', coalesce((select jsonb_agg(jsonb_build_object(
+        'kind', z.kind, 'id', z.id, 'author', jsonb_build_object('id', z.author, 'username', z.uname), 'created_at', z.created_at,
+        'visibility', z.vis_before, 'title', z.title, 'image', z.image, 'href', z.href,
+        -- reviews: the good and the bad points; lists: the description; recommendations: the note
+        'text', coalesce(z.pros, ''), 'cons', coalesce(z.cons, ''), 'verified', z.verified,
+        'suspended', case when z.suspended_at is not null
+                          then jsonb_build_object('reason', z.suspended_reason, 'at', z.suspended_at, 'by', z.suspended_by) end)
+        order by z.created_at desc, z.id)
+      from (select * from pick order by created_at desc, id offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- Suspend (p_reason 3 to 300 characters: private to its author, who reads why and can only delete
+-- it), restore (its audience comes back) or delete a review (p_kind review, p_id RV…), a purchase list
+-- (list, MPL…) or a recommendation (rec, REC…). Its author is told.
+--   -> { ok: true, status } | { ok: false, reason: kind | action | reason | not_found | state }
+create or replace function public.market_admin_social_moderate(p_token text, p_kind text, p_id text, p_action text,
+  p_reason text default '')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; v_id text := btrim(coalesce(p_id, '')); why text := left(btrim(regexp_replace(coalesce(p_reason, ''), '\s+', ' ', 'g')), 300);
+  rv public.market_reviews; l public.market_lists; r public.market_recs; author text; label text; what text; href text;
+  was_susp boolean; aud jsonb; v_product text;
+begin
+  who := public._mkt_staff(p_token);
+  if p_kind not in ('review', 'list', 'rec') then return jsonb_build_object('ok', false, 'reason', 'kind'); end if;
+  if p_action not in ('suspend', 'restore', 'delete') then return jsonb_build_object('ok', false, 'reason', 'action'); end if;
+  if p_action <> 'restore' and length(why) < 3 then return jsonb_build_object('ok', false, 'reason', 'reason'); end if;
+  if p_kind = 'review' then
+    if v_id !~ '^(RV)?[0-9]{1,18}$' then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    select * into rv from public.market_reviews where id = regexp_replace(v_id, '^RV', '')::bigint for update;
+    if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    author := rv.member_id; was_susp := rv.suspended_at is not null; v_product := rv.product_id;
+    label := coalesce((select p.title from public.market_products p where p.id = rv.product_id), '');
+    what := 'review'; href := './Market.html?Product=' || rv.product_id;
+    aud := jsonb_build_object('visibility', rv.visibility, 'excl_followers', rv.excl_followers, 'excl_premium', rv.excl_premium,
+                              'excl_countries', rv.excl_countries, 'allowed', to_jsonb(rv.allowed));
+    if p_action = 'suspend' and not was_susp then
+      update public.market_reviews set audience_before = aud, visibility = 'private', excl_followers = false, excl_premium = false,
+             excl_countries = '', allowed = '{}', suspended_at = now(), suspended_reason = why, suspended_by = who where id = rv.id;
+    elsif p_action = 'restore' and was_susp then
+      update public.market_reviews
+         set visibility = coalesce(audience_before->>'visibility', 'public'),
+             excl_followers = coalesce((audience_before->>'excl_followers')::boolean, false),
+             excl_premium = coalesce((audience_before->>'excl_premium')::boolean, false),
+             excl_countries = coalesce(audience_before->>'excl_countries', ''),
+             allowed = coalesce(array(select jsonb_array_elements_text(coalesce(audience_before->'allowed', '[]'::jsonb))), '{}'),
+             audience_before = null, suspended_at = null, suspended_reason = '', suspended_by = ''
+       where id = rv.id;
+    elsif p_action = 'delete' then
+      delete from public.market_reviews where id = rv.id;
+    else
+      return jsonb_build_object('ok', false, 'reason', 'state');
+    end if;
+    perform public._mkt_review_counts(v_product);
+  elsif p_kind = 'list' then
+    select * into l from public.market_lists where id = v_id for update;
+    if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    author := l.member_id; was_susp := l.suspended_at is not null; label := l.name; what := 'list';
+    href := './Market.html?List=' || l.id;
+    aud := jsonb_build_object('visibility', l.visibility, 'excl_followers', l.excl_followers, 'excl_premium', l.excl_premium,
+                              'excl_countries', l.excl_countries, 'allowed', to_jsonb(l.allowed));
+    if p_action = 'suspend' and not was_susp then
+      update public.market_lists set audience_before = aud, visibility = 'private', excl_followers = false, excl_premium = false,
+             excl_countries = '', allowed = '{}', suspended_at = now(), suspended_reason = why, suspended_by = who where id = l.id;
+    elsif p_action = 'restore' and was_susp then
+      update public.market_lists
+         set visibility = coalesce(audience_before->>'visibility', 'public'),
+             excl_followers = coalesce((audience_before->>'excl_followers')::boolean, false),
+             excl_premium = coalesce((audience_before->>'excl_premium')::boolean, false),
+             excl_countries = coalesce(audience_before->>'excl_countries', ''),
+             allowed = coalesce(array(select jsonb_array_elements_text(coalesce(audience_before->'allowed', '[]'::jsonb))), '{}'),
+             audience_before = null, suspended_at = null, suspended_reason = '', suspended_by = ''
+       where id = l.id;
+    elsif p_action = 'delete' then
+      delete from public.market_lists where id = l.id;
+    else
+      return jsonb_build_object('ok', false, 'reason', 'state');
+    end if;
+  else
+    select * into r from public.market_recs where id = v_id for update;
+    if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+    author := r.member_id; was_susp := r.suspended_at is not null; what := 'recommendation';
+    label := coalesce((select p.title from public.market_products p where p.id = r.product_id),
+                      (select x.name from public.market_lists x where x.id = r.list_id), '');
+    href := case when r.kind = 'product' then './Market.html?Product=' || r.product_id else './Market.html?List=' || r.list_id end;
+    aud := jsonb_build_object('visibility', r.visibility, 'excl_followers', r.excl_followers, 'excl_premium', r.excl_premium,
+                              'excl_countries', r.excl_countries, 'allowed', to_jsonb(r.allowed));
+    if p_action = 'suspend' and not was_susp then
+      update public.market_recs set audience_before = aud, visibility = 'private', excl_followers = false, excl_premium = false,
+             excl_countries = '', allowed = '{}', suspended_at = now(), suspended_reason = why, suspended_by = who where id = r.id;
+    elsif p_action = 'restore' and was_susp then
+      update public.market_recs
+         set visibility = coalesce(audience_before->>'visibility', 'public'),
+             excl_followers = coalesce((audience_before->>'excl_followers')::boolean, false),
+             excl_premium = coalesce((audience_before->>'excl_premium')::boolean, false),
+             excl_countries = coalesce(audience_before->>'excl_countries', ''),
+             allowed = coalesce(array(select jsonb_array_elements_text(coalesce(audience_before->'allowed', '[]'::jsonb))), '{}'),
+             audience_before = null, suspended_at = null, suspended_reason = '', suspended_by = ''
+       where id = r.id;
+    elsif p_action = 'delete' then
+      delete from public.market_recs where id = r.id;
+    else
+      return jsonb_build_object('ok', false, 'reason', 'state');
+    end if;
+  end if;
+  -- the author is told (the Market tab of their profile, where it is listed)
+  href := case p_kind when 'review' then './Profile.html#market/reviews' when 'list' then './Profile.html#market/lists'
+                      else './Profile.html#market/recs' end;
+  perform public._mkt_notify(author,
+    case p_action when 'suspend' then 'market_social_suspended' when 'restore' then 'market_social_restored' else 'market_social_deleted' end,
+    case p_action when 'suspend' then 'The team suspended your ' || what
+                  when 'restore' then 'The team restored your ' || what else 'The team deleted your ' || what end,
+    left(label || case when p_action = 'restore' then '' else ' · ' || why end, 300), href);
+  return jsonb_build_object('ok', true, 'status', case p_action when 'suspend' then 'suspended' when 'restore' then 'active' else 'deleted' end);
+end $$;
+
+-- The home page: the stores with the most points of received orders (their tier), open and with
+-- products on sale. -> { items: [store cards] }
+create or replace function public.market_top_stores(p_member text default '', p_limit int default 8)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('items', coalesce(jsonb_agg(public._mkt_store_card(x.s) order by x.ord), '[]'::jsonb))
+    from (select s, row_number() over (order by s.sales_points desc, s.created_at desc, s.id) as ord
+            from public.market_stores s
+            join public.members mm on mm.member_id = s.owner_id and lower(btrim(coalesce(mm.status, ''))) = 'active'
+           where not s.suspended and s.is_open
+             and exists (select 1 from public.market_products p where p.store_id = s.id and p.status = 'active')
+           order by s.sales_points desc, s.created_at desc, s.id
+           limit least(greatest(coalesce(p_limit, 8), 1), 24)) x
+$$;
+
 -- ------------------------------------------------------------------ 14. who may call what
 do $$
 declare f text;
@@ -2882,7 +3467,8 @@ begin
     'public._mkt_audience_out(text, boolean, boolean, text, text[])', 'public._mkt_review_counts(text)',
     'public._mkt_review_json(public.market_reviews, text)', 'public._mkt_list_json(public.market_lists, text)',
     'public._mkt_rec_json(public.market_recs, text)', 'public._mkt_root_of(text, text)', 'public._mkt_published(text[], text)',
-    'public._mkt_published_json(text, text, text)']
+    'public._mkt_published_json(text, text, text)', 'public._mkt_pay(public.market_orders, boolean)',
+    'public._mkt_admin_can(public.market_orders)']
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f);
   end loop;
@@ -2905,7 +3491,12 @@ begin
     'public.market_address(text)', 'public.market_address_save(text, jsonb)', 'public.market_report(text, text, text, text, text)',
     'public.market_reports_admin(text, text, int)', 'public.market_reports_count(text)',
     'public.market_reports_set(text, bigint[], text)', 'public.market_reports_delete(text, bigint[])',
-    'public.market_moderate(text, text, text, text, text)']
+    'public.market_moderate(text, text, text, text, text)', 'public.market_admin_overview(text)',
+    'public.market_admin_stores(text, text, text, text, int, int)', 'public.market_admin_products(text, text, text, text, int, int)',
+    'public.market_admin_orders(text, text, text, int, int)', 'public.market_admin_order(text, text, text, text)',
+    'public.market_admin_categories(text, text, text, int, int)', 'public.market_admin_category(text, text, text, text)',
+    'public.market_admin_social(text, text, text, text, int, int)',
+    'public.market_admin_social_moderate(text, text, text, text, text)', 'public.market_top_stores(text, int)']
   loop
     execute format('revoke all on function %s from public', f);
     execute format('grant execute on function %s to anon, authenticated', f);

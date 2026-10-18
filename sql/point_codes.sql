@@ -7,7 +7,8 @@
 -- Dashboard > Points > "Earn points" asks for it: the points stored with the
 -- code are added to the member's balance, once, and the code is used up.
 --
---   Make codes in the SQL editor (10 codes of 500 points each):
+--   Make codes in Panel > Points codes (the Super Admin, or staff with the Points codes
+--   section: section 6 below), or in the SQL editor (10 codes of 500 points each):
 --     select * from public.point_codes_generate(10, 500, 'Patreon - 500 points');
 --   or add serials of your own:
 --     insert into public.point_codes (code, points, note) values ('GOLD-2026-0001', 1000, 'Patreon');
@@ -44,6 +45,7 @@ create table if not exists public.point_codes (
 alter table public.point_codes add column if not exists note text not null default '';
 alter table public.point_codes add column if not exists expires_at timestamptz;
 alter table public.point_codes add column if not exists country text not null default '';
+alter table public.point_codes add column if not exists made_by text not null default '';   -- Panel > Points codes: who made it
 
 do $$
 begin
@@ -350,7 +352,119 @@ begin
   return jsonb_build_object('ok', true, 'row', to_jsonb(r));
 end $$;
 
--- ------------------------------------------------------------------ 6. who may call what
+-- ------------------------------------------------------------------ 6. Panel > Points codes (the team)
+-- The Super Admin, or a staff member with the Points codes section. -> who did it
+create or replace function public._pcode_staff(p_token text) returns text
+language plpgsql security definer set search_path = public as $$
+declare s record;
+begin
+  s := public._staff(p_token);
+  if s.role <> 'super' and position(',points,' in ',' || replace(coalesce(s.sections, ''), ' ', '') || ',') = 0 then
+    raise exception 'staff_forbidden';
+  end if;
+  return coalesce(nullif(s.username, ''), s.role);
+end $$;
+
+create or replace function public._pcode_fmt(p_code text) returns text language sql immutable as $$
+  select case when length(p_code) = 16 and p_code ~ '^[A-Z0-9]+$'
+              then substr(p_code, 1, 4) || '-' || substr(p_code, 5, 4) || '-' || substr(p_code, 9, 4) || '-' || substr(p_code, 13, 4)
+              else p_code end
+$$;
+
+-- The codes, newest first.
+--   p_filter  unused (can still be used) | used | expired (never used) | all
+--   p_q       a part of the serial (dashes and spaces aside), words of the note, a member (username or id)
+--   -> { ok, total, counts: { unused, used, expired, all }, points: { unused, used }, items: [ … ] }
+create or replace function public.point_codes_admin(p_token text, p_filter text default 'unused', p_q text default '',
+  p_limit int default 50, p_offset int default 0)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; q text := lower(btrim(coalesce(p_q, ''))); qc text; f text := coalesce(nullif(p_filter, ''), 'unused');
+  lim int := least(greatest(coalesce(p_limit, 50), 1), 500); off int := greatest(coalesce(p_offset, 0), 0); res jsonb;
+begin
+  who := public._pcode_staff(p_token);
+  qc := upper(regexp_replace(q, '[^A-Za-z0-9]', '', 'g'));
+  with base as (
+    select c.*, coalesce(m.username, '') as uname,
+           case when c.used then 'used' when c.expires_at is not null and c.expires_at <= now() then 'expired' else 'unused' end as state
+      from public.point_codes c left join public.members m on m.member_id = c.member_id
+     where q = '' or (length(qc) >= 3 and strpos(c.code, qc) > 0) or strpos(lower(c.note), q) > 0
+        or lower(coalesce(c.member_id, '')) = q or lower(coalesce(m.username, '')) = ltrim(q, '@')
+  ), pick as (
+    select * from base where f = 'all' or state = f
+  )
+  select jsonb_build_object('ok', true, 'total', (select count(*) from pick),
+    'counts', (select jsonb_build_object('all', count(*), 'unused', count(*) filter (where state = 'unused'),
+                                         'used', count(*) filter (where state = 'used'),
+                                         'expired', count(*) filter (where state = 'expired')) from base),
+    'points', (select jsonb_build_object('unused', coalesce(sum(points) filter (where state = 'unused'), 0),
+                                         'used', coalesce(sum(points) filter (where state = 'used'), 0)) from base),
+    'items', coalesce((select jsonb_agg(jsonb_build_object(
+        'code', public._pcode_fmt(z.code), 'points', z.points, 'note', z.note, 'created_at', z.created_at,
+        'expires_at', z.expires_at, 'state', z.state, 'used_at', z.used_at, 'country', z.country, 'made_by', z.made_by,
+        -- before use: the only member who may use it; after use: who used it
+        'member', case when coalesce(z.member_id, '') <> '' then jsonb_build_object('id', z.member_id, 'username', z.uname) end)
+        order by coalesce(z.used_at, z.created_at) desc, z.code)
+      from (select * from pick order by coalesce(used_at, created_at) desc, code offset off limit lim) z), '[]'::jsonb))
+    into res;
+  return res;
+end $$;
+
+-- Make p_count (1 to 500) new codes of p_points (1 to 100,000,000) points each. p_note: up to 120
+-- characters (Patreon - 500 points…); p_days: they expire after that many days (1 to 3650; empty:
+-- never); p_member: only this member may use them (username or member id; empty: anybody).
+--   -> { ok: true, codes: [XXXX-XXXX-XXXX-XXXX …], points, expires_at, member }
+--      { ok: false, reason: count | points | note | days | member }
+create or replace function public.point_codes_admin_make(p_token text, p_count int, p_points int, p_note text default '',
+  p_days int default null, p_member text default '')
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text; i int := 0; raw text; tries int := 0; exp timestamptz; codes text[] := '{}';
+  v_note text := btrim(regexp_replace(coalesce(p_note, ''), '\s+', ' ', 'g')); v_member text := btrim(coalesce(p_member, ''));
+  v_mid text; v_uname text;
+begin
+  who := public._pcode_staff(p_token);
+  if coalesce(p_count, 0) < 1 or p_count > 500 then return jsonb_build_object('ok', false, 'reason', 'count'); end if;
+  if coalesce(p_points, 0) < 1 or p_points > 100000000 then return jsonb_build_object('ok', false, 'reason', 'points'); end if;
+  if length(v_note) > 120 then return jsonb_build_object('ok', false, 'reason', 'note'); end if;
+  if p_days is not null and (p_days < 1 or p_days > 3650) then return jsonb_build_object('ok', false, 'reason', 'days'); end if;
+  if v_member <> '' then
+    select member_id, username into v_mid, v_uname from public.members
+     where member_id = v_member or lower(username) = lower(ltrim(v_member, '@'))
+     order by (member_id = v_member) desc limit 1;
+    if v_mid is null then return jsonb_build_object('ok', false, 'reason', 'member'); end if;
+  end if;
+  exp := case when p_days is null then null else now() + make_interval(days => p_days) end;
+  while i < p_count loop
+    raw := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16));
+    begin
+      insert into public.point_codes (code, points, note, expires_at, member_id, made_by)
+      values (raw, p_points, v_note, exp, v_mid, who);
+      i := i + 1;
+      codes := codes || public._pcode_fmt(raw);
+    exception when unique_violation then
+      tries := tries + 1;
+      if tries > 50 then raise exception 'could not make unique codes'; end if;
+    end;
+  end loop;
+  return jsonb_build_object('ok', true, 'codes', to_jsonb(codes), 'points', p_points, 'expires_at', exp,
+    'member', case when v_mid is not null then jsonb_build_object('id', v_mid, 'username', v_uname) end);
+end $$;
+
+-- Delete codes nobody used (a used code stays: it is the member's history).
+--   -> { ok: true, deleted }
+create or replace function public.point_codes_admin_delete(p_token text, p_codes text[])
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare who text; n int;
+begin
+  who := public._pcode_staff(p_token);
+  delete from public.point_codes
+   where not used and code = any (select upper(regexp_replace(x, '[^A-Za-z0-9]', '', 'g')) from unnest(coalesce(p_codes, '{}')) x);
+  get diagnostics n = row_count;
+  return jsonb_build_object('ok', true, 'deleted', n);
+end $$;
+
+-- ------------------------------------------------------------------ 7. who may call what
 revoke all on function public._points(text) from public, anon, authenticated;
 revoke all on function public._point_code_norm() from public, anon, authenticated;
 revoke all on function public._guard_code_points() from public, anon, authenticated;
@@ -361,5 +475,13 @@ revoke all on function public.staff_site_link_save(text, text, text) from public
 grant execute on function public.points_code_redeem(text, text, text) to anon, authenticated;
 grant execute on function public.points_code_history(text) to anon, authenticated;
 grant execute on function public.staff_site_link_save(text, text, text) to anon, authenticated;
+revoke all on function public._pcode_staff(text) from public, anon, authenticated;
+revoke all on function public._pcode_fmt(text) from public, anon, authenticated;
+revoke all on function public.point_codes_admin(text, text, text, int, int) from public;
+revoke all on function public.point_codes_admin_make(text, int, int, text, int, text) from public;
+revoke all on function public.point_codes_admin_delete(text, text[]) from public;
+grant execute on function public.point_codes_admin(text, text, text, int, int) to anon, authenticated;
+grant execute on function public.point_codes_admin_make(text, int, int, text, int, text) to anon, authenticated;
+grant execute on function public.point_codes_admin_delete(text, text[]) to anon, authenticated;
 
 notify pgrst, 'reload schema';

@@ -1668,7 +1668,7 @@
       if (item.can_share) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="reshare">${ICON.repost}<span>${esc(t("mkt.rs.btn"))}</span></button>`);
       else if (item.my_share) acts.push(`<span class="mkt-mi-done">${ICON.check}<span>${esc(t("mkt.rs.done"))}</span></span>`);
       if (item.mine) {
-        if (item.kind === "product" && !item.root) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-rec">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
+        if (item.kind === "product" && !item.root && !item.suspended) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-rec">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
         acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="copy">${ICON.link}<span>${esc(t("mkt.copyLink"))}</span></button>`);
         acts.push(`<button class="btn btn-sm btn-ghost mkt-del" type="button" data-mi-act="delete-rec">${ICON.trash}<span>${esc(t("common.delete"))}</span></button>`);
       }
@@ -1677,7 +1677,7 @@
       body = M.listBodyHtml(item, u);
       if (item.can_share) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="reshare-list">${ICON.repost}<span>${esc(t("mkt.rs.btn"))}</span></button>`);
       else if (item.my_share) acts.push(`<span class="mkt-mi-done">${ICON.check}<span>${esc(t("mkt.rs.done"))}</span></span>`);
-      if (item.mine) {
+      if (item.mine && !item.suspended) {
         acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-list">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
         acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="copy">${ICON.link}<span>${esc(t("mkt.copyLink"))}</span></button>`);
       }
@@ -1691,14 +1691,19 @@
           <ul class="con">${(item.cons || []).map((x) => `<li dir="auto">${esc(x)}</li>`).join("") || `<li class="muted">${esc(t("mkt.noCons"))}</li>`}</ul>
         </div>`;
       if (item.mine) {
-        acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-review">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
+        if (!item.suspended) acts.push(`<button class="btn btn-sm btn-ghost" type="button" data-mi-act="edit-review">${ICON.edit}<span>${esc(t("mkt.edit"))}</span></button>`);
         acts.push(`<button class="btn btn-sm btn-ghost mkt-del" type="button" data-mi-act="delete-review">${ICON.trash}<span>${esc(t("common.delete"))}</span></button>`);
       }
     }
     const shares = item.type === "review" ? "" : sharesText(item.shares);
+    // suspended by the team (Panel > Market): only its author sees it, with the reason
+    const susp = item.mine && item.suspended
+      ? `<p class="mkt-mi-susp" role="note"><b>${esc(t("mkt.socialSuspended"))}</b> ${esc(t("vid.suspendedWhy", { reason: item.suspended.reason || "" }))}</p>`
+      : "";
     return `
-      <article class="glass mkt-mi mkt-mi-${esc(item.type)}" data-mi="${esc(key)}">
+      <article class="glass mkt-mi mkt-mi-${esc(item.type)}${susp ? " is-suspended" : ""}" data-mi="${esc(key)}">
         ${itemHead(item, line)}
+        ${susp}
         <div class="mkt-mi-body">${body}</div>
         ${acts.length || shares ? `<footer class="mkt-mi-acts">${acts.join("")}${shares ? `<span class="muted mkt-mi-shares">${ICON.repost}<span>${esc(shares)}</span></span>` : ""}</footer>` : ""}
       </article>`;

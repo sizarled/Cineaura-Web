@@ -1102,6 +1102,7 @@
             : `<p class="mkt-order-note"><b>${esc(t("mkt.dl.sent"))}</b> <a href="${esc(o.download_url)}" target="_blank" rel="noopener noreferrer" dir="ltr">${esc(o.download_url.replace(/^https?:\/\//i, "").slice(0, 60))}</a></p>`) : ""}
           ${o.tracking ? `<p class="mkt-order-note"><b>${esc(t(o.kind === "digital" ? "mkt.o.delivery" : "mkt.o.tracking"))}</b> ${richText(o.tracking)}</p>` : ""}
           ${o.reason ? `<p class="mkt-order-note bad"><b>${esc(t("mkt.o.reason"))}</b> ${esc(o.reason)}</p>` : ""}
+          ${o.staff ? `<p class="mkt-staff-note" role="note"><b>${esc(t(o.staff.action === "release" ? (side === "sales" ? "mkt.o.staffReleasedSeller" : "mkt.o.staffReleasedBuyer") : (side === "sales" ? "mkt.o.staffRefundedSeller" : "mkt.o.staffRefundedBuyer"), { date: M.date(o.staff.at) }))}</b> ${esc(o.staff.reason || "")}</p>` : ""}
           ${o.review ? `<div class="mkt-order-review">${(o.review.pros || []).map((x) => `<span class="pro">+ ${esc(x)}</span>`).join("")}${(o.review.cons || []).map((x) => `<span class="con">− ${esc(x)}</span>`).join("")}</div>` : ""}
           ${notes.length ? `<p class="mkt-order-hint muted">${notes.map(esc).join("<br>")}</p>` : ""}
           ${(o.actions || []).length ? `<div class="mkt-order-acts">${o.actions.map((k) => `<button class="btn btn-sm ${ACT[k]?.cls || "btn-ghost"}" type="button" data-act="${k}">${esc(actLabel(k, o, side))}</button>`).join("")}</div>` : ""}

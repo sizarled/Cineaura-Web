@@ -206,6 +206,7 @@
         ${audienceHtml(l)}
         ${kindsHtml(l)}
         ${ready ? "" : `<p class="ipl-warn" role="note">${esc(t("ipl.notReady"))}</p>`}
+        ${l.suspended ? `<p class="ipl-warn ipl-susp" role="note"><b>${esc(t("ipl.suspended"))}</b> ${esc(t("vid.suspendedWhy", { reason: l.suspended.reason || "" }))}</p>` : ""}
         <div class="ipl-meta">${owner}<span class="ipl-facts">${facts.map((f) => `<span>${esc(f)}</span>`).join("")}</span></div>
         <footer class="ipl-actions">
           <a class="btn btn-sm btn-primary" href="${esc(listHref(l.id))}">${ICON.play}<span>${esc(t("ipl.open"))}</span></a>
@@ -372,6 +373,7 @@
     type: "ipl.err.type",
     criteria: "ipl.err.criteria",
     people: "ipl.err.people",
+    suspended: "ipl.err.suspended",
     not_found: "ipl.err.notFound",
     read: "ipl.err.read",
     readFile: "ipl.err.readFile",

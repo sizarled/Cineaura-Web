@@ -489,6 +489,7 @@
       <div class="vw-player${needCode ? " is-gated" : ""}" id="vw-player">${access !== "ok" ? lockedHtml(c, access) : needCode ? codeGateHtml(c) : playerIdleHtml(c)}</div>
       <div class="vw-under">${underHtml()}</div>
       <h1 class="vw-title">${esc(c.title)}</h1>
+      ${c.suspended ? `<div class="vw-suspended" role="status">${icon("lock", 16)}<p><b>${esc(t("vid.suspendedOwner"))}</b> ${esc(t("vid.suspendedWhy", { reason: c.suspended.reason || "" }))}</p></div>` : ""}
       <div class="vw-meta">
         <span>${esc(t("vid.viewsN", { n: V.fmtNum(c.views) }))}</span>
         <span aria-hidden="true">·</span>

@@ -1345,6 +1345,7 @@
         <span class="vcard-body">
           <b class="vcard-title">${escapeHtml(name)}</b>
           <span class="vcard-meta">${escapeHtml(t("prof.pc.updated", { when: V.timeAgo(p.updated_at) }))}</span>
+          ${p.suspended ? `<span class="pc-susp">${escapeHtml(t("vid.plSuspended"))}</span><span class="pc-susp-why">${escapeHtml(t("vid.suspendedWhy", { reason: p.suspended.reason || "" }))}</span>` : ""}
           <span class="pc-pl-open">${escapeHtml(t("prof.pc.viewAll"))}</span>
         </span>
       </a>

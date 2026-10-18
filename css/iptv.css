@@ -291,3 +291,6 @@ html[dir="rtl"] .ipl-chip { padding: 3px 10px 3px 4px; }
   .ipl-ch-logo { width: 48px; height: 36px; }
 }
 .ipl-card.is-fresh { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(45, 136, 255, 0.35); }
+/* round 27: a list the team suspended (Panel > Content): only its publisher sees it, with the reason */
+.ipl-warn.ipl-susp { background: rgba(250, 56, 62, 0.1); border: 1px solid rgba(250, 56, 62, 0.35); overflow-wrap: anywhere; }
+.ipl-warn.ipl-susp b { color: var(--red, #fa383e); }

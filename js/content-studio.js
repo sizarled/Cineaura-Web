@@ -689,6 +689,11 @@
 
   // ---------------------------------------------------------------- Manage
   function statusHtml(r) {
+    // suspended by the team (Panel > Content): hidden from everybody else, with the reason
+    if (r.suspended) {
+      return `<span class="vs-status is-suspended">${icon("private", 13)}<span>${esc(t("vid.suspended"))}</span></span>
+        <span class="vs-susp-why">${esc(t("vid.suspendedWhy", { reason: r.suspended.reason || "" }))}</span>`;
+    }
     if (r.scheduled) {
       return `<span class="vs-status is-scheduled">${icon("clock", 13)}<span>${esc(t("vid.scheduledIn"))}</span> <b data-cd="${esc(r.publish_at)}">${esc(V.countdown(Date.parse(r.publish_at) - Date.now()))}</b></span>`;
     }

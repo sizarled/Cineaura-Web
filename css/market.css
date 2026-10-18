@@ -875,3 +875,10 @@ html[data-theme="day"] .mkt-order-alert { color: #8a6000; }
   .mkt-lcard { grid-template-columns: 96px minmax(0, 1fr); }
   .pm-visit { margin-inline-start: 0; width: 100%; justify-content: center; }
 }
+
+/* round 27: a review, purchase list or recommendation the team suspended (Panel > Market), as its
+   author sees it; an order the team refunded or paid */
+.mkt-mi.is-suspended { border-inline-start: 4px solid var(--red, #fa383e); }
+.mkt-mi-susp { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(250, 56, 62, 0.1); font-size: 13px; overflow-wrap: anywhere; }
+.mkt-mi-susp b { color: var(--red, #fa383e); }
+.mkt-staff-note { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; border-inline-start: 3px solid var(--cyan); background: rgba(1, 180, 228, 0.08); font-size: 13px; overflow-wrap: anywhere; }

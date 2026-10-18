@@ -20,7 +20,20 @@
   } = window.CineAura;
 
   const PANEL_KEY = "cineaura_panel";
-  const ALL_SECTIONS = ["accounts", "links", "iptv", "apps", "reports", "prizes", "messages", "staff", "settings"];
+  // overview: every staff member (the numbers of their own sections); content, market, points and
+  // announce: js/panel-admin.js (sql/content.sql, iptv_lists.sql, market.sql, point_codes.sql, panel_admin.sql)
+  const ALL_SECTIONS = ["overview", "accounts", "links", "iptv", "apps", "reports", "prizes", "messages", "content", "market", "points", "announce", "staff", "settings"];
+  // the side menu, in groups (a group without a section the staff member may open is left out)
+  const NAV_GROUPS = [
+    ["", ["overview"]],
+    ["panel.grp.members", ["accounts", "messages", "staff"]],
+    ["panel.grp.watch", ["links", "iptv", "apps"]],
+    ["panel.grp.community", ["content", "market", "prizes", "points"]],
+    ["panel.grp.site", ["reports", "announce", "settings"]],
+  ];
+  // the sections a staff member can be given (overview: everybody; staff: the Super Admin)
+  const GIVEN_SECTIONS = ALL_SECTIONS.filter((s) => s !== "staff" && s !== "overview");
+  const PA = () => window.CineAuraPanelAdmin;
   const FEATURES = ["links", "messages", "comments", "posts", "reports"];
   const requestedSection = new URLSearchParams(location.search).get("section");
 
@@ -28,7 +41,7 @@
     staff: null,
     settings: { show_admin: true, show_moderator: true, show_member: false },
     staffRows: [],
-    section: ALL_SECTIONS.includes(requestedSection) ? requestedSection : "accounts",
+    section: ALL_SECTIONS.includes(requestedSection) ? requestedSection : "overview",
     members: [],
     extraMembers: [], // looked up one by one (Panel > IPTV): not among the newest 400
     profiles: {},
@@ -78,8 +91,8 @@
   function sectionsOf(row) {
     if ((row?.role || state.staff?.role) === "super") return ALL_SECTIONS.slice();
     const raw = String(row?.sections || state.staff?.sections || "");
-    const list = raw.split(",").map((s) => s.trim()).filter((s) => ALL_SECTIONS.includes(s));
-    return list.length ? list : ["accounts"];
+    const list = raw.split(",").map((s) => s.trim()).filter((s) => GIVEN_SECTIONS.includes(s));
+    return ["overview", ...(list.length ? list : ["accounts"])];
   }
 
   function canSee(section) {
@@ -283,7 +296,7 @@
 
   function renderShell() {
     const allowed = ALL_SECTIONS.filter((s) => canSee(s));
-    if (!allowed.includes(state.section)) state.section = allowed[0] || "accounts";
+    if (!allowed.includes(state.section)) state.section = allowed[0] || "overview";
     const me = state.staff;
     $("#panel-root").innerHTML = `
       <div class="dash-layout">
@@ -294,8 +307,12 @@
             <span class="panel-role">${escapeHtml(roleLabel(me.role))}</span>
             <span>${escapeHtml(me.member_id || "—")}</span>
           </div>
-          <nav class="side-nav">
-            ${allowed.map((s) => `<button type="button" data-section="${s}" class="${state.section === s ? "active" : ""}">${window.CineAura.navIcon(s)}<span>${t("panel.nav." + s)}</span></button>`).join("")}
+          <nav class="side-nav pa-side-nav">
+            ${NAV_GROUPS.map(([label, list]) => {
+              const mine = list.filter((s) => allowed.includes(s));
+              if (!mine.length) return "";
+              return `${label ? `<p class="side-group">${t(label)}</p>` : ""}${mine.map((s) => `<button type="button" data-section="${s}" class="${state.section === s ? "active" : ""}">${window.CineAura.navIcon(s)}<span>${t("panel.nav." + s)}</span></button>`).join("")}`;
+            }).join("")}
           </nav>
           <button class="btn btn-sm btn-ghost" id="panel-out" type="button" style="margin-top:16px;width:100%">${t("panel.leave")}</button>
         </aside>
@@ -321,6 +338,25 @@
     renderSection();
   }
 
+  // what js/panel-admin.js needs: the session, and a way to open another section (a tab, a filter)
+  function adminCtx() {
+    return {
+      state,
+      token: () => state.staff?.token || "",
+      roleLabel,
+      go(section, opts = {}) {
+        if (!canSee(section)) return toast(t("pa.forbidden"));
+        if (opts.reportTab) state.reportTab = opts.reportTab;
+        if (opts.contentTab) state.paContentTab = opts.contentTab;
+        if (opts.marketTab) state.paMarketTab = opts.marketTab;
+        state.paPreset = opts.filter || opts.q != null ? { ...(opts.filter ? { filter: opts.filter } : {}), ...(opts.q != null ? { q: opts.q } : {}) } : null;
+        state.section = section;
+        renderShell();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      },
+    };
+  }
+
   async function renderSection() {
     const main = $("#panel-main");
     const map = {
@@ -334,6 +370,13 @@
       staff: viewStaff,
       settings: viewSettings,
     };
+    // the views of js/panel-admin.js
+    if (PA()?.has(state.section)) {
+      await PA().view(state.section, main, adminCtx());
+      hydrateAvatars(main);
+      hydrateMedals(main);
+      return;
+    }
     await (map[state.section] || viewAccounts)(main);
     hydrateAvatars(main);
     hydrateMedals(main);
@@ -472,7 +515,11 @@
         <div>${t("common.bio")} <strong>${escapeHtml(p.bio || "—")}</strong></div>
         <div>${t("common.recoveryCode")} <strong>${escapeHtml(m.recovery_code || "—")}</strong></div>
       </div>
+      <div class="pa-sum-box" data-pa-sum></div>
       <button class="btn btn-sm btn-ghost" data-close type="button">${t("common.close")}</button>`);
+    // points, level, videos, store, orders… (sql/panel_admin.sql; nothing when it is not run)
+    const box = document.querySelector(".modal-back [data-pa-sum]");
+    if (box && PA()) PA().memberSummary(box, id, adminCtx());
   }
 
   async function openHistory(id) {
@@ -2101,7 +2148,7 @@
         <input id="st-pass" type="password" placeholder="${t("panel.staffPass")}" />
         <p class="muted">${t("panel.sectionsHint")}</p>
         <div class="chip-row" id="st-secs">
-          ${ALL_SECTIONS.filter((s) => s !== "staff").map((s) => `<label class="lang-chip"><input type="checkbox" name="st-s" value="${s}" checked /> ${t("panel.nav." + s)}</label>`).join("")}
+          ${GIVEN_SECTIONS.map((s) => `<label class="lang-chip"><input type="checkbox" name="st-s" value="${s}" checked /> ${t("panel.nav." + s)}</label>`).join("")}
         </div>
         <button class="btn btn-lg btn-primary" id="st-add" type="button">${t("panel.addStaff")}</button>
       </div>
@@ -2112,9 +2159,9 @@
             ${medalTag(s.role, s.member_id, s.username)}
             <h3>${escapeHtml(s.username || s.member_id)} · ${roleLabel(s.role)}</h3>
           </div>
-          <p class="muted">${escapeHtml(s.member_id)} · ${escapeHtml(s.sections || "")}</p>
+          <p class="muted">${escapeHtml(s.member_id)} · ${escapeHtml(String(s.sections || "").split(",").map((x) => x.trim()).filter((x) => GIVEN_SECTIONS.includes(x)).map((x) => t("panel.nav." + x)).join(" · "))}</p>
           <div class="chip-row" data-edit-sec="${s.id}">
-            ${ALL_SECTIONS.filter((x) => x !== "staff").map((x) => `<label class="lang-chip"><input type="checkbox" data-sid="${s.id}" value="${x}" ${String(s.sections || "").split(",").includes(x) ? "checked" : ""} /> ${t("panel.nav." + x)}</label>`).join("")}
+            ${GIVEN_SECTIONS.map((x) => `<label class="lang-chip"><input type="checkbox" data-sid="${s.id}" value="${x}" ${String(s.sections || "").split(",").map((y) => y.trim()).includes(x) ? "checked" : ""} /> ${t("panel.nav." + x)}</label>`).join("")}
           </div>
           <div class="acc-actions" style="margin-top:8px">
             <button class="btn btn-sm btn-primary" data-save-sec="${s.id}" type="button">${t("common.save")}</button>
