@@ -140,9 +140,37 @@
     return { ok: true, start, end };
   }
 
+  // Why the server refused a code (sql/packages.sql account_code_redeem).
+  const CODE_ERRORS = {
+    invalid: "act.invalid", not_found: "act.invalid", used: "act.used", used_mine: "act.usedMine", other: "act.other",
+    expired: "act.codeExpired", locked: "points.err.locked", banned: "act.banned", member: "act.notFound",
+  };
+  function codeError(r) {
+    if (r.reason === "mode") return t(r.for === "activate" ? "act.err.forActivate" : "act.err.forReactivate");
+    if (r.reason === "audience") return t(`pack.no.${["membership", "country", "language", "level", "age"].includes(r.why) ? r.why : "fit"}`);
+    let text = t(CODE_ERRORS[r.reason] || "act.consumeFail");
+    if (r.reason === "not_found" && Number.isFinite(Number(r.left)) && Number(r.left) <= 3) text += ` ${t("points.err.left", { n: Number(r.left) })}`;
+    return text;
+  }
+
   async function consumeCode(code) {
     const clean = String(code || "").replace(/\s+/g, "").trim();
     if (!clean) return { ok: false, message: t("act.enter") };
+    // Every code is checked and used on the server (sql/packages.sql): the account codes of Panel >
+    // Packages (their plan and months come with the code) and the one-use codes of activation.sql.
+    const srv = await window.CineAura.rpc("account_code_redeem", { p_member: state.member.member_id, p_code: clean, p_ip: state.ip || "" }).catch(() => null);
+    const missing = !srv || srv.status === 404 || ["PGRST202", "42883"].includes(srv.data?.code);
+    if (!missing) {
+      if (!srv.ok || !srv.data) return { ok: false, message: t("act.consumeFail") };
+      const r = srv.data;
+      if (!r.ok) return { ok: false, message: codeError(r) };
+      state.plan = r.plan;
+      Object.assign(state.member, {
+        status: "active", membership_type: r.plan, membership_duration: r.duration, membership_expires_at: r.expires_at,
+      });
+      return { ok: true, start: new Date(), end: new Date(r.expires_at), extended: Boolean(r.extended), months: Number(r.months) || 0 };
+    }
+    // without sql/packages.sql: the code of activation.sql, read and used from the page as before
     const res = await supabaseRequest(
       `/rest/v1/activation?activation_code=eq.${restValue(clean)}&select=*`
     );
@@ -450,9 +478,10 @@
         <span class="eyebrow">${t("act.done")}</span>
         <h1>${t("act.okTitle")}</h1>
         <p class="muted">${t("act.okLead", { plan: escapeHtml(state.plan), end: escapeHtml(end) })}</p>
+        ${result.extended ? `<p class="muted act-extended">${t("act.extended")}</p>` : ""}
         <div class="success-meta">
           <div>${t("act.plan")} <strong>${escapeHtml(state.plan)}</strong></div>
-          <div>${t("common.duration")} <strong>${escapeHtml(state.member.membership_duration || PLANS[state.plan].duration)}</strong></div>
+          <div>${t("common.duration")} <strong>${result.months ? escapeHtml(t(result.months === 1 ? "pk.month1" : "pk.monthsN", { n: result.months })) : escapeHtml(state.member.membership_duration || PLANS[state.plan]?.duration || "")}</strong></div>
           <div>${t("act.until")} <strong>${escapeHtml(end)}</strong></div>
         </div>
         <div class="success-actions">

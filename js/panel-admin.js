@@ -7,7 +7,10 @@
  *                  suspend (hidden from everybody but the owner, who reads why), restore, delete
  *   Market         Stores · Products · Orders · Categories · Reviews and lists (sql/market.sql,
  *                  section 16): the team refunds a buyer or pays a seller at once, with a reason
- *   Points codes   make, list and delete the codes of the points packages (sql/point_codes.sql)
+ *   Packages       Accounts · Points · Prizes: the serials of the account packages (activation and
+ *                  reactivation), the points packages and the prize packages — typed or drawn, how
+ *                  many uses, who may use them (public / exclusive / private); list, copy, delete
+ *                  (sql/packages.sql, sql/point_codes.sql)
  *   Announcements  the bar at the top of the home page and messages to the members' bell
  *                  (sql/panel_admin.sql)
  *
@@ -280,11 +283,13 @@
       ];
       groups.push([t("panel.nav.market"), tiles]);
     }
-    if (d.points) {
-      const p = d.points;
-      groups.push([t("panel.nav.points"), [
-        tile(t("pa.ov.codesUnused"), num(p.unused), t("pa.ov.codesSub", { pts: pt(p.unused_points) }), "points"),
-        tile(t("pa.ov.codesUsed"), num(p.used_30d), t("pa.ov.codesSub", { pts: pt(p.used_points_30d) }), "points", { filter: "used" }),
+    if (d.packages) {
+      const p = d.packages;
+      groups.push([t("panel.nav.packages"), [
+        tile(t("pk.tab.account"), num(p.accounts), esc(t("pk.ov.ready")), "packages", { packTab: "account" }),
+        tile(t("pk.tab.points"), num(p.points), esc(t("pk.ov.ready")), "packages", { packTab: "points" }),
+        tile(t("pk.tab.prize"), num(p.prizes), esc(t("pk.ov.ready")), "packages", { packTab: "prize" }),
+        tile(t("pk.ov.used30"), num(p.used_30d), t("pk.ov.pointsSub", { pts: pt(p.points_30d) }), "packages", { packTab: "points", filter: "all" }),
       ]]);
     }
     const misc = [];
@@ -298,7 +303,7 @@
     if (misc.length) groups.push([t("pa.ov.team"), misc]);
     const quick = [
       secs.has("announce") && [t("pa.ov.qAnnounce"), "announce"],
-      secs.has("points") && [t("pa.ov.qCodes"), "points"],
+      secs.has("packages") && [t("pk.ov.quick"), "packages"],
       secs.has("market") && [t("pa.ov.qOrders"), "market", { marketTab: "orders", filter: "open" }],
       secs.has("content") && [t("pa.ov.qContent"), "content"],
     ].filter(Boolean);
@@ -853,129 +858,289 @@
     await drawList(main.querySelector("#pa-pane"), marketCfg[tab]());
   }
 
-  // ================================================================ Points codes
-  async function viewPoints(main) {
-    main.innerHTML = `
-      ${head(t("panel.nav.points"), t("pa.pc.title"), t("pa.pc.lead"))}
-      <section class="pa-box pa-make">
-        <h2>${t("pa.pc.make")}</h2>
-        <form class="pa-form-grid" id="pa-pc-form">
-          <label><span>${t("pa.pc.count")}</span><input name="count" type="number" min="1" max="500" value="10" required /></label>
-          <label><span>${t("pa.pc.points")}</span><input name="points" type="number" min="1" max="100000000" value="500" required /></label>
-          <label class="wide"><span>${t("pa.pc.note")}</span><input name="note" type="text" maxlength="120" placeholder="${esc(t("pa.pc.notePh"))}" /></label>
-          <label><span>${t("pa.pc.days")}</span><input name="days" type="number" min="1" max="3650" placeholder="${esc(t("pa.pc.daysPh"))}" /></label>
-          <label><span>${t("pa.pc.member")}</span><input name="member" type="text" maxlength="40" placeholder="${esc(t("pa.pc.memberPh"))}" dir="auto" /></label>
-          <div class="wide pa-form-foot">
-            <p class="muted" id="pa-pc-sum"></p>
-            <button class="btn btn-sm btn-primary" type="submit">${t("pa.pc.makeBtn")}</button>
+  // ================================================================ Packages
+  // Accounts · Points · Prizes (sql/packages.sql, sql/point_codes.sql): one form and one list each.
+  const PK_KINDS = ["account", "points", "prize"];
+  const PK_PLANS = ["Free", "Silver", "Gold", "Diamond"];
+  const PK_MONTHS = { Free: 1, Silver: 3, Gold: 6, Diamond: 12 };
+  const PK_LANGS = ["en", "ar", "fr", "de", "es", "nl", "it"];
+  const PK_ABC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const pkLevel = (n) => (Number(n) >= 10 ? "LV Max" : `LV${Number(n) || 0}`);
+  const pkSerial = () => {
+    const bytes = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    const raw = [...bytes].map((b) => PK_ABC[b % PK_ABC.length]).join("");
+    return raw.match(/.{4}/g).join("-");
+  };
+  const pkPlan = (p) => (C.tr ? C.tr(p) : p);
+  const pkMonths = (n) => t(Number(n) === 1 ? "pk.month1" : "pk.monthsN", { n: num(n) });
+  // what a code gives: "Gold · 3 months · activation or reactivation", "+500 PT", "−200 PT off a prize"
+  const pkValue = (kind, v = {}) => {
+    if (kind === "account") return `${esc(pkPlan(v.plan || ""))} · ${esc(pkMonths(v.months))} · ${esc(t(`pk.use.${v.use_for || "both"}`))}`;
+    if (kind === "points") return t("pk.addsN", { pts: pt(v.points) });
+    return t("pk.offN", { pts: pt(v.points_off) });
+  };
+  // who may use it, in a line
+  const pkAudText = (a = {}) => {
+    if (a.type === "private") {
+      const list = (a.members || []).map((m) => (m.username ? `<bdi>@${esc(m.username)}</bdi>` : `<span dir="ltr">${esc(m.id)}</span>`)).join(", ");
+      return `${esc(t("pk.aud.private"))}: ${list || "—"}`;
+    }
+    if (a.type !== "exclusive") return esc(t("pk.aud.publicLine"));
+    const bits = [];
+    if (a.memberships?.length) bits.push(a.memberships.map((p) => esc(pkPlan(p))).join(" / "));
+    if (a.countries?.length) bits.push(a.countries.map((cc) => esc(C.countryName?.(cc) || cc)).join(", "));
+    if (a.languages?.length) bits.push(a.languages.map((l) => esc((C.LANG_NAMES && C.LANG_NAMES[l]) || l)).join(", "));
+    if (a.min_level != null || a.max_level != null) {
+      bits.push(a.min_level != null && a.max_level != null ? `${pkLevel(a.min_level)}–${pkLevel(a.max_level)}`
+        : a.min_level != null ? esc(t("pk.levelFrom", { lv: pkLevel(a.min_level) })) : esc(t("pk.levelTo", { lv: pkLevel(a.max_level) })));
+    }
+    if (a.min_days != null || a.max_days != null) {
+      bits.push(a.min_days != null && a.max_days != null ? esc(t("pk.ageBetween", { a: num(a.min_days), b: num(a.max_days) }))
+        : a.min_days != null ? esc(t("pk.ageMin", { n: num(a.min_days) })) : esc(t("pk.ageMax", { n: num(a.max_days) })));
+    }
+    return `${esc(t("pk.aud.exclusive"))}: ${bits.join(" · ")}`;
+  };
+  const PK_ERR = {
+    code: "pk.err.code", taken: "pk.err.taken", plan: "pk.err.plan", months: "pk.err.months", use_for: "pk.err.useFor",
+    points: "pk.err.points", uses: "pk.err.uses", days: "pk.err.days", note: "pk.err.note", audience: "pk.err.audience",
+    criteria: "pk.err.criteria", level: "pk.err.level", age: "pk.err.age", members: "pk.err.members", members_many: "pk.err.membersMany",
+    kind: "panel.actFail",
+  };
+
+  function pkFormHtml(kind) {
+    const levels = `<option value="">—</option>${Array.from({ length: 11 }, (_, i) => `<option value="${i}">${pkLevel(i)}</option>`).join("")}`;
+    return `
+      <form class="pa-form-grid pk-form" id="pk-form" novalidate>
+        <label class="wide"><span>${t("pk.serial")}</span>
+          <span class="pk-serial">
+            <input name="code" type="text" maxlength="40" dir="ltr" autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="${esc(t("pk.serialPh"))}" />
+            <button class="btn btn-sm btn-ghost" type="button" data-pk-gen>${C.navIcon("codes")}<span>${t("pk.generate")}</span></button>
+          </span>
+          <small class="muted">${t("pk.serialHint")}</small>
+        </label>
+        ${kind === "account" ? `
+        <label><span>${t("pk.useFor")}</span>
+          <select name="use_for">${["both", "activate", "reactivate"].map((k) => `<option value="${k}">${esc(t(`pk.use.${k}`))}</option>`).join("")}</select></label>
+        <label><span>${t("pk.plan")}</span>
+          <select name="plan">${PK_PLANS.map((p) => `<option value="${p}"${p === "Silver" ? " selected" : ""}>${esc(pkPlan(p))}</option>`).join("")}</select></label>
+        <label><span>${t("pk.months")}</span><input name="months" type="number" min="1" max="120" step="1" value="${PK_MONTHS.Silver}" required /></label>`
+        : `<label><span>${t(kind === "points" ? "pk.points" : "pk.pointsOff")}</span>
+          <input name="points" type="number" min="1" max="100000000" step="1" value="${kind === "points" ? 500 : 100}" required /></label>`}
+        <label data-pk-uses><span>${t("pk.uses")}</span><input name="max_uses" type="number" min="1" max="1000000" step="1" value="1" required />
+          <small class="muted">${t("pk.usesHint")}</small></label>
+        <label><span>${t("pk.days")}</span><input name="days" type="number" min="1" max="3650" step="1" placeholder="${esc(t("pk.daysPh"))}" /></label>
+        <label class="wide"><span>${t("pk.note")}</span><input name="note" type="text" maxlength="120" placeholder="${esc(t("pk.notePh"))}" dir="auto" /></label>
+        <fieldset class="wide pk-aud">
+          <legend>${t("pk.audience")}</legend>
+          <div class="pk-aud-pick">
+            ${["public", "exclusive", "private"].map((a) => `
+              <label class="pk-aud-opt"><input type="radio" name="audience" value="${a}"${a === "public" ? " checked" : ""} />
+                <span><b>${t(`pk.aud.${a}`)}</b><small>${t(`pk.aud.${a}Hint`)}</small></span></label>`).join("")}
           </div>
-        </form>
-        <div id="pa-pc-made"></div>
+          <div class="pk-excl" data-pk-excl hidden>
+            ${kind === "account" ? "" : `
+            <div class="pk-row"><span class="pk-lbl">${t("pk.c.memberships")}</span>
+              <span class="pk-checks">${PK_PLANS.map((p) => `<label class="lang-chip"><input type="checkbox" name="memberships" value="${p}" /> ${esc(pkPlan(p))}</label>`).join("")}</span></div>`}
+            <div class="pk-row"><span class="pk-lbl">${t("pk.c.countries")}</span>
+              <span class="pk-countries">
+                <select data-pk-cty aria-label="${esc(t("pk.c.addCountry"))}"><option value="">${esc(t("pk.c.addCountry"))}</option>${C.countryChoices().map(([cc, n]) => `<option value="${cc}">${esc(n)}</option>`).join("")}</select>
+                <span class="pk-chips" data-pk-chips></span>
+              </span></div>
+            <div class="pk-row"><span class="pk-lbl">${t("pk.c.languages")}</span>
+              <span class="pk-checks">${PK_LANGS.map((l) => `<label class="lang-chip"><input type="checkbox" name="languages" value="${l}" /> <span lang="${l}">${esc((C.LANG_NAMES && C.LANG_NAMES[l]) || l)}</span></label>`).join("")}</span></div>
+            <div class="pk-row"><span class="pk-lbl">${t("pk.c.level")}</span>
+              <span class="pk-range">
+                <label><span>${t("pk.from")}</span><select name="min_level">${levels}</select></label>
+                <label><span>${t("pk.to")}</span><select name="max_level">${levels}</select></label>
+              </span></div>
+            <div class="pk-row"><span class="pk-lbl">${t("pk.c.age")}</span>
+              <span class="pk-range">
+                <label><span>${t("pk.atLeast")}</span><input name="min_days" type="number" min="0" max="36500" step="1" placeholder="0" /></label>
+                <label><span>${t("pk.atMost")}</span><input name="max_days" type="number" min="0" max="36500" step="1" placeholder="∞" /></label>
+                <small class="muted">${t("pk.c.ageHint")}</small>
+              </span></div>
+            <p class="muted pk-excl-hint">${t("pk.c.allHint")}</p>
+          </div>
+          <div class="pk-priv" data-pk-priv hidden>
+            <label><span>${t("pk.members")}</span>
+              <textarea name="members" rows="2" dir="auto" placeholder="${esc(t("pk.membersPh"))}"></textarea></label>
+            <small class="muted">${t("pk.membersHint")}</small>
+            <p class="pk-auto-hint">${C.navIcon("notifications")}<span>${t(`pk.auto.${kind}`)}</span></p>
+          </div>
+        </fieldset>
+        <div class="wide pa-form-foot">
+          <p class="muted" id="pk-sum"></p>
+          <button class="btn btn-sm btn-primary" type="submit">${t("pk.save")}</button>
+        </div>
+      </form>`;
+  }
+
+  async function viewPackages(main) {
+    const st = ctx.state;
+    const kind = PK_KINDS.includes(st.paPackTab) ? st.paPackTab : "account";
+    main.innerHTML = `
+      ${head(t("panel.nav.packages"), t("pk.title"), t("pk.lead"))}
+      ${tabsHtml("pk-tab", PK_KINDS.map((k) => [k, t(`pk.tab.${k}`)]), kind)}
+      <section class="pa-box pa-make pk-make">
+        <h2>${t(`pk.new.${kind}`)}</h2>
+        <p class="muted pk-where">${t(`pk.where.${kind}`)}</p>
+        ${pkFormHtml(kind)}
+        <div id="pk-made"></div>
       </section>
       <section class="pa-group">
-        <h2>${t("pa.pc.list")}</h2>
+        <h2>${t(`pk.list.${kind}`)}</h2>
         <div class="pa-pane" id="pa-pane"></div>
       </section>`;
-    const form = main.querySelector("#pa-pc-form");
-    const sum = main.querySelector("#pa-pc-sum");
-    const showSum = () => {
-      const n = Math.max(0, Number(form.count.value) || 0);
-      const p = Math.max(0, Number(form.points.value) || 0);
-      sum.innerHTML = t("pa.pc.sum", { n: num(n), pts: pt(n * p) });
+    main.querySelectorAll("[data-pk-tab]").forEach((b) => {
+      b.onclick = () => {
+        st.paPackTab = b.dataset.pkTab;
+        viewPackages(main);
+      };
+    });
+    const form = main.querySelector("#pk-form");
+    const countries = [];
+    const sum = main.querySelector("#pk-sum");
+    const audOf = () => form.querySelector('input[name="audience"]:checked')?.value || "public";
+    const drawChips = () => {
+      form.querySelector("[data-pk-chips]").innerHTML = countries
+        .map((cc) => `<span class="ipl-chip">${esc(C.countryName?.(cc) || cc)}<button type="button" data-pk-uncty="${esc(cc)}" aria-label="${esc(t("rich.remove"))} ${esc(C.countryName?.(cc) || cc)}">×</button></span>`)
+        .join("");
     };
-    form.oninput = showSum;
+    const showSum = () => {
+      const a = audOf();
+      form.querySelector("[data-pk-excl]").hidden = a !== "exclusive";
+      form.querySelector("[data-pk-priv]").hidden = a !== "private";
+      // private: once for each member named, by itself (the server counts them)
+      form.querySelector("[data-pk-uses]").hidden = a === "private";
+      const uses = Math.max(1, Number(form.max_uses.value) || 1);
+      const what = kind === "account"
+        ? pkValue("account", { plan: form.plan.value, months: Number(form.months.value) || 1, use_for: form.use_for.value })
+        : pkValue(kind, kind === "points" ? { points: form.points.value } : { points_off: form.points.value });
+      const usesText = a === "private" ? t("pk.autoEach") : t(uses === 1 ? "pk.usesOne" : "pk.usesN", { n: num(uses) });
+      sum.innerHTML = t("pk.sum", { what, uses: esc(usesText), who: esc(t(`pk.aud.${a}`)) });
+    };
+    form.addEventListener("input", showSum);
+    form.addEventListener("change", (e) => {
+      if (e.target.name === "plan" && form.months) form.months.value = PK_MONTHS[e.target.value] || 1;
+      if (e.target.matches("[data-pk-cty]")) {
+        const cc = e.target.value;
+        if (cc && !countries.includes(cc)) countries.push(cc);
+        e.target.value = "";
+        drawChips();
+      }
+      showSum();
+    });
+    form.addEventListener("click", (e) => {
+      if (e.target.closest("[data-pk-gen]")) {
+        form.code.value = pkSerial();
+        form.code.focus();
+        return;
+      }
+      const un = e.target.closest("[data-pk-uncty]");
+      if (un) {
+        countries.splice(countries.indexOf(un.dataset.pkUncty), 1);
+        drawChips();
+      }
+    });
     showSum();
+
     const pane = main.querySelector("#pa-pane");
     const cfg = {
-      key: "pc-codes",
-      filters: [["unused", t("pa.pc.unused")], ["used", t("pa.pc.used")], ["expired", t("pa.pc.expired")], ["all", t("pa.f.all")]],
-      placeholder: t("pa.pc.search"),
-      fetch: (st, off) => rpc("point_codes_admin", { p_filter: st.filter, p_q: st.q, p_limit: 100, p_offset: off }),
-      before: (st, d) => (d?.points ? `<p class="muted pa-pc-points">${t("pa.pc.pointsLine", { unused: pt(d.points.unused), used: pt(d.points.used) })}</p>` : ""),
-      card: (c, i) => `
-        <article class="crp-card pa-card pa-code st-${esc(c.state)}" data-pa-i="${i}">
+      key: `pk-${kind}`,
+      filters: [["unused", t("pk.f.unused")], ["used", t("pk.f.used")], ["expired", t("pk.f.expired")], ["all", t("pa.f.all")]],
+      placeholder: t("pk.search"),
+      fetch: (s, off) => rpc("pack_codes_admin", { p_kind: kind, p_filter: s.filter, p_q: s.q, p_limit: 50, p_offset: off }),
+      card: (c, i) => {
+        const can = c.state !== "used";
+        const recent = (c.recent || []).map((u) => (u.username ? `<a href="${esc(C.profileHref(u.username))}" target="_blank" rel="noopener"><bdi>@${esc(u.username)}</bdi></a>` : `<span dir="ltr">${esc(u.id)}</span>`)).join(", ");
+        return `
+        <article class="crp-card pa-card pa-code pk-card st-${esc(c.state)}" data-pa-i="${i}">
           <div class="crp-top">
-            ${c.state === "unused" ? `<input class="pa-pick" type="checkbox" data-pa-pick aria-label="${esc(t("pa.pc.pick"))}" />` : ""}
+            ${can ? `<input class="pa-pick" type="checkbox" data-pa-pick aria-label="${esc(t("pa.pc.pick"))}" />` : ""}
             <div class="crp-title">
               <h3><code dir="ltr">${esc(c.code)}</code></h3>
-              <p>${esc(c.note || "—")} · ${esc(day(c.created_at))}${c.made_by ? ` · ${t("pa.pc.by", { name: esc(c.made_by) })}` : ""}</p>
-              <p>${c.state === "used"
-                ? t("pa.pc.usedBy", { name: c.member ? who(c.member) : "—", date: esc(when(c.used_at)) })
-                : c.member ? t("pa.pc.onlyFor", { name: who(c.member) }) : t("pa.pc.anyone")}${c.expires_at ? ` · ${t(c.state === "expired" ? "pa.pc.expiredOn" : "pa.pc.expiresOn", { date: esc(day(c.expires_at)) })}` : ""}</p>
+              <p class="pk-value">${pkValue(kind, c.value)}</p>
+              <p>${pkAudText(c.audience)}${c.expires_at ? ` · ${t(c.state === "expired" ? "pa.pc.expiredOn" : "pa.pc.expiresOn", { date: esc(day(c.expires_at)) })}` : ""}</p>
+              <p class="muted">${c.note ? `${esc(c.note)} · ` : ""}${esc(day(c.created_at))}${c.made_by ? ` · ${t("pa.pc.by", { name: esc(c.made_by) })}` : ""}</p>
+              ${recent ? `<p class="pk-recent">${t(c.audience?.type === "private" && kind !== "prize" ? "pk.givenTo" : "pk.usedBy", { list: recent })}</p>` : ""}
             </div>
-            <span class="crp-count">${pt(c.points)}</span>
+            <span class="crp-count pk-uses" dir="ltr" title="${esc(t("pk.usesTitle"))}">${num(c.uses)} / ${num(c.max_uses)}</span>
           </div>
           <div class="crp-actions">
-            ${tag(t(`pa.pc.${c.state}`), c.state === "unused" ? "st-resolved" : c.state === "expired" ? "mkr-susp" : "")}
+            ${tag(t(`pk.f.${c.state}`), c.state === "unused" ? "st-resolved" : c.state === "expired" ? "mkr-susp" : "")}
             <button class="btn btn-sm btn-ghost" type="button" data-pa-act="copy">${t("common.copy")}</button>
-            ${c.state === "unused" ? `<button class="btn btn-sm btn-ghost pa-del" type="button" data-pa-act="delete">${t("pa.delete")}</button>` : ""}
+            ${can ? `<button class="btn btn-sm btn-ghost pa-del" type="button" data-pa-act="delete">${t("pa.delete")}</button>` : ""}
           </div>
-        </article>`,
-      act: async (a, c, cardEl, btn, redraw, st) => {
-        if (a === "copy") {
-          copy(c.code);
-          return;
-        }
-        if (a === "delete-picked") {
-          const picked = [...pane.querySelectorAll("[data-pa-pick]:checked")].map((x) => st.items[Number(x.closest("[data-pa-i]").dataset.paI)]?.code).filter(Boolean);
-          if (!picked.length) return toast(t("pa.pc.pickSome"));
-          if (!confirm(t("pa.pc.deleteMany", { n: num(picked.length) }))) return;
-          const r = await rpc("point_codes_admin_delete", { p_codes: picked });
+        </article>`;
+      },
+      // "Delete the chosen codes", above a list with codes that can still be deleted
+      before: (s, d) => (s.filter !== "used" && Number(d?.total) > 0 ? `<div class="pa-bulk" data-pa-i="-1"><button class="btn btn-sm btn-ghost pa-del" type="button" data-pa-act="delete-picked" data-pa-any="1">${t("pa.pc.deletePicked")}</button></div>` : ""),
+      act: async (a, c, cardEl, btn, redraw, s) => {
+        if (a === "copy") return copy(c.code);
+        const del = async (codes) => {
+          const r = await rpc("pack_codes_delete", { p_kind: kind, p_codes: codes });
           if (!data(r)) return failToast(r);
           toast(t("pa.pc.deleted", { n: num(r.data.deleted) }));
           redraw();
-          return;
+        };
+        if (a === "delete-picked") {
+          const picked = [...pane.querySelectorAll("[data-pa-pick]:checked")].map((x) => s.items[Number(x.closest("[data-pa-i]").dataset.paI)]?.code).filter(Boolean);
+          if (!picked.length) return toast(t("pa.pc.pickSome"));
+          if (!confirm(t("pa.pc.deleteMany", { n: num(picked.length) }))) return;
+          return del(picked);
         }
         if (a === "delete") {
           if (!confirm(t("pa.pc.deleteOne", { code: c.code }))) return;
-          const r = await rpc("point_codes_admin_delete", { p_codes: [c.code] });
-          if (!data(r)) return failToast(r);
-          toast(t("pa.pc.deleted", { n: num(r.data.deleted) }));
-          redraw();
+          return del([c.code]);
         }
       },
     };
-    // the "Delete the chosen codes" button lives above the list
-    const baseBefore = cfg.before;
-    cfg.before = (st, d) => `${baseBefore(st, d)}${st.filter === "unused" ? `<div class="pa-bulk" data-pa-i="-1"><button class="btn btn-sm btn-ghost pa-del" type="button" data-pa-act="delete-picked" data-pa-any="1">${t("pa.pc.deletePicked")}</button></div>` : ""}`;
-    await drawList(pane, cfg);
+    drawList(pane, cfg);
+
     form.onsubmit = async (e) => {
       e.preventDefault();
-      const days = String(form.days.value || "").trim();
-      const r = await busy(form, () => rpc("point_codes_admin_make", {
-        p_count: Number(form.count.value) || 0, p_points: Number(form.points.value) || 0, p_note: form.note.value.trim(),
-        p_days: days ? Number(days) : null, p_member: form.member.value.trim(),
-      }));
-      const d = data(r);
-      if (!d) return failToast(r, { count: "pa.pc.errCount", points: "pa.pc.errPoints", note: "pa.pc.errNote", days: "pa.pc.errDays", member: "pa.pc.errMember" });
-      const made = main.querySelector("#pa-pc-made");
-      const text = d.codes.join("\n");
-      made.innerHTML = `
-        <div class="pa-made">
-          <p><strong>${t("pa.pc.madeN", { n: num(d.codes.length), pts: pt(d.points) })}</strong>${d.member ? ` · ${t("pa.pc.onlyFor", { name: who(d.member) })}` : ""}${d.expires_at ? ` · ${t("pa.pc.expiresOn", { date: esc(day(d.expires_at)) })}` : ""}</p>
-          <textarea readonly rows="${Math.min(8, d.codes.length)}" dir="ltr">${esc(text)}</textarea>
-          <div class="acc-actions">
-            <button class="btn btn-sm btn-primary" type="button" data-pa-copy-all>${t("pa.pc.copyAll")}</button>
-            <button class="btn btn-sm btn-ghost" type="button" data-pa-download>${t("pa.pc.download")}</button>
-          </div>
-          <p class="muted">${t("pa.pc.keepSafe")}</p>
+      const aud = audOf();
+      const val = (n) => String(form[n]?.value ?? "").trim();
+      const d = { code: val("code"), max_uses: val("max_uses"), days: val("days"), note: val("note"), audience: aud, aud: {} };
+      if (kind === "account") Object.assign(d, { plan: val("plan"), months: val("months"), use_for: val("use_for") });
+      else d[kind === "points" ? "points" : "points_off"] = val("points");
+      if (aud === "exclusive") {
+        const picked = (n) => [...form.querySelectorAll(`input[name="${n}"]:checked`)].map((x) => x.value);
+        d.aud = {
+          memberships: kind === "account" ? [] : picked("memberships"), countries: countries.slice(), languages: picked("languages"),
+          min_level: val("min_level"), max_level: val("max_level"), min_days: val("min_days"), max_days: val("max_days"),
+        };
+      } else if (aud === "private") {
+        d.aud = { members: val("members").split(/[\s,;،]+/).map((x) => x.trim()).filter(Boolean) };
+      }
+      const r = await busy(form, () => rpc("pack_code_save", { p_kind: kind, d }));
+      const res = data(r);
+      if (!res) {
+        if (r?.data?.reason === "members" && r.data.unknown?.length) return toast(t("pk.err.unknown", { list: r.data.unknown.join(", ") }));
+        return failToast(r, PK_ERR);
+      }
+      const it = res.item;
+      // a private code went by itself to the members named: how many, and who could not have it
+      const au = res.auto;
+      const skipped = (au?.skipped || []).map((x) => `${x.username ? `<bdi>@${esc(x.username)}</bdi>` : `<span dir="ltr">${esc(x.id)}</span>`} (${esc(t(`pk.skip.${x.reason}`))})`).join(", ");
+      const autoHtml = au ? `
+          <p class="pk-auto-done">${C.navIcon("notifications")}<span>${t(kind === "prize" ? "pk.autoTold" : "pk.autoGiven", { n: num(au.given), m: num(au.members) })}</span></p>
+          ${skipped ? `<p class="pk-auto-skip">${t("pk.autoSkipped", { list: skipped })}</p>` : ""}` : "";
+      main.querySelector("#pk-made").innerHTML = `
+        <div class="pa-made pk-made-box" role="status">
+          <p><strong>${t("pk.made")}</strong></p>
+          <p class="pk-made-code"><code dir="ltr">${esc(it.code)}</code>
+            <button class="btn btn-sm btn-primary" type="button" data-pk-copy>${t("common.copy")}</button></p>
+          <p>${pkValue(kind, it.value)} · ${esc(au ? t("pk.autoEach") : t(Number(it.max_uses) === 1 ? "pk.usesOne" : "pk.usesN", { n: num(it.max_uses) }))}</p>
+          <p class="muted">${pkAudText(it.audience)}${it.expires_at ? ` · ${t("pa.pc.expiresOn", { date: esc(day(it.expires_at)) })}` : ""}</p>${autoHtml}
         </div>`;
-      made.querySelector("[data-pa-copy-all]").onclick = () => copy(text);
-      made.querySelector("[data-pa-download]").onclick = () => {
-        const blob = new Blob([`${d.codes.join("\r\n")}\r\n`], { type: "text/plain" });
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `cineaura-codes-${d.points}pt-${new Date().toISOString().slice(0, 10)}.txt`;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-          URL.revokeObjectURL(a.href);
-          a.remove();
-        }, 500);
-      };
-      toast(t("pa.pc.madeToast", { n: num(d.codes.length) }));
-      const st = listState(cfg);
-      st.filter = "unused";
+      main.querySelector("[data-pk-copy]").onclick = () => copy(it.code);
+      toast(au && kind !== "prize" ? t("pk.madeAuto", { n: num(au.given), m: num(au.members) }) : t("pk.madeToast"));
+      form.code.value = "";
+      const s = listState(cfg);
+      s.filter = "unused";
+      s.q = "";
       drawList(pane, cfg);
     };
   }
@@ -1174,11 +1339,12 @@
         ${row(t("pa.sum.reviews"), num(d.market?.reviews))}
         ${d.market?.reports ? row(t("pa.sum.reports"), num(d.market.reports)) : ""}
         ${row(t("pa.sum.codes"), t("pa.sum.codesV", { n: num(d.codes?.used), pts: pt(d.codes?.points) }))}
+        ${d.codes?.accounts != null ? row(t("pk.sum.packs"), t("pk.sum.packsV", { a: num(d.codes.accounts), p: num(d.codes.prizes) })) : ""}
         ${row(t("pa.sum.claims"), t("pa.sum.claimsV", { n: num(d.claims?.all), open: num(d.claims?.open) }))}
       </div>`;
   }
 
-  const VIEWS = { overview: viewOverview, content: viewContent, market: viewMarket, points: viewPoints, announce: viewAnnounce };
+  const VIEWS = { overview: viewOverview, content: viewContent, market: viewMarket, packages: viewPackages, announce: viewAnnounce };
 
   window.CineAuraPanelAdmin = {
     SECTIONS: Object.keys(VIEWS),

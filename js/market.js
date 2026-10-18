@@ -20,6 +20,9 @@
  *                                  returned), your purchases (buy later, purchase requests, purchased,
  *                                  shipped, received, returned), your rating (given / received),
  *                                  your requests (sent / received) and the store settings
+ *   Market.html#coupons/purchases  the coupons: Purchase coupons (got from stores, given by them:
+ *                                  waiting / used; copy, download, delete) and Sales coupons (the
+ *                                  coupons of your store: make one, pause, delete) — js/market-coupons.js
  *
  * The pieces (cards, dialogs, forms) are in js/market-forms.js.
  */
@@ -35,6 +38,7 @@
     notifications: [],
     sales: ["products", "requests", "sold", "shipped", "delivered", "returned"],
     purchases: ["later", "requests", "purchased", "shipped", "received", "returned"],
+    coupons: ["purchases", "sales"],
     ratings: ["purchases", "sales"],
     requests: ["sent", "received"],
     settings: [],
@@ -65,6 +69,7 @@
     sales: svgNav('<path d="M3.5 9.5l1.5-5h14l1.5 5"/><path d="M4.5 9.5v10h15v-10"/><path d="M3.5 9.5a2.8 2.8 0 0 0 5.6 0 2.8 2.8 0 0 0 5.6 0 2.8 2.8 0 0 0 5.6 0"/>'),
     purchases: svgNav('<path d="M5 8h14l-1.2 11.2a2 2 0 0 1-2 1.8H8.2a2 2 0 0 1-2-1.8z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/>'),
     ratings: svgNav('<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>'),
+    coupons: svgNav('<path d="M3.5 8.5V6.5a1 1 0 0 1 1-1h15a1 1 0 0 1 1 1v2a2.5 2.5 0 0 0 0 5v2a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-2a2.5 2.5 0 0 0 0-5z"/><path d="M14.5 6v1.6M14.5 11.2v1.6M14.5 16.4V18"/>'),
     requests: svgNav('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 12.5h5"/>'),
     published: svgNav('<path d="M7 10.5v9H4v-9z"/><path d="M7 10.5l3.6-6.3a1.9 1.9 0 0 1 3.4 1.3l-.5 3.5h5a2 2 0 0 1 2 2.3l-1.1 6.4a2 2 0 0 1-2 1.8H7"/>'),
     settings: svgNav('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
@@ -236,6 +241,7 @@
       ["notifications", me?.unread],
       ["sales", (c.sales?.requests || 0) + (c.sales?.returned || 0)],
       ["purchases", c.purchases?.shipped || 0],
+      ["coupons", c.coupons?.purchases || 0],
       ["ratings", c.reviews?.to_write || 0],
       ["requests", (c.requests?.received || 0) + (c.requests?.sent || 0)],
       ["settings", 0],
@@ -547,10 +553,12 @@
         ${s.description ? `<div class="mkt-store-desc" dir="auto">${richText(s.description)}</div>` : ""}
         ${links.length ? `<div class="mkt-store-links"><span class="muted">${esc(t("mkt.s.links"))}</span>${links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer nofollow">${ICON.link}<span dir="auto">${esc(l.label || l.url.replace(/^https?:\/\//i, ""))}</span></a>`).join("")}</div>` : ""}
       </section>
+      <section class="glass cpn-strip" data-cpn-strip hidden></section>
       <div class="mkt-sec-head"><h2>${esc(t("mkt.storeProducts"))}</h2></div>
       <div data-list></div>`;
     box.querySelector("[data-ask-store]")?.addEventListener("click", () => M.openRequest({ store: s, kind: "item", onSent: refreshMe }));
     box.querySelector("[data-report-store]")?.addEventListener("click", () => M.openReport({ kind: "store", id: s.id, name: s.name }));
+    M.couponStrip?.(box.querySelector("[data-cpn-strip]"), s.id, { own });
     loadList(box.querySelector("[data-list]"), searchArgs({ type: "products", sort: "new" }, { p_store: s.id }), "products", {
       emptyText: own ? t("mkt.storeEmptyOwn") : t("mkt.storeEmpty"),
     });
@@ -668,6 +676,7 @@
           ${Number(d.recs) > 0 ? `<p class="mkt-recs-n">${ICON.thumb}<span>${esc(t(Number(d.recs) === 1 ? "mkt.rc.countOne" : "mkt.rc.countN", { n: M.fmt(d.recs) }))}</span></p>` : ""}
           <p class="mkt-ship ${ship.cls}">${ship.icon}<span>${esc(ship.text)}</span></p>
           ${p.kind !== "digital" && s.shipping ? `<p class="mkt-shipcost">${ICON.truck}<span>${esc(t("mkt.shippingCost"))}: <b dir="ltr">${Number(p.shipping_cost) ? esc(M.pt(p.shipping_cost)) : esc(t("mkt.free"))}</b></span></p>` : ""}
+          <div class="cpn-strip cpn-strip-in" data-cpn-strip hidden></div>
           <div class="mkt-buybox">
             ${buyBtn}
             ${v.own ? "" : `<button class="btn btn-lg btn-ghost" type="button" data-later aria-pressed="${v.saved ? "true" : "false"}">${ICON.clock}<span>${esc(t(v.saved ? "mkt.laterSaved" : "mkt.buyLater"))}</span></button>`}
@@ -783,6 +792,7 @@
       refreshMe();
     });
     box.querySelector("[data-share]")?.addEventListener("click", () => M.openShare({ product: p, own: Boolean(v.own) }));
+    if (p.status === "active") M.couponStrip?.(box.querySelector("[data-cpn-strip]"), s.id, { own: Boolean(v.own) });
     box.querySelector("[data-report-product]")?.addEventListener("click", () => {
       if (!signedIn()) return needSignin();
       M.openReport({ kind: "product", id: p.id, name: p.title });
@@ -922,6 +932,7 @@
     if (section === "purchases") return { ...(c.purchases || {}) };
     if (section === "ratings") return { purchases: c.reviews?.to_write, sales: c.reviews?.received };
     if (section === "requests") return { sent: c.requests?.sent, received: c.requests?.received };
+    if (section === "coupons") return { purchases: c.coupons?.purchases, sales: c.coupons?.sales };
     return {};
   }
 
@@ -934,13 +945,96 @@
     }
     if (r.section === "settings") return drawSettings(r);
     if (r.section === "notifications") return drawNotifications(r);
-    const extra = r.section === "sales" ? `<button class="btn btn-sm btn-primary" type="button" data-sell>${ICON.plus}<span>${esc(t("mkt.addProduct"))}</span></button>` : "";
+    const extra = r.section === "sales" ? `<button class="btn btn-sm btn-primary" type="button" data-sell>${ICON.plus}<span>${esc(t("mkt.addProduct"))}</span></button>`
+      : r.section === "coupons" && r.tab === "sales" ? `<button class="btn btn-sm btn-primary" type="button" data-cpn-new>${ICON.plus}<span>${esc(t("mkt.cp.new"))}</span></button>` : "";
     box.innerHTML = panelShell(r, loadingHtml(), { extra });
     const body = box.querySelector("[data-panel-body]");
     if (r.section === "sales" && r.tab === "products") return loadMyProducts(body);
     if (r.section === "sales" || r.section === "purchases") return loadOrders(body, r);
     if (r.section === "ratings") return loadReviews(body, r);
     if (r.section === "requests") return loadRequests(body, r);
+    if (r.section === "coupons") return loadCoupons(body, r);
+  }
+
+  // --- Coupons: Purchase coupons (waiting / used) and Sales coupons (the store's)
+  const CPN_FILTERS = { purchases: ["pending", "used"], sales: ["active", "paused", "ended", "all"] };
+  async function loadCoupons(body, r) {
+    const side = r.tab === "sales" ? "sales" : "purchases";
+    const filters = CPN_FILTERS[side];
+    state.cpnFilter = state.cpnFilter || {};
+    const f = filters.includes(state.cpnFilter[side]) ? state.cpnFilter[side] : filters[0];
+    let counts = {};
+    let store = undefined;
+    // "New coupon" (Sales coupons) works at once, while the list loads (one handler, whatever the filter)
+    const newBtn = main().querySelector("[data-cpn-new]");
+    if (newBtn) {
+      newBtn.onclick = () =>
+        M.openCouponForm({
+          onSaved: () => {
+            state.cpnFilter.sales = "active";
+            refreshMe();
+            loadCoupons(body, r);
+          },
+        });
+    }
+    const before = () => `
+      <div class="mkt-cpn-bar">
+        <div class="cpn-filters" role="tablist">${filters.map((k) => `<button type="button" class="cpn-filter${k === f ? " active" : ""}" data-cpn-filter="${k}" aria-pressed="${k === f}">${esc(t(`mkt.cp.f_${k}`))}${counts[k] != null ? ` <span class="cpn-n">${esc(M.fmt(counts[k]))}</span>` : ""}</button>`).join("")}</div>
+        <p class="muted mkt-cpn-lead">${esc(t(side === "sales" ? "mkt.cp.leadSales" : "mkt.cp.leadPurchases"))}</p>
+      </div>
+      ${side === "sales" && store === null ? `<div class="vs-none mkt-cpn-nostore"><p class="muted">${esc(t("mkt.cp.noStore"))}</p><p><a class="btn btn-sm btn-primary" href="#settings" data-panel-link="settings">${ICON.store}<span>${esc(t("mkt.openStore"))}</span></a></p></div>` : ""}`;
+    const items = await pagedList(
+      body,
+      async (off) => {
+        const res = await M.call(side === "sales" ? "market_coupons_sales" : "market_coupons_mine", { p_member: M.memberId(), p_filter: f, p_limit: 20, p_offset: off });
+        if (res.ok && res.data?.ok) {
+          counts = res.data.counts || {};
+          if (side === "sales") store = res.data.store || null;
+        }
+        return res;
+      },
+      (list) => `<div class="cpn-list">${list.map((c) => M.couponHtml(c, { as: side === "sales" ? "seller" : "buyer" })).join("")}</div>`,
+      { empty: t(`mkt.cp.empty.${side}.${f}`), before }
+    );
+    const find = (el) => (items?.() || []).find((x) => x.id === el.closest("[data-cpn]")?.dataset.cpn);
+    body.onclick = async (e) => {
+      const fb = e.target.closest("[data-cpn-filter]");
+      if (fb) {
+        state.cpnFilter[side] = fb.dataset.cpnFilter;
+        return loadCoupons(body, r);
+      }
+      const c = find(e.target);
+      if (!c) return;
+      if (e.target.closest("[data-cpn-copy]")) return M.copyText(c.code);
+      if (e.target.closest("[data-cpn-png]")) return M.couponPng(c);
+      const rm = e.target.closest("[data-cpn-remove]");
+      if (rm) {
+        if (!confirm(t("mkt.cp.removeAsk", { code: c.code }))) return;
+        rm.disabled = true;
+        const x = await M.call("market_coupon_remove", { p_member: M.memberId(), p_id: c.id });
+        if (!x.ok || !x.data?.ok) {
+          rm.disabled = false;
+          return C.toast(M.failText(x));
+        }
+        C.toast(t("mkt.cp.removed"));
+        refreshMe();
+        return loadCoupons(body, r);
+      }
+      const sb = e.target.closest("[data-cpn-status]");
+      if (sb) {
+        const to = sb.dataset.cpnStatus;
+        if (to === "deleted" && !confirm(t("mkt.cp.deleteAsk", { code: c.code }))) return;
+        sb.disabled = true;
+        const x = await M.call("market_coupon_status", { p_member: M.memberId(), p_id: c.id, p_status: to });
+        if (!x.ok || !x.data?.ok) {
+          sb.disabled = false;
+          return C.toast(M.failText(x));
+        }
+        C.toast(t(to === "deleted" ? "mkt.cp.deleted" : to === "paused" ? "mkt.cp.paused" : "mkt.cp.resumed"));
+        refreshMe();
+        return loadCoupons(body, r);
+      }
+    };
   }
 
   // a list in a panel, page after page: fetch(offset) -> { ok, total, items }
@@ -1092,7 +1186,7 @@
             ${side === "purchases" ? ` · <a href="${esc(M.storeHref(o.store_id))}" data-nav>${esc(o.store_name)}</a>` : ""}
           </div>
           <div class="mkt-order-money">
-            <bdi dir="ltr">${esc(M.fmt(o.qty))} × ${esc(M.pt(o.unit_price))}</bdi>${Number(o.shipping_cost) ? ` + ${esc(t("mkt.shippingCost"))} <bdi dir="ltr">${esc(M.pt(o.shipping_cost))}</bdi>` : ""} = <b dir="ltr">${esc(M.pt(o.total))}</b>
+            <bdi dir="ltr">${esc(M.fmt(o.qty))} × ${esc(M.pt(o.unit_price))}</bdi>${Number(o.shipping_cost) ? ` + ${esc(t("mkt.shippingCost"))} <bdi dir="ltr">${esc(M.pt(o.shipping_cost))}</bdi>` : ""}${Number(o.discount) ? ` − <span class="cpn-off">${esc(t("mkt.cp.o.coupon", { code: o.coupon?.code || "" }))} <bdi dir="ltr">${esc(M.pt(o.discount))}</bdi></span>` : ""} = <b dir="ltr">${esc(M.pt(o.total))}</b>
             <span class="muted">· ${esc(t(o.kind === "digital" ? "mkt.kind.digital" : "mkt.kind.physical"))}</span>
           </div>
           ${o.needs_address && side === "purchases" ? `<p class="mkt-order-alert" role="status">${ICON.home}<span>${esc(t(o.delivery === "hand" ? "mkt.o.addHand" : "mkt.o.addAddress"))}</span></p>` : ""}

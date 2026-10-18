@@ -103,6 +103,8 @@
   M.errText = (data) => {
     const r = String(data?.reason || "");
     if (r === "points") return t("mkt.err.points", { need: M.fmt(data.need), have: M.fmt(data.have) });
+    // a coupon (js/market-coupons.js) that cannot be used for this order
+    if (r === "coupon" && M.couponWhy) return M.couponWhy(data.why);
     if (r === "stock" && data?.stock != null) return t("mkt.err.stockLeft", { n: M.fmt(data.stock) });
     if (r === "city" && data?.city) return t("mkt.err.cityOnly", { city: data.city });
     if (r === "people" && Array.isArray(data?.unknown) && data.unknown.length) {
@@ -1048,6 +1050,15 @@
         <label class="mkt-field"><span>${esc(t("mkt.co.yourCity"))} *</span><input name="city" dir="auto" maxlength="80" autocomplete="address-level2" value="" /></label>
         <p class="muted mkt-f-hint">${esc(t("mkt.co.cityOnly", { city: s.city || "" }))}</p>` : ""}
         <label class="mkt-field"><span>${esc(t("mkt.co.note"))}</span><textarea name="note" dir="auto" rows="2" maxlength="300"></textarea></label>
+        <div class="mkt-co-cpn" data-co-cpn>
+          <label class="mkt-field"><span>${esc(t("mkt.cp.co.label"))}</span>
+            <span class="cpn-code-field">
+              <input name="coupon" dir="ltr" maxlength="24" autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="${esc(t("mkt.cp.co.ph"))}" />
+              <button class="btn btn-sm btn-ghost" type="button" data-co-cpn-apply>${esc(t("mkt.cp.co.apply"))}</button>
+            </span></label>
+          <div class="cpn-co-mine" data-co-cpn-mine hidden></div>
+          <p class="cpn-co-msg" data-co-cpn-msg role="status" hidden></p>
+        </div>
         <dl class="mkt-co-sum" data-sum></dl>
         <p class="muted mkt-f-hint">${esc(t(request ? "mkt.co.holdRequest" : "mkt.co.hold"))}</p>
         <p class="mkt-form-err" data-err role="alert"></p>
@@ -1059,13 +1070,16 @@
     const form = wrap.querySelector("[data-co]");
     const err = form.querySelector("[data-err]");
     let have = null;
+    let coupon = null; // { id, code, scope, pct } (market_coupon_check)
     const sum = () => {
       const q = Math.max(1, Math.min(maxQty, Math.floor(Number(form.qty.value) || 1)));
       const ship = ships ? Number(p.shipping_cost) || 0 : 0;
-      const total = Number(p.price) * q + ship;
+      const off = M.couponOff ? M.couponOff(coupon, Number(p.price) * q, ship) : { total: 0 };
+      const total = Number(p.price) * q + ship - off.total;
       form.querySelector("[data-sum]").innerHTML = `
         <dt>${esc(t("mkt.co.subtotal", { n: M.fmt(q) }))}</dt><dd dir="ltr">${esc(M.pt(Number(p.price) * q))}</dd>
         ${ships ? `<dt>${esc(t("mkt.shippingCost"))}</dt><dd dir="ltr">${ship ? esc(M.pt(ship)) : esc(t("mkt.free"))}</dd>` : ""}
+        ${coupon ? `<dt class="cpn-off">${esc(t("mkt.cp.co.line", { code: coupon.code }))}</dt><dd class="cpn-off" dir="ltr">${off.total ? `−${esc(M.pt(off.total))}` : esc(t("mkt.cp.co.nothingYet"))}</dd>` : ""}
         <dt class="tot">${esc(t("mkt.co.total"))}</dt><dd class="tot" dir="ltr">${esc(M.pt(total))}</dd>
         <dt>${esc(t("mkt.co.yourPoints"))}</dt><dd dir="ltr">${have == null ? "…" : esc(M.pt(have))}</dd>
         ${have != null ? `<dt>${esc(t("mkt.co.after"))}</dt><dd class="${have - total < 0 ? "neg" : ""}" dir="ltr">${esc(M.pt(have - total))}</dd>` : ""}`;
@@ -1073,6 +1087,60 @@
     };
     form.qty.addEventListener("input", sum);
     sum();
+    // the coupon: typed, or one of the member's coupons of this store
+    const cpnMsg = form.querySelector("[data-co-cpn-msg]");
+    const say = (text, bad = false) => {
+      cpnMsg.hidden = !text;
+      cpnMsg.className = `cpn-co-msg${bad ? " bad" : ""}`;
+      cpnMsg.innerHTML = text;
+    };
+    const applyCoupon = async (code) => {
+      const c = String(code || "").trim();
+      if (!c) return;
+      const q = Math.max(1, Math.min(maxQty, Math.floor(Number(form.qty.value) || 1)));
+      const btn = form.querySelector("[data-co-cpn-apply]");
+      btn.disabled = true;
+      const r = await M.call("market_coupon_check", { p_member: M.memberId(), p_product: p.id, p_code: c, p_qty: q });
+      btn.disabled = false;
+      if (!r.ok || !r.data?.ok) {
+        coupon = null;
+        sum();
+        return say(esc(r.ok && r.data?.reason === "coupon" && M.couponWhy ? M.couponWhy(r.data.why) : M.failText(r)), true);
+      }
+      coupon = r.data.coupon;
+      form.coupon.value = coupon.code;
+      sum();
+      say(`${M.ICON.ticket || ""}<span>${esc(t("mkt.cp.co.applied", { code: coupon.code, pct: `−${coupon.pct}%`, scope: M.couponScope ? M.couponScope(coupon.scope) : "" }))}</span>
+        <button class="btn btn-sm btn-ghost" type="button" data-co-cpn-off>${esc(t("mkt.cp.co.remove"))}</button>`);
+    };
+    form.querySelector("[data-co-cpn-apply]").addEventListener("click", () => applyCoupon(form.coupon.value));
+    form.coupon.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyCoupon(form.coupon.value);
+      }
+    });
+    form.addEventListener("click", (e) => {
+      if (e.target.closest("[data-co-cpn-off]")) {
+        coupon = null;
+        form.coupon.value = "";
+        say("");
+        sum();
+        return;
+      }
+      const pick = e.target.closest("[data-co-cpn-pick]");
+      if (pick) applyCoupon(pick.dataset.coCpnPick);
+    });
+    if (s.id) {
+      M.call("market_coupons_store", { p_member: M.memberId(), p_store: s.id }).then((r) => {
+        const mine = form.querySelector("[data-co-cpn-mine]");
+        const list = r.ok && Array.isArray(r.data?.items) ? r.data.items.filter((c) => !c.used) : [];
+        if (!mine || !list.length) return;
+        mine.hidden = false;
+        mine.innerHTML = `<span class="muted">${esc(t("mkt.cp.co.yours"))}</span>${list.map((c) => `
+          <button class="cpn-mini" type="button" data-co-cpn-pick="${esc(c.code)}"><b dir="ltr">−${esc(c.pct)}%</b><span>${esc(M.couponScope ? M.couponScope(c.scope) : "")}</span><code dir="ltr">${esc(c.code)}</code></button>`).join("")}`;
+      });
+    }
     C.memberPoints(M.memberId(), {})
       .then((mp) => {
         have = Number(mp?.available) || 0;
@@ -1112,10 +1180,17 @@
       }
       const btn = form.querySelector("[data-co-buy]");
       btn.disabled = true;
-      const r = await M.call("market_buy", { p_member: M.memberId(), p_product: p.id, p_qty: q, p_address: addr, p_ref: ref || "" });
+      const args = { p_member: M.memberId(), p_product: p.id, p_qty: q, p_address: addr, p_ref: ref || "" };
+      if (coupon) args.p_coupon = coupon.code;
+      const r = await M.call("market_buy", args);
       btn.disabled = false;
       if (!r.ok || !r.data?.ok) {
-        err.textContent = M.failText(r);
+        err.textContent = r.setup && coupon ? t("mkt.cp.co.setup") : M.failText(r);
+        if (r.ok && r.data?.reason === "coupon") {
+          coupon = null;
+          say("");
+          sum();
+        }
         return;
       }
       wrap.close();

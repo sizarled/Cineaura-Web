@@ -2194,6 +2194,15 @@
     market_social_suspended: (n) => `notif.mktSocialSuspended.${socialKind(n)}`,
     market_social_restored: (n) => `notif.mktSocialRestored.${socialKind(n)}`,
     market_social_deleted: (n) => `notif.mktSocialDeleted.${socialKind(n)}`,
+    // an account code of Panel > Packages activated the membership (sql/packages.sql); the body is "Gold · 2027-01-18"
+    account_code: "notif.accountCode",
+    // a private code of Panel > Membership went to the member by itself (no serial typed): the
+    // membership ("Gold · 2027-01-18"), the points ("+500"), a prize discount waiting ("−300 PT")
+    account_gift: "notif.accountGift",
+    points_gift: "notif.pointsGift",
+    prize_gift: "notif.prizeGift",
+    // a store gave the member an exclusive coupon (sql/market.sql); the body is "Store · -20%"
+    market_coupon: "notif.mktCoupon",
   };
   // a review, a purchase list or a recommendation: the Market tab of the profile it links to
   function socialKind(n) {
@@ -3680,6 +3689,8 @@
   // the Panel: Market and Announcements
   NAV_ICONS.market = '<path d="M4.5 8.5h15l-1.2 11a1.6 1.6 0 0 1-1.6 1.5H7.3a1.6 1.6 0 0 1-1.6-1.5z"/><path d="M8.8 8.5V7a3.2 3.2 0 0 1 6.4 0v1.5"/>';
   NAV_ICONS.announce = '<path d="M4 10.2v3.6a1 1 0 0 0 1 1h2.2L12.5 19V5L7.2 9.2H5a1 1 0 0 0-1 1z"/><path d="M16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/>';
+  // the Panel: Packages (account, points and prize codes)
+  NAV_ICONS.packages = '<path d="M3.5 7.5L12 3.2l8.5 4.3v9L12 20.8l-8.5-4.3z"/><path d="M3.5 7.5L12 11.8l8.5-4.3M12 11.8v9M7.8 5.3l8.4 4.3"/>';
 
   function navIcon(name) {
     const body = NAV_ICONS[name];

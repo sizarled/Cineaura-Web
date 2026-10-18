@@ -3022,7 +3022,10 @@
       }
       const r = res.data || {};
       if (!r.ok) {
-        let text = t(POINT_CODE_ERRORS[r.reason] || "points.err.network");
+        // an exclusive code of Panel > Packages this account does not meet (sql/point_codes.sql _pack_aud_ok)
+        let text = r.reason === "audience"
+          ? t(`pack.no.${["membership", "country", "language", "level", "age"].includes(r.why) ? r.why : "fit"}`)
+          : t(POINT_CODE_ERRORS[r.reason] || "points.err.network");
         if (r.reason === "not_found" && Number.isFinite(Number(r.left)) && Number(r.left) <= 3) text += ` ${t("points.err.left", { n: Number(r.left) })}`;
         return showError(text);
       }

@@ -20,15 +20,16 @@
   } = window.CineAura;
 
   const PANEL_KEY = "cineaura_panel";
-  // overview: every staff member (the numbers of their own sections); content, market, points and
-  // announce: js/panel-admin.js (sql/content.sql, iptv_lists.sql, market.sql, point_codes.sql, panel_admin.sql)
-  const ALL_SECTIONS = ["overview", "accounts", "links", "iptv", "apps", "reports", "prizes", "messages", "content", "market", "points", "announce", "staff", "settings"];
+  // overview: every staff member (the numbers of their own sections); content, market, packages and
+  // announce: js/panel-admin.js (sql/content.sql, iptv_lists.sql, market.sql, packages.sql, point_codes.sql,
+  // panel_admin.sql)
+  const ALL_SECTIONS = ["overview", "accounts", "links", "iptv", "apps", "reports", "prizes", "messages", "content", "market", "packages", "announce", "staff", "settings"];
   // the side menu, in groups (a group without a section the staff member may open is left out)
   const NAV_GROUPS = [
     ["", ["overview"]],
-    ["panel.grp.members", ["accounts", "messages", "staff"]],
+    ["panel.grp.members", ["accounts", "packages", "messages", "staff"]],
     ["panel.grp.watch", ["links", "iptv", "apps"]],
-    ["panel.grp.community", ["content", "market", "prizes", "points"]],
+    ["panel.grp.community", ["content", "market", "prizes"]],
     ["panel.grp.site", ["reports", "announce", "settings"]],
   ];
   // the sections a staff member can be given (overview: everybody; staff: the Super Admin)
@@ -91,7 +92,8 @@
   function sectionsOf(row) {
     if ((row?.role || state.staff?.role) === "super") return ALL_SECTIONS.slice();
     const raw = String(row?.sections || state.staff?.sections || "");
-    const list = raw.split(",").map((s) => s.trim()).filter((s) => GIVEN_SECTIONS.includes(s));
+    // "points" (Points codes, round 27) became Packages
+    const list = raw.split(",").map((s) => (s.trim() === "points" ? "packages" : s.trim())).filter((s) => GIVEN_SECTIONS.includes(s));
     return ["overview", ...(list.length ? list : ["accounts"])];
   }
 
@@ -349,6 +351,7 @@
         if (opts.reportTab) state.reportTab = opts.reportTab;
         if (opts.contentTab) state.paContentTab = opts.contentTab;
         if (opts.marketTab) state.paMarketTab = opts.marketTab;
+        if (opts.packTab) state.paPackTab = opts.packTab;
         state.paPreset = opts.filter || opts.q != null ? { ...(opts.filter ? { filter: opts.filter } : {}), ...(opts.q != null ? { q: opts.q } : {}) } : null;
         state.section = section;
         renderShell();
@@ -2390,22 +2393,41 @@
       $("#np1").value = "";
       $("#np2").value = "";
     };
+    // Saved by panel_settings_save() (sql/panel_admin.sql: the Super Admin, whatever the table's
+    // policies and grants); without that file, straight into the table as before.
     $("#sh-save")?.addEventListener("click", async () => {
+      const btn = $("#sh-save");
       const body = {
         show_admin: $("#sh-admin").checked,
         show_moderator: $("#sh-mod").checked,
         show_member: $("#sh-mem").checked,
       };
-      let res = await supabaseRequest("/rest/v1/panel_settings?id=eq.1", { method: "PATCH", body: JSON.stringify(body) });
-      if (!res.ok || (Array.isArray(res.data) && !res.data.length)) {
-        res = await supabaseRequest("/rest/v1/panel_settings", {
-          method: "POST",
-          body: JSON.stringify({ id: 1, ...body }),
-        });
+      btn.disabled = true;
+      try {
+        const res = await window.CineAura.rpc("panel_settings_save", {
+          p_token: state.staff.token, p_show_admin: body.show_admin, p_show_moderator: body.show_moderator, p_show_member: body.show_member,
+        }).catch(() => null);
+        const raw = JSON.stringify(res?.data || {});
+        const missing = res && (res.status === 404 || /PGRST202|42883/.test(raw));
+        if (res?.ok && res.data?.ok) {
+          state.settings = { id: 1, ...(res.data.settings || body) };
+          return toast(t("panel.saved"));
+        }
+        if (!missing) {
+          if (/staff_forbidden/.test(raw)) return toast(t("panel.settingsSuper"));
+          if (/staff_auth/.test(raw)) return toast(t("pza.errAuth"));
+          return toast(t("panel.settingsFail"));
+        }
+        let old = await supabaseRequest("/rest/v1/panel_settings?id=eq.1", { method: "PATCH", body: JSON.stringify(body) });
+        if (!old.ok || (Array.isArray(old.data) && !old.data.length)) {
+          old = await supabaseRequest("/rest/v1/panel_settings", { method: "POST", body: JSON.stringify({ id: 1, ...body }) });
+        }
+        if (!old.ok) return toast(t("panel.settingsSql"));
+        state.settings = { id: 1, ...body };
+        toast(t("panel.saved"));
+      } finally {
+        btn.disabled = false;
       }
-      if (!res.ok) return toast(t("panel.actFail"));
-      state.settings = { id: 1, ...body };
-      toast(t("panel.saved"));
     });
   }
 
