@@ -15,6 +15,9 @@
  * js/i18n.js keeps the list of interface keys (key → English) and js/lang.js
  * fills CineAuraI18n[language] from the language file, so every existing
  * CineAura.t("nav.search") call keeps working.
+ *
+ * An entry named "@" + an interface key translates that key only:
+ *     "@srch.tab.movies": "الأفلام"   (the header's "Movies" stays «أفلام»)
  */
 (() => {
   const DIR = "lang";
@@ -122,7 +125,11 @@
     const pack = (window.CineAuraI18n = window.CineAuraI18n || {});
     const table = {};
     Object.keys(keys).forEach((key) => {
-      table[key] = lookup(map, index, keys[key]);
+      // "@<key>": "…" in a pack translates that one interface key only — for an English text
+      // that is shared with another place but reads differently there in this language
+      // (Search's "Movies" tab is «الأفلام», the header's "Movies" stays «أفلام»).
+      const own = map[`@${key}`];
+      table[key] = typeof own === "string" && own ? own : lookup(map, index, keys[key]);
     });
     pack[code] = table;
     if (code !== state.want) return;

@@ -3492,7 +3492,7 @@ Search movies, recommendations, reviews and playlists = ابحث عن الأفل
 Search series, recommendations, reviews and playlists = ابحث عن المسلسلات والتوصيات والمراجعات وقوائم التشغيل
 Search channels and IPTV lists = ابحث عن القنوات وقوائم IPTV
 Search members, posts and recommendations = ابحث عن الأعضاء والمنشورات والتوصيات
-Search products, categories, recommendations, reviews and purchase lists = ابحث عن المنتجات والفئات والتوصيات والمراجعات وقوائم المشتريات
+Search products, categories, recommendations, reviews and purchase lists = ابحث عن المنتجات والفئات والتوصيات والمراجعات وقوائم الشراء
 Search prizes, challenges, lotteries and prize groups = ابحث عن الجوائز والتحديات واليانصيب ومجموعات الجوائز
 CineAura lists = قوائم الموقع
 Members' channels = قنوات الأعضاء
@@ -3501,6 +3501,17 @@ Purchase recommendations = توصيات الشراء
 Challenges = التحديات
 Lotteries = اليانصيب
 Prize groups = مجموعات الجوائز
+# صفحة البحث: أسماء التبويبات والنتائج كما كُتبت للموقع — @ + مفتاح الواجهة يترجم هذا المفتاح وحده
+# (عنوان «أفلام» في القائمة العلوية يبقى كما هو)
+@srch.tab.movies = الأفلام
+@srch.tab.series = المسلسلات
+@srch.t.movie = الأفلام
+@srch.t.series = المسلسلات
+@srch.t.rec = التوصيات
+@srch.t.movies.playlist = قوائم التشغيل
+@srch.t.series.playlist = قوائم التشغيل
+@srch.t.free = القنوات المجانية
+@srch.t.market.list = قوائم الشراء
 Ranking points = نقاط الترتيب
 pts = نقطة
 Ranking points: what they count = نقاط الترتيب: ما الذي تحسبه
