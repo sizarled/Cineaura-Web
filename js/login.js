@@ -13,6 +13,12 @@
     tmdb,
     imgUrl,
     restValue,
+    getSession,
+    initialsAvatar,
+    primeAvatars,
+    avatarUrlFor,
+    profileHref,
+    escapeHtml,
   } = window.CineAura;
 
   const TABLES = ["members", "Members"];
@@ -23,10 +29,47 @@
     el.innerHTML = html;
   }
 
-  // ?next=dashboard.html%23iptv — only a dashboard section is accepted as a target.
+  // ?next=dashboard.html%23iptv — only a dashboard section, the notifications
+  // page (with its period) or a channel list (Listchannels.html?free=1,
+  // ?package=…) of this site is accepted as a target.
   function nextTarget() {
     const next = new URLSearchParams(location.search).get("next") || "";
-    return /^dashboard\.html(#[a-z]+)?$/.test(next) ? "./" + next : "";
+    const ok = /^(dashboard\.html(#[a-z]+)?|notifications\.html(\?period=[a-z]+)?|[Ll]istchannels\.html\?[\w%.~*+=&-]*)$/.test(next);
+    return ok ? "./" + next : "";
+  }
+
+  // The member's avatar and username above the welcome: a link to their profile.
+  async function paintUser(member) {
+    const link = $("#success-user");
+    const username = String(member?.username || "").replace(/^@/, "");
+    if (!link || !username) return;
+    const img = $("#success-avatar");
+    img.src = initialsAvatar(member.full_name || username);
+    img.alt = `@${username}`;
+    $("#success-handle").textContent = `@${username}`;
+    $("#success-name").textContent = member.full_name || username;
+    link.href = profileHref(username);
+    link.setAttribute("aria-label", `${t("auth.viewProfile")}: @${username}`);
+    link.hidden = false;
+    let name = "";
+    try {
+      const res = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(member.member_id || "")}&select=display_name,avatar_url`);
+      const row = res.ok && Array.isArray(res.data) ? res.data[0] : null;
+      name = String(row?.display_name || "").trim();
+      if (row?.avatar_url) img.src = row.avatar_url;
+      else {
+        await primeAvatars([member.member_id], [username]);
+        const url = avatarUrlFor(member.member_id, username);
+        if (url) img.src = url;
+      }
+    } catch {
+      /* the initials stay */
+    }
+    img.onerror = () => {
+      img.onerror = null;
+      img.src = initialsAvatar(member.full_name || username);
+    };
+    if (name) $("#success-name").textContent = name;
   }
 
   function showSuccess(member) {
@@ -37,7 +80,8 @@
     }
     $("#login-form").hidden = true;
     $("#success-card").hidden = false;
-    $("#success-lead").textContent = t("auth.signedAs", { name: member.full_name || member.username });
+    $("#success-lead").textContent = t("auth.signedAs", { name: member.full_name || member.username || t("auth.yourAccount") });
+    paintUser(member);
     $("#success-card").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -112,20 +156,23 @@
         result = { ok: true, reason: "ok", member: found.row };
       }
 
-      if (result.ok === false || result.reason === "not_found") {
-        showAlert("error", `${t("login.notReg")} <a class="btn btn-sm btn-primary" href="./register.html" style="margin-left:8px">${t("nav.signup")}</a>`);
-        return;
-      }
+      // the precise refusals first: every refusal has ok: false
       if (result.reason === "bad_password") {
         showAlert("error", `${t("login.badPass")} <a class="btn btn-sm btn-primary" href="./Rest.html" style="margin-left:8px">${t("auth.recovery")}</a>`);
         return;
       }
       if (result.reason === "banned") {
-        showAlert("error", t("login.banned"));
+        // banned for not being activated / re-activated within 30 days (sql/account_deadline.sql)
+        const why = window.CineAura.accountBanText?.(result.ban_reason);
+        showAlert("error", why ? escapeHtml(why) : t("login.banned"));
         return;
       }
       if (result.reason === "setup") {
         showAlert("warn", t("login.setup"));
+        return;
+      }
+      if (result.ok === false || result.reason === "not_found") {
+        showAlert("error", `${t("login.notReg")} <a class="btn btn-sm btn-primary" href="./register.html" style="margin-left:8px">${t("nav.signup")}</a>`);
         return;
       }
 
@@ -162,7 +209,7 @@
       input.type = input.type === "password" ? "text" : "password";
     });
     $("#login-form").addEventListener("submit", onSubmit);
-    if (isLoggedIn()) showSuccess({ full_name: "your account", username: "" });
+    if (isLoggedIn()) showSuccess(getSession() || {});
     setVisual();
   }
 

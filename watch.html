@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- YouTube needs the site in the Referer of its player (else error 153): this policy wins over
+       a stricter one a host or a CDN may add (Referrer-Policy: no-referrer or same-origin) -->
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <script src="js/prefs.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title data-i18n-title="common.watchTitle">Watch — CineAura</title>
@@ -94,6 +97,8 @@
           <iframe class="player-frame" id="player-frame" allow="autoplay; encrypted-media; fullscreen; picture-in-picture" allowfullscreen referrerpolicy="no-referrer"></iframe>
           <div class="player-idle" id="player-idle">
             <div class="player-idle-ui">
+              <!-- The link the play button starts, once one was chosen under the player. -->
+              <span class="play-source" id="play-source" hidden></span>
               <button class="play-btn" id="play-btn" type="button" aria-label="Play">
                 <svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.2L13.2 8L4 13.8V2.2Z"/></svg>
               </button>
@@ -113,10 +118,20 @@
               <p class="gate-age" id="gate-age" hidden></p>
               <div class="gate-msg" id="gate-msg"></div>
               <input class="pin-input" id="code-input" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="••••••" />
+              <!-- Ticked: the code is kept on this device and not asked again. -->
+              <label class="gate-remember" for="code-remember">
+                <input type="checkbox" id="code-remember" />
+                <span>
+                  <b data-i18n="watch.remember">Remember the code</b>
+                  <small data-i18n="watch.rememberHint">It won't be asked for again on this device, which is linked to the code (Linked devices).</small>
+                </span>
+              </label>
               <div class="gate-actions">
                 <button class="btn btn-lg btn-primary" id="unlock-btn" type="button" data-i18n="watch.gateEnter">Enter code</button>
                 <a class="btn btn-lg btn-ghost" id="create-code" href="./login.html" data-i18n="watch.gateCreate">Create code</a>
               </div>
+              <!-- A code works on one device only: the address of this one. -->
+              <p class="gate-device" id="gate-device"></p>
             </div>
           </div>
         </div>

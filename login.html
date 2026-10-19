@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- YouTube needs the site in the Referer of its player (else error 153): this policy wins over
+       a stricter one a host or a CDN may add (Referrer-Policy: no-referrer or same-origin) -->
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <script src="js/prefs.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title data-i18n-title="nav.signin">Sign In — CineAura</title>
@@ -120,6 +123,13 @@
         </form>
 
         <section class="glass auth-card success-card" id="success-card" hidden>
+          <a class="success-user" id="success-user" href="./Profile.html" hidden>
+            <img id="success-avatar" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="" width="64" height="64" />
+            <span class="success-who">
+              <strong id="success-name"></strong>
+              <small><bdi id="success-handle" dir="ltr"></bdi><span class="success-go" data-i18n="auth.viewProfile">View profile</span></small>
+            </span>
+          </a>
           <span class="eyebrow" data-i18n="auth.welcome">Welcome back</span>
           <h1 data-i18n="auth.signedOk">Signed in successfully</h1>
           <p class="lead" id="success-lead">Your session is ready. Continue to your dashboard.</p>

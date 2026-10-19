@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- YouTube needs the site in the Referer of its player (else error 153): this policy wins over
+       a stricter one a host or a CDN may add (Referrer-Policy: no-referrer or same-origin) -->
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <script src="js/prefs.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title data-i18n-title="common.profileTitle">Profile — CineAura</title>
@@ -13,7 +16,10 @@
   <link rel="stylesheet" href="css/pages.css" />
   <link rel="stylesheet" href="css/dashboard.css" />
   <link rel="stylesheet" href="css/profile.css" />
+  <link rel="stylesheet" href="css/videos.css" />
+  <link rel="stylesheet" href="css/market.css" />
   <link rel="stylesheet" href="css/facebook.css" />
+  <link rel="stylesheet" href="css/mobile.css" />
 </head>
 <body class="page-inner" data-auth-gate="note">
   <div class="bg-orbs" aria-hidden="true">
@@ -66,6 +72,9 @@
   <script src="js/lang.js"></script>
   <script src="js/common.js"></script>
   <script src="js/post-rich.js"></script>
+  <script src="js/videos.js"></script>
+  <script src="js/content-studio.js"></script>
+  <script src="js/market-forms.js"></script>
   <script src="js/profile.js"></script>
 </body>
 </html>

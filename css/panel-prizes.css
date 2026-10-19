@@ -1,10 +1,11 @@
-/* Staff panel — prizes (add / manage / statistics) */
+/* Staff panel — prizes (add / manage / prize claims / statistics) */
 .pza-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 14px 0 18px; border-bottom: 1px solid var(--line); }
 .pza-tabs button {
   padding: 10px 18px; border: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 600;
   border-bottom: 2px solid transparent; cursor: pointer; margin-bottom: -1px;
 }
 .pza-tabs button.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+.pza-tabs .crp-badge[hidden] { display: none; }
 
 .pza-lbl { font-weight: 650; font-size: 13.5px; margin-top: 8px; color: var(--text, inherit); }
 .pza-field { display: grid; gap: 4px; flex: 1; min-width: 130px; }
@@ -54,7 +55,14 @@
 .pza-limits small { font-size: 10.5px; color: var(--muted); }
 
 .pza-filters { display: grid; gap: 10px; margin-bottom: 14px; }
+/* the search boxes of Participants and Prize claims (outside .stack / .form-row) */
+.pza-filters > input {
+  width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--input-bg); color: var(--text); font: inherit;
+}
+.pza-filters > input:focus { outline: none; border-color: var(--cyan); }
 .lang-chip.on { background: rgba(1, 180, 228, .18); border-color: var(--cyan); color: var(--cyan); }
+html[data-theme="day"] .lang-chip.on { background: rgba(1, 180, 228, .14); border-color: var(--cyan); color: #0a7898; }
 button.lang-chip { cursor: pointer; font: inherit; }
 
 .pza-member { border: 1px solid var(--line); border-radius: 16px; padding: 12px; margin-bottom: 10px; display: grid; gap: 8px; }
@@ -80,8 +88,46 @@ button.lang-chip { cursor: pointer; font: inherit; }
 .pza-legend { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; margin: 8px 0 18px; }
 .pza-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 
+/* Prize claims tab (the steps, badges and verdict are in dashboard.css) */
+.pzc-filters .lang-chip small { margin-inline-start: 4px; color: var(--muted); font-weight: 700; }
+.pzc-filters .lang-chip.on small { color: inherit; }
+.pzc-list { display: grid; gap: 12px; }
+.pzc-card { border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; display: grid; gap: 6px; }
+.pzc-card.is-submitted { border-inline-start: 4px solid var(--cyan); }
+.pzc-card.is-review { border-inline-start: 4px solid #ffc400; }
+.pzc-card.is-accepted { border-inline-start: 4px solid #3fbf7f; }
+.pzc-card.is-rejected { border-inline-start: 4px solid #ff5c5c; }
+.pzc-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pzc-head .pza-member-main { grid-template-columns: 44px minmax(0, 1fr); cursor: default; flex: 1; min-width: 0; }
+.pzc-head a { color: inherit; text-decoration: none; }
+.pzc-head a:hover { color: var(--cyan); }
+.pzc-prize { margin: 2px 0 0; font-size: 14px; }
+.pzc-prize a { color: var(--cyan); font-weight: 650; text-decoration: none; }
+.pzc-prize a:hover { text-decoration: underline; }
+
+.pzc-dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.pzc-dlg-head h2 { margin: 0; }
+.pzc-dlg-foot { margin-top: 14px; }
+.pzc-balance { margin: 0 0 6px; font-weight: 650; color: var(--cyan); }
+.pzc-reject textarea { min-height: 84px; resize: vertical; }
+.pzc-opts { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; }
+.pzc-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+.pzc-opt input[type="radio"], .pzc-opt input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--cyan); }
+.pzc-opt input[type="number"] { width: 170px; max-width: 100%; padding: 7px 10px; }
+.pzc-opt input[type="number"]:disabled { opacity: .45; }
+.pzc-note { margin: 2px 0 0; font-size: 12.5px; }
+.pzc-err { margin: 0; padding: 8px 12px; border-radius: 10px; background: rgba(255, 99, 99, .14); color: #ff8a8a; font-weight: 600; font-size: 13px; }
+html[data-theme="day"] .pzc-err { color: #b03a2e; }
+
 @media (max-width: 640px) {
   .pza-limits { grid-template-columns: 70px repeat(3, 1fr); }
   .pza-member-main { grid-template-columns: 40px minmax(0, 1fr); }
   .pza-member-main .pza-badge { grid-column: 2; justify-self: start; }
+  .pzc-head { flex-wrap: wrap; }
+  .pzc-head .pza-member-main { grid-template-columns: 40px minmax(0, 1fr); }
 }
+
+/* Panel > Prizes > groups: the picture of each group (sql/image_uploads.sql) */
+.pza-g-thumb { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; flex: none; background: var(--input-bg); border: 1px solid var(--line); }
+.pza-g-new { margin: 6px 0 12px; }
+.pza-g-new #pza-g-name { width: 100%; }

@@ -1,5 +1,8 @@
 // CineAura rich post items: TMDB details (info / cast / trailer) for
 // recommendations, recommendation lists and reviews.
+// (round 31) An item can also be a member's video (media_type "video", content_id CT…, tmdb_id 0):
+// the recommendations and reviews of a video (Content.html > Recommend in a post / Write a review),
+// found by Search.html > Videos. Its picture is the video's own thumbnail; it opens Content.html.
 (() => {
   const C = () => window.CineAura;
   const DISPLAY_KEYS = ["info", "cast", "trailer"];
@@ -157,6 +160,7 @@
     }
     return {
       tmdb_id: Number(it.tmdb_id),
+      content_id: it.content_id || "",
       media_type: it.media_type || "movie",
       title: it.title || "",
       poster_path: it.poster_path || "",
@@ -170,11 +174,31 @@
     };
   }
 
+  // A member's video as an item (a card of content_search / content_get): no TMDB behind it
+  function fromVideo(v) {
+    return {
+      tmdb_id: 0,
+      content_id: v.id || v.content_id || "",
+      media_type: "video",
+      title: v.title || "",
+      poster_path: v.thumb || v.thumb_url || "",
+      backdrop_path: "",
+      rating: 0,
+      year: String(v.publish_at || v.created_at || "").slice(0, 4),
+      genres: (Array.isArray(v.tags) ? v.tags : []).slice(0, 4).map((x) => `#${x}`).join(" "),
+      overview: String(v.description || "").slice(0, 600),
+      cast: [],
+      trailer_key: "",
+      owner: v.owner || "",
+    };
+  }
+
   // Live TMDB details in the viewer's language, stored snapshot as fallback.
   async function enrich(items) {
     return Promise.all(
       (items || []).map(async (it) => {
         const snap = snapshotFromRow(it);
+        if (snap.media_type === "video") return snap; // a member's video: its own snapshot
         try {
           const live = await details(snap.media_type, snap.tmdb_id);
           return { ...snap, ...live, title: live.title || snap.title, poster_path: live.poster_path || snap.poster_path };
@@ -188,7 +212,8 @@
   // Row for public.post_items (extended columns are optional, see sql/post_reviews.sql).
   function toItemRow(d) {
     return {
-      tmdb_id: d.tmdb_id,
+      tmdb_id: d.media_type === "video" ? 0 : d.tmdb_id,
+      ...(d.media_type === "video" ? { content_id: d.content_id || "" } : {}),
       media_type: d.media_type,
       title: d.title || "",
       poster_path: d.poster_path || "",
@@ -203,16 +228,19 @@
   }
 
   function baseItemRow(row) {
-    const { tmdb_id, media_type, title, poster_path, rating, post_id } = row;
-    return { tmdb_id, media_type, title, poster_path, rating, ...(post_id ? { post_id } : {}) };
+    const { tmdb_id, media_type, title, poster_path, rating, post_id, content_id } = row;
+    return { tmdb_id, media_type, title, poster_path, rating, ...(post_id ? { post_id } : {}), ...(media_type === "video" ? { content_id } : {}) };
   }
 
   function itemHref(it, postId) {
     const { personHref, watchHref } = C();
+    if (it.media_type === "video") return `./Content.html?idcontent=${encodeURIComponent(it.content_id || "")}`;
     return it.media_type === "person"
       ? personHref(it.tmdb_id)
       : watchHref(it.media_type, it.tmdb_id, null, null, postId);
   }
+  // the key of an item in a draft: "movie:27205", "video:CT1000000001"
+  const itemKey = (it) => `${it.media_type}:${it.media_type === "video" ? it.content_id : it.tmdb_id}`;
 
   function trailerHtml(key, title) {
     if (!key) return "";
@@ -248,9 +276,11 @@
     const { imgUrl, initialsAvatar, t } = C();
     const show = display || new Set(DISPLAY_KEYS);
     const href = itemHref(it, postId);
-    const poster = it.poster_path ? imgUrl(it.poster_path, "w342") : initialsAvatar(it.title);
+    const video = it.media_type === "video";
+    // a video's thumbnail is a full address; a TMDB poster a path
+    const poster = video ? (/^https?:\/\//i.test(it.poster_path || "") ? it.poster_path : initialsAvatar(it.title)) : it.poster_path ? imgUrl(it.poster_path, "w342") : initialsAvatar(it.title);
     const score = Number(it.rating || 0) ? Number(it.rating).toFixed(1) : "";
-    const typeLabel = it.media_type === "tv" ? t("rich.tv") : it.media_type === "person" ? t("rich.person") : t("rich.movie");
+    const typeLabel = video ? t("rich.video") : it.media_type === "tv" ? t("rich.tv") : it.media_type === "person" ? t("rich.person") : t("rich.movie");
     const facts = [
       it.year ? `<span class="chip">${esc(it.year)}</span>` : "",
       `<span class="chip">${esc(typeLabel)}</span>`,
@@ -263,11 +293,11 @@
     const cast = show.has("cast") && it.media_type !== "person" ? castHtml(it.cast) : "";
     const trailer = show.has("trailer") && it.media_type !== "person" ? trailerHtml(it.trailer_key, it.title) : "";
     const removable = opts.removable
-      ? `<button class="rich-remove" type="button" data-rich-remove="${esc(`${it.media_type}:${it.tmdb_id}`)}" aria-label="${esc(t("rich.remove"))}">✕</button>`
+      ? `<button class="rich-remove" type="button" data-rich-remove="${esc(itemKey(it))}" aria-label="${esc(t("rich.remove"))}">✕</button>`
       : "";
-    return `<div class="rich-item${opts.compact ? " compact" : ""}">
+    return `<div class="rich-item${opts.compact ? " compact" : ""}${video ? " is-video" : ""}">
       ${removable}
-      <a class="rich-poster" href="${href}">
+      <a class="rich-poster" href="${href}"${video ? ' referrerpolicy="no-referrer"' : ""}>
         ${score ? `<span class="score">★ ${score}</span>` : ""}
         <img src="${esc(poster)}" alt="" loading="lazy" />
       </a>
@@ -306,7 +336,7 @@
     const key = btn.dataset.trailer;
     const wrap = document.createElement("div");
     wrap.className = "rich-trailer playing";
-    wrap.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?autoplay=1&rel=0" title="Trailer" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+    wrap.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?autoplay=1&rel=0" title="Trailer" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
     btn.replaceWith(wrap);
   });
 
@@ -319,6 +349,8 @@
     enrich,
     toItemRow,
     baseItemRow,
+    fromVideo,
+    itemKey,
     itemHtml,
     reviewListsHtml,
   };

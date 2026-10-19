@@ -697,6 +697,573 @@
     });
   }
 
+  // ---------- Profile picture: an uploaded photo or an image link ----------
+  // Uploads go to Supabase Storage, bucket IPTV, folder Avatar, named after the
+  // member id (Avatar/ID123.jpg) and sent with x-upsert: a new photo replaces the
+  // old one under the same name. sql/avatar_storage.sql holds the Storage policies
+  // that let the public key write exactly that file and nothing else.
+  const AVATAR_BUCKET = "IPTV";
+  const AVATAR_FOLDER = "Avatar";
+  const AVATAR_PX = 512; // the stored photo is a square of at most 512 x 512
+  const AVATAR_MAX_BYTES = 10 * 1024 * 1024; // the file picked, before it is made smaller
+  const AVATAR_ERRORS = {
+    member: "avatar.errMember",
+    type: "avatar.errType",
+    big: "avatar.errBig",
+    decode: "avatar.errDecode",
+    setup: "avatar.errSetup",
+    network: "avatar.errNetwork",
+    failed: "avatar.errFailed",
+  };
+  const UPLOAD_ICON =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>';
+
+  function avatarObjectPath(memberId) {
+    return `${AVATAR_FOLDER}/${memberId}.jpg`;
+  }
+
+  // The file keeps its name from one upload to the next, so ?v= changes with each
+  // upload: browsers and the Storage CDN fetch the new photo instead of the old one.
+  function avatarPublicUrl(memberId, version = Date.now()) {
+    return `${SUPABASE_URL}/storage/v1/object/public/${AVATAR_BUCKET}/${avatarObjectPath(memberId)}?v=${version}`;
+  }
+
+  function loadImageFile(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => resolve({ img, url });
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("decode"));
+      };
+      img.src = url;
+    });
+  }
+
+  // Centre square of the photo (turned the way the camera held it), at most
+  // AVATAR_PX wide, as a JPEG. A transparent background becomes white.
+  async function squareAvatar(file, px = AVATAR_PX) {
+    const { img, url } = await loadImageFile(file);
+    try {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) throw new Error("decode");
+      const side = Math.min(w, h);
+      const out = Math.max(1, Math.min(px, side));
+      const canvas = document.createElement("canvas");
+      canvas.width = out;
+      canvas.height = out;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, out, out);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, out, out);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+      if (!blob) throw new Error("decode");
+      return blob;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  // -> { ok: true, url } | { ok: false, reason: member | type | big | decode | setup | network | failed }
+  async function uploadAvatar(memberId, file) {
+    const id = String(memberId || "");
+    // only the member signed in on this browser (not one signed out, or switched, in another tab)
+    if (!/^ID[0-9]{1,20}$/.test(id) || String(getSession()?.member_id || "") !== id) return { ok: false, reason: "member" };
+    if (!file) return { ok: false, reason: "type" };
+    // some phones give no type for their photos: those are tried, and refused if they don't decode
+    if (file.type && !/^image\//i.test(file.type)) return { ok: false, reason: "type" };
+    if (file.size > AVATAR_MAX_BYTES) return { ok: false, reason: "big" };
+    let blob;
+    try {
+      blob = await squareAvatar(file);
+    } catch {
+      return { ok: false, reason: "decode" };
+    }
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/storage/v1/object/${AVATAR_BUCKET}/${avatarObjectPath(id)}`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "image/jpeg",
+          "x-upsert": "true",
+          // browsers keep a picture for a day; every upload has a new ?v= link anyway
+          // (without this header a REST upload is stored as no-cache)
+          "cache-control": "max-age=86400",
+        },
+        body: blob,
+      });
+    } catch {
+      return { ok: false, reason: "network" };
+    }
+    if (res.ok) return { ok: true, url: avatarPublicUrl(id), bytes: blob.size };
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      /* not JSON */
+    }
+    const message = String(body?.message || body?.error || "");
+    const status = Number(body?.statusCode) || res.status;
+    let reason = "failed";
+    if (status === 413 || /maximum allowed size|too large/i.test(message)) reason = "big";
+    // no policy yet (row-level security), no bucket, or a bucket that refuses JPEG files
+    else if ([401, 403, 404, 415].includes(status) || /row-level security|bucket not found|mime/i.test(message)) reason = "setup";
+    if (reason === "setup") {
+      console.warn(`[CineAura] Avatar upload refused (${status} ${message}). Run sql/avatar_storage.sql in the Supabase SQL editor; bucket ${AVATAR_BUCKET} must exist and accept image/jpeg.`);
+    }
+    return { ok: false, reason, status, message };
+  }
+
+  // The profile picture field: preview, "Upload a photo" (when the member is known)
+  // and the image link input, which keeps the id the page saves from.
+  function avatarFieldHtml({ id, value = "", name = "", memberId = "" } = {}) {
+    const v = String(value || "");
+    const canUpload = /^ID[0-9]{1,20}$/.test(String(memberId || ""));
+    return `
+      <div class="avf" data-avf>
+        <img class="avf-img" data-avf-img src="${escapeHtml(v || initialsAvatar(name || "CA"))}" alt="" width="84" height="84" />
+        <div class="avf-body">
+          <label class="avf-label" for="${escapeHtml(id)}">${escapeHtml(t("avatar.label"))}</label>
+          ${canUpload ? `
+          <div class="avf-row">
+            <button class="btn btn-sm btn-primary avf-pick" type="button" data-avf-pick>${UPLOAD_ICON}<span>${escapeHtml(t("avatar.upload"))}</span></button>
+            <input type="file" accept="image/*" hidden data-avf-file />
+            <span class="avf-or">${escapeHtml(t("avatar.or"))}</span>
+          </div>` : ""}
+          <input id="${escapeHtml(id)}" class="avf-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" dir="ltr" value="${escapeHtml(v)}" placeholder="${escapeHtml(t("avatar.urlPh"))}" />
+          <p class="avf-hint">${escapeHtml(t(canUpload ? "avatar.hint" : "avatar.hintLink"))}</p>
+          <p class="avf-status" data-avf-status role="status" aria-live="polite"></p>
+        </div>
+      </div>`;
+  }
+
+  // save(url) -> true | false: stores a new upload on the profile at once (the old
+  // file is already replaced). Without it the page saves the link with its form.
+  // uploaded(url) hears about every upload that went through.
+  function wireAvatarField(root, { memberId = "", name = "", save = null, uploaded = null } = {}) {
+    const box = root?.querySelector?.("[data-avf]");
+    if (!box) return null;
+    const img = box.querySelector("[data-avf-img]");
+    const input = box.querySelector(".avf-url");
+    const pick = box.querySelector("[data-avf-pick]");
+    const file = box.querySelector("[data-avf-file]");
+    const status = box.querySelector("[data-avf-status]");
+    const fallback = initialsAvatar(name || "CA");
+    const say = (text, kind = "") => {
+      status.textContent = text || "";
+      status.className = `avf-status${kind ? ` ${kind}` : ""}`;
+    };
+    const show = (url) => {
+      img.onerror = null;
+      if (!url) {
+        img.src = fallback;
+        return;
+      }
+      img.onerror = () => {
+        img.onerror = null;
+        img.src = fallback;
+        // only about the link in the field now, not one typed before
+        if (input.value.trim() === url) say(t("avatar.badLink"), "bad");
+      };
+      img.src = url;
+    };
+    show(input.value.trim());
+    let timer = 0;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        say("");
+        show(input.value.trim());
+      }, 350);
+    });
+    if (pick && file) {
+      pick.addEventListener("click", () => file.click());
+      file.addEventListener("change", async () => {
+        const chosen = file.files?.[0];
+        file.value = ""; // picking the same file again fires change again
+        if (!chosen || pick.disabled) return;
+        pick.disabled = true;
+        box.classList.add("busy");
+        say(t("avatar.uploading"));
+        try {
+          const res = await uploadAvatar(memberId, chosen);
+          if (!res.ok) {
+            say(t(AVATAR_ERRORS[res.reason] || "avatar.errFailed"), "bad");
+            if (res.reason === "member" && !getSession()?.member_id) sessionWriteBlocked();
+            return;
+          }
+          clearTimeout(timer);
+          input.value = res.url;
+          show(res.url);
+          if (typeof uploaded === "function") uploaded(res.url);
+          if (typeof save === "function") {
+            let saved = false;
+            try {
+              saved = await save(res.url);
+            } catch {
+              saved = false;
+            }
+            say(t(saved ? "avatar.saved" : "avatar.errSave"), saved ? "ok" : "bad");
+          } else {
+            say(t("avatar.uploadedNext"), "ok");
+          }
+        } finally {
+          pick.disabled = false;
+          box.classList.remove("busy");
+        }
+      });
+    }
+    return { show, say };
+  }
+
+  // ---------- Picture fields: image links, or pictures picked on the device ----------
+  // Prizes and prize groups (Panel > Prizes), products, store logos and covers (Market.html).
+  // Like the profile picture, a field takes an image link or a picture from the device; unlike
+  // it, what it shows may not exist yet (a new prize, a new product), so a picked picture waits
+  // in the field (made smaller, as a JPEG) and goes up only once the page has saved and knows
+  // the id: uploadPictures() names it after that id — <id>.jpg, and when there are several
+  // pictures <id>-1.jpg, <id>-2.jpg … — in the folder of the bucket IPTV the page gives
+  // (Prizes/Previews, Prizes/Grpoups, Market/Product, Market/Logo, Market/Cover). Storage takes
+  // the files only with an upload ticket the server writes for those exact names
+  // (sql/image_uploads.sql), and x-upsert replaces an older picture of the same name.
+  const PICTURE_BUCKET = "IPTV";
+  const PICTURE_MAX_BYTES = 15 * 1024 * 1024; // the file picked, before it is made smaller
+  const PICTURE_ERRORS = {
+    type: "pic.errType",
+    big: "pic.errBig",
+    decode: "pic.errDecode",
+    setup: "pic.errSetup",
+    network: "pic.errNetwork",
+    failed: "pic.errFailed",
+    ticket: "pic.errSetup",
+  };
+
+  // always a full link (https://…): it is saved with the prize / product / store
+  const picturePublicUrl = (path) => {
+    const url = `${SUPABASE_URL}/storage/v1/object/public/${PICTURE_BUCKET}/${String(path).split("/").map(encodeURIComponent).join("/")}`;
+    try {
+      return new URL(url, location.href).href;
+    } catch {
+      return url;
+    }
+  };
+
+  // The picture made smaller: at most maxSide pixels on its longest side (a centred square
+  // when square), as a JPEG on white.
+  async function fitPicture(file, { maxSide = 1600, square = false } = {}) {
+    const { img, url } = await loadImageFile(file);
+    try {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) throw new Error("decode");
+      const side = Math.min(w, h);
+      const sw = square ? side : w;
+      const sh = square ? side : h;
+      const scale = Math.min(1, maxSide / Math.max(sw, sh));
+      const ow = Math.max(1, Math.round(sw * scale));
+      const oh = Math.max(1, Math.round(sh * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = ow;
+      canvas.height = oh;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, ow, oh);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, square ? (w - side) / 2 : 0, square ? (h - side) / 2 : 0, sw, sh, 0, 0, ow, oh);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.86));
+      if (!blob) throw new Error("decode");
+      return blob;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  // -> { ok: true } | { ok: false, reason: setup | network | big | failed }
+  async function storagePut(path, blob) {
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/storage/v1/object/${PICTURE_BUCKET}/${String(path).split("/").map(encodeURIComponent).join("/")}`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "image/jpeg",
+          "x-upsert": "true",
+          "cache-control": "max-age=86400",
+        },
+        body: blob,
+      });
+    } catch {
+      return { ok: false, reason: "network" };
+    }
+    if (res.ok) return { ok: true };
+    let body = null;
+    try {
+      body = await res.json();
+    } catch {
+      /* not JSON */
+    }
+    const message = String(body?.message || body?.error || "");
+    const status = Number(body?.statusCode) || res.status;
+    let reason = "failed";
+    if (status === 413 || /maximum allowed size|too large/i.test(message)) reason = "big";
+    else if ([401, 403, 404, 415].includes(status) || /row-level security|bucket not found|mime/i.test(message)) reason = "setup";
+    if (reason === "setup") {
+      console.warn(`[CineAura] Picture upload refused (${status} ${message}). Run sql/image_uploads.sql in the Supabase SQL editor; bucket ${PICTURE_BUCKET} must exist and accept image/jpeg.`);
+    }
+    return { ok: false, reason, status, message };
+  }
+
+  const PIC_ICONS = {
+    left: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
+    right: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
+    del: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  };
+
+  // The markup of a picture field. values: the image links it starts with. max: how many
+  // pictures (1 = one picture that a new one replaces). shape: "wide" | "square" previews.
+  function pictureFieldHtml({ id = "", label = "", hint = "", values = [], max = 1, shape = "wide", required = false } = {}) {
+    const list = (Array.isArray(values) ? values : [values]).map((v) => String(v || "").trim()).filter(Boolean).slice(0, max);
+    return `
+      <div class="pcf pcf-${shape === "square" ? "square" : "wide"}" data-pcf data-max="${Number(max) || 1}" data-values="${escapeHtml(JSON.stringify(list))}">
+        <div class="pcf-head">
+          <span class="pcf-label"${id ? ` id="${escapeHtml(id)}-label"` : ""}>${escapeHtml(label || t(max > 1 ? "pic.labelMany" : "pic.label"))}${required ? " *" : ""}</span>
+          ${max > 1 ? `<span class="pcf-count" data-pcf-count></span>` : ""}
+        </div>
+        <div class="pcf-grid" data-pcf-grid></div>
+        <div class="pcf-row">
+          <button class="btn btn-sm btn-primary pcf-pick" type="button" data-pcf-pick>${UPLOAD_ICON}<span>${escapeHtml(t("pic.upload"))}</span></button>
+          <input type="file" accept="image/*" hidden data-pcf-file ${max > 1 ? "multiple" : ""} />
+          <span class="pcf-or">${escapeHtml(t("avatar.or"))}</span>
+          <input class="pcf-url"${id ? ` id="${escapeHtml(id)}"` : ""} type="text" inputmode="url" autocomplete="off" spellcheck="false" dir="ltr" placeholder="${escapeHtml(t("pic.urlPh"))}" />
+          <button class="btn btn-sm btn-ghost pcf-add" type="button" data-pcf-add>${escapeHtml(t(max > 1 ? "pic.add" : "pic.use"))}</button>
+        </div>
+        <p class="pcf-hint">${escapeHtml(hint || t(max > 1 ? "pic.hintMany" : "pic.hint", { n: max }))}</p>
+        <p class="pcf-status" data-pcf-status role="status" aria-live="polite"></p>
+      </div>`;
+  }
+
+  // Wires a picture field. Returns { items, urls(), pending(), list(), set(urls), say(text, kind), box }.
+  // items: { kind: "url", url } | { kind: "file", blob, preview }
+  function wirePictureField(box, { maxSide = 1600, square = false, onChange = null } = {}) {
+    if (!box) return null;
+    if (box._pcf) return box._pcf;
+    const max = Math.max(1, Number(box.dataset.max) || 1);
+    const grid = box.querySelector("[data-pcf-grid]");
+    const pick = box.querySelector("[data-pcf-pick]");
+    const file = box.querySelector("[data-pcf-file]");
+    const urlIn = box.querySelector(".pcf-url");
+    const add = box.querySelector("[data-pcf-add]");
+    const status = box.querySelector("[data-pcf-status]");
+    const count = box.querySelector("[data-pcf-count]");
+    let initial = [];
+    try {
+      initial = JSON.parse(box.dataset.values || "[]");
+    } catch {
+      initial = [];
+    }
+    const ctrl = {
+      box,
+      items: initial.map((url) => ({ kind: "url", url })),
+      urls: () => ctrl.items.filter((i) => i.kind === "url").map((i) => i.url),
+      pending: () => ctrl.items.filter((i) => i.kind === "file").length,
+      list: () => ctrl.items.slice(),
+      set(urls) {
+        ctrl.items.forEach((i) => i.preview && URL.revokeObjectURL(i.preview));
+        ctrl.items = (urls || []).filter(Boolean).slice(0, max).map((url) => ({ kind: "url", url }));
+        draw();
+      },
+      say(text, kind = "") {
+        status.textContent = text || "";
+        status.className = `pcf-status${kind ? ` ${kind}` : ""}`;
+      },
+    };
+    const changed = () => {
+      draw();
+      if (typeof onChange === "function") onChange(ctrl);
+    };
+    function draw() {
+      grid.innerHTML = ctrl.items
+        .map((it, i) => {
+          const src = it.kind === "file" ? it.preview : it.url;
+          const tag = t(it.kind === "file" ? "pic.tagDevice" : "pic.tagLink");
+          return `
+            <figure class="pcf-item${it.kind === "file" ? " is-file" : ""}" data-i="${i}">
+              <img src="${escapeHtml(src)}" alt="" loading="lazy" />
+              <span class="pcf-tag">${escapeHtml(i === 0 && max > 1 ? `${t("pic.cover")} · ${tag}` : tag)}</span>
+              <span class="pcf-tools">
+                ${max > 1 && i > 0 ? `<button type="button" data-pcf-left aria-label="${escapeHtml(t("pic.moveLeft"))}" title="${escapeHtml(t("pic.moveLeft"))}">${PIC_ICONS.left}</button>` : ""}
+                ${max > 1 && i < ctrl.items.length - 1 ? `<button type="button" data-pcf-right aria-label="${escapeHtml(t("pic.moveRight"))}" title="${escapeHtml(t("pic.moveRight"))}">${PIC_ICONS.right}</button>` : ""}
+                <button type="button" data-pcf-del aria-label="${escapeHtml(t("pic.remove"))}" title="${escapeHtml(t("pic.remove"))}">${PIC_ICONS.del}</button>
+              </span>
+            </figure>`;
+        })
+        .join("");
+      grid.hidden = !ctrl.items.length;
+      grid.querySelectorAll("img").forEach((img) => {
+        img.addEventListener("error", () => img.closest(".pcf-item")?.classList.add("is-broken"), { once: true });
+      });
+      if (count) count.textContent = `${ctrl.items.length}/${max}`;
+      const full = max > 1 && ctrl.items.length >= max;
+      pick.disabled = full;
+      add.disabled = full;
+    }
+    function put(item) {
+      if (max === 1) {
+        ctrl.items.forEach((i) => i.preview && URL.revokeObjectURL(i.preview));
+        ctrl.items = [item];
+      } else if (ctrl.items.length < max) {
+        ctrl.items.push(item);
+      } else {
+        return false;
+      }
+      return true;
+    }
+    grid.addEventListener("click", (e) => {
+      const fig = e.target.closest(".pcf-item");
+      if (!fig) return;
+      const i = Number(fig.dataset.i);
+      if (e.target.closest("[data-pcf-del]")) {
+        const [gone] = ctrl.items.splice(i, 1);
+        if (gone?.preview) URL.revokeObjectURL(gone.preview);
+        changed();
+      } else if (e.target.closest("[data-pcf-left]") && i > 0) {
+        [ctrl.items[i - 1], ctrl.items[i]] = [ctrl.items[i], ctrl.items[i - 1]];
+        changed();
+      } else if (e.target.closest("[data-pcf-right]") && i < ctrl.items.length - 1) {
+        [ctrl.items[i + 1], ctrl.items[i]] = [ctrl.items[i], ctrl.items[i + 1]];
+        changed();
+      }
+    });
+    const addLink = () => {
+      const v = urlIn.value.trim();
+      if (!v) return;
+      if (!/^https?:\/\/[^\s<>"']+$/i.test(v)) {
+        ctrl.say(t("pic.badLink"), "bad");
+        return;
+      }
+      if (!put({ kind: "url", url: v })) {
+        ctrl.say(t("pic.full", { n: max }), "bad");
+        return;
+      }
+      urlIn.value = "";
+      ctrl.say("");
+      changed();
+    };
+    add.addEventListener("click", addLink);
+    urlIn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addLink();
+      }
+    });
+    pick.addEventListener("click", () => file.click());
+    file.addEventListener("change", async () => {
+      const chosen = [...(file.files || [])];
+      file.value = ""; // picking the same file again fires change again
+      if (!chosen.length) return;
+      box.classList.add("busy");
+      pick.disabled = true;
+      let bad = "";
+      try {
+        for (const f of chosen) {
+          if (max > 1 && ctrl.items.length >= max) {
+            bad = t("pic.full", { n: max });
+            break;
+          }
+          if (f.type && !/^image\//i.test(f.type)) {
+            bad = t(PICTURE_ERRORS.type);
+            continue;
+          }
+          if (f.size > PICTURE_MAX_BYTES) {
+            bad = t(PICTURE_ERRORS.big);
+            continue;
+          }
+          try {
+            const blob = await fitPicture(f, { maxSide, square });
+            put({ kind: "file", blob, preview: URL.createObjectURL(blob) });
+          } catch {
+            bad = t(PICTURE_ERRORS.decode);
+          }
+        }
+      } finally {
+        box.classList.remove("busy");
+        pick.disabled = false;
+      }
+      ctrl.say(bad || (ctrl.pending() ? t("pic.waiting") : ""), bad ? "bad" : "");
+      changed();
+    });
+    ctrl.redraw = draw;
+    draw();
+    box._pcf = ctrl;
+    return ctrl;
+  }
+
+  // Uploads the pictures picked in a field, named after `id`, into `folder`, after asking the
+  // server for their tickets (ticket(names) -> true | false). The pictures already stored under
+  // that id keep their names; the new ones take the first free names.
+  //   -> { ok, urls (every picture of the field, in order), failed (how many did not go up), reason }
+  async function uploadPictures(ctrl, { folder, id, ticket }) {
+    const items = ctrl?.list?.() || [];
+    const files = items.filter((i) => i.kind === "file");
+    if (!files.length) return { ok: true, urls: items.map((i) => i.url), failed: 0 };
+    const max = Math.max(1, Number(ctrl.box?.dataset?.max) || 1);
+    const prefix = `${picturePublicUrl(`${folder}/`)}`;
+    const used = new Set();
+    items.forEach((i) => {
+      if (i.kind !== "url" || !i.url.startsWith(prefix)) return;
+      const name = decodeURIComponent(i.url.slice(prefix.length).split("?")[0]).replace(/\.jpg$/i, "");
+      if (name === String(id) || name.startsWith(`${id}-`)) used.add(name);
+    });
+    const names = [];
+    if (max === 1 || (used.size === 0 && files.length === 1)) {
+      names.push(String(id));
+    } else {
+      for (let n = 1; names.length < files.length && n < 100; n += 1) {
+        const nm = `${id}-${n}`;
+        if (!used.has(nm)) names.push(nm);
+      }
+    }
+    let granted = false;
+    try {
+      granted = await ticket(names);
+    } catch {
+      granted = false;
+    }
+    if (!granted) return { ok: false, urls: ctrl.urls(), failed: files.length, reason: "ticket" };
+    const version = Date.now();
+    const done = new Map();
+    let failed = 0;
+    let reason = "";
+    for (let k = 0; k < files.length; k += 1) {
+      const path = `${folder}/${names[k]}.jpg`;
+      const res = await storagePut(path, files[k].blob);
+      if (res.ok) done.set(files[k], `${picturePublicUrl(path)}?v=${version}`);
+      else {
+        failed += 1;
+        reason = res.reason;
+      }
+    }
+    const urls = items.map((i) => (i.kind === "url" ? i.url : done.get(i) || "")).filter(Boolean);
+    // the field now shows the stored pictures; a picture that did not go up stays there, to try again
+    ctrl.items = items.map((i) => {
+      if (i.kind !== "file" || !done.has(i)) return i;
+      if (i.preview) URL.revokeObjectURL(i.preview);
+      return { kind: "url", url: done.get(i) };
+    });
+    ctrl.redraw?.();
+    return { ok: failed === 0, urls, failed, reason };
+  }
+
+  const pictureErrorText = (reason) => t(PICTURE_ERRORS[reason] || "pic.errFailed");
+
   // Staff (Super Admin / Admin / Moderator) rows, safe when sql/panel.sql is not installed yet.
   async function fetchStaff(columns = "id,role,member_id,username") {
     const pick = String(columns).split(",").map((c) => c.trim()).filter(Boolean);
@@ -743,8 +1310,9 @@
     { id: "adult", max: 99, label: "code.ageAdult" },
   ];
   const AGE_UNKNOWN = 13;   // an unclassified title is treated as PG-13 level
-  const AGE_GATE_MIN = 16;  // from this age a title always needs a code
+  const AGE_GATE_MIN = 13;  // a title rated 13+ (13+, 16+, 18+) always needs a code, whatever its score
   const AGE_NO_PREVIEW = 16; // from this age a title plays no preview at all
+  const CODE_SCORE_OVER = 50; // a title scored above 50% on TMDB needs a code
 
   // Certificate -> youngest viewer it allows, across the boards TMDB reports.
   const CERT_AGES = {
@@ -838,6 +1406,18 @@
     return { allowed: tier.max >= Number(age || 0), tier, need };
   }
 
+  /* When the watch page asks for a code:
+     - the title's TMDB score, the % shown on the page, is above 50 (51% and up), or
+     - the title is rated 13+ (13+, 16+ or 18+), whatever its score.
+     A title with no age rating at all follows its score only; when it asks, it is
+     still treated as 13+ for the code tiers (AGE_UNKNOWN). "Remember the code"
+     opens every one of them without asking again, as long as the code's own age
+     limit reaches the title. */
+  function titleNeedsCode(detail, ageInfo) {
+    if (ratingPercent(detail?.vote_average) > CODE_SCORE_OVER) return true;
+    return Boolean(ageInfo?.known && Number(ageInfo.age || 0) >= AGE_GATE_MIN);
+  }
+
   const CODE_MESSAGES = {
     active: "Code accepted. Enjoy the title.",
     disabled: "This code has been disabled by its owner.",
@@ -850,12 +1430,379 @@
     unknown: "This code cannot be used right now.",
   };
 
+  /* ---------- One device per code ----------
+     Every browser gets a MAC-style address of its own, created once and kept
+     in it (a web page can never read the real MAC address of a machine). The
+     database links a code to the device that uses it and refuses the code on
+     any other device until its owner unlinks it in Dashboard > Codes
+     (sql/code_devices.sql). The address is "locally administered" (02, 06, 0A,
+     0E… as first byte), the range set aside for addresses that are not burnt
+     into a network card, so it can never be mistaken for a real one. */
+  const DEVICE_KEY = "cineaura_device_mac";
+  const MAC_RE = /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/;
+
+  function deviceMac() {
+    let mac = "";
+    try {
+      mac = String(localStorage.getItem(DEVICE_KEY) || "");
+    } catch {
+      /* storage unavailable */
+    }
+    if (MAC_RE.test(mac)) return mac;
+    if (deviceMac.memo) return deviceMac.memo;
+    const bytes = new Uint8Array(6);
+    if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < 6; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    bytes[0] = (bytes[0] & 0xfc) | 0x02; // locally administered, unicast
+    mac = [...bytes].map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":");
+    deviceMac.memo = mac; // the same address for this page even if storage refuses it
+    try {
+      localStorage.setItem(DEVICE_KEY, mac);
+    } catch {
+      /* storage unavailable */
+    }
+    return mac;
+  }
+
+  // "Chrome · Windows": helps the owner recognise a linked device in the dashboard
+  function deviceName() {
+    const ua = String(navigator.userAgent || "");
+    let os = "";
+    if (/SmartTV|SMART-TV|Tizen|Web0S|webOS|BRAVIA|AFT[A-Z]|Android TV|GoogleTV|CrKey/i.test(ua)) os = "TV";
+    else if (/Windows/i.test(ua)) os = "Windows";
+    else if (/Android/i.test(ua)) os = "Android";
+    else if (/iPhone|iPod/i.test(ua)) os = "iPhone";
+    else if (/iPad/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) os = "iPad";
+    else if (/Mac OS X|Macintosh/i.test(ua)) os = "macOS";
+    else if (/CrOS/i.test(ua)) os = "ChromeOS";
+    else if (/Linux/i.test(ua)) os = "Linux";
+    let browser = "";
+    if (/Edg(e|A|iOS)?\//.test(ua)) browser = "Edge";
+    else if (/OPR\/|Opera/.test(ua)) browser = "Opera";
+    else if (/SamsungBrowser/.test(ua)) browser = "Samsung Internet";
+    else if (/Firefox\/|FxiOS/.test(ua)) browser = "Firefox";
+    else if (/Chrome\/|CriOS/.test(ua)) browser = "Chrome";
+    else if (/Safari\//.test(ua)) browser = "Safari";
+    return [browser, os].filter(Boolean).join(" · ") || "Browser";
+  }
+
+  /* ---------- Linked devices (Dashboard > Codes > Linked devices) ----------
+     Every device linked to a code has a type. The watch page adds a device as
+     "web" (for now the site is the only app); its owner can add one by hand
+     with any type, and change it. */
+  const DEVICE_ICON_PATHS = {
+    web: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/>',
+    computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+    phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.2"/><path d="M11 18.5h2"/>',
+    tv: '<rect x="2.5" y="6.5" width="19" height="12" rx="2"/><path d="M8 2.5l4 4 4-4M8 21.5h8"/>',
+    tablet: '<rect x="4.5" y="2.5" width="15" height="19" rx="2.2"/><path d="M11 18.5h2"/>',
+  };
+  const DEVICE_TYPES = [
+    { id: "web", label: "dash.dev.type.web" },
+    { id: "computer", label: "dash.dev.type.computer" },
+    { id: "phone", label: "dash.dev.type.phone" },
+    { id: "tv", label: "dash.dev.type.tv" },
+    { id: "tablet", label: "dash.dev.type.tablet" },
+  ];
+
+  function deviceType(id) {
+    return DEVICE_TYPES.find((type) => type.id === String(id || "").trim().toLowerCase()) || null;
+  }
+
+  function deviceTypeIcon(id, size = 18) {
+    const type = deviceType(id) || DEVICE_TYPES[0];
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${DEVICE_ICON_PATHS[type.id]}</svg>`;
+  }
+
+  /* A MAC address typed by hand, as the database keeps it (sql/code_devices.sql
+     _code_mac): "0a-1b-2c-3d-4e-5f", "0A1B2C3D4E5F" or "0a1b.2c3d.4e5f" ->
+     "0A:1B:2C:3D:4E:5F". "" for anything else, and for the addresses no device
+     has (all zeros, broadcast, multicast). */
+  function normalizeMac(input) {
+    const raw = String(input || "").trim().toUpperCase();
+    let hex = "";
+    if (/^[0-9A-F]{2}([:-][0-9A-F]{2}){5}$/.test(raw)) hex = raw.replace(/[:-]/g, "");
+    else if (/^[0-9A-F]{12}$/.test(raw)) hex = raw;
+    else if (/^[0-9A-F]{4}\.[0-9A-F]{4}\.[0-9A-F]{4}$/.test(raw)) hex = raw.replace(/\./g, "");
+    if (!hex || hex === "000000000000" || hex === "FFFFFFFFFFFF") return "";
+    if (parseInt(hex[1], 16) % 2 === 1) return ""; // multicast
+    return hex.match(/../g).join(":");
+  }
+
+  // The public IP, asked once per page and never stored. The database prefers
+  // the address the API gateway saw; this is only its fallback.
+  let ipPromise = null;
+  function publicIp() {
+    if (ipPromise) return ipPromise;
+    const readers = [
+      ["https://api.ipify.org?format=json", (x) => JSON.parse(x).ip],
+      ["https://api64.ipify.org?format=json", (x) => JSON.parse(x).ip],
+      ["https://ipv4.icanhazip.com/", (x) => x.trim()],
+      ["https://ipwho.is/", (x) => JSON.parse(x).ip],
+    ];
+    ipPromise = (async () => {
+      for (const [url, read] of readers) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 4000);
+        try {
+          const r = await fetch(url, { cache: "no-store", signal: ctl.signal });
+          if (!r.ok) continue;
+          const ip = String(read(await r.text()) || "").trim();
+          if (ip && /^[0-9a-fA-F.:]+$/.test(ip)) return ip;
+        } catch {
+          /* try the next service */
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      ipPromise = null; // try again next time
+      return "";
+    })();
+    return ipPromise;
+  }
+
+  // A MAC (or the end of one) inside a sentence: kept left to right in Arabic
+  const ltr = (text) => `\u2066${text}\u2069`;
+  const maskedMac = (tail) => ltr(`••:••:••:••:${String(tail || "••:••")}`);
+
+  function codeFailure(reason, data, options, code) {
+    const silent = Boolean(options.silent);
+    const vars = { code: ltr(code) };
+    if (reason === "age") {
+      const required = Number(options.requiredAge || 0);
+      const gate = ageGate(data?.age_rating, required);
+      const ageVars = { have: t(gate.tier.label), need: t(gate.need.label), cert: String(options.cert || ""), age: required };
+      return {
+        ok: false,
+        reason: "age",
+        message: ageVars.cert ? t("code.ageBlockedCert", ageVars) : t("code.ageBlocked", ageVars),
+        tier: gate.tier.id,
+        need: gate.need.id,
+        row: data,
+      };
+    }
+    let message;
+    if (reason === "other_device") {
+      message = silent ? t("code.savedOther", vars) : t("code.otherDevice", { mac: maskedMac(data?.device_tail) });
+    } else if (reason === "unlinked") {
+      message = t("code.savedUnlinked", vars);
+    } else if (reason === "not_found") {
+      message = silent ? t("code.savedGone", vars) : t("code.not_found");
+    } else if (reason === "device") {
+      message = t("code.error");
+    } else {
+      message = t(`code.${reason}`) !== `code.${reason}` ? t(`code.${reason}`) : t("code.unknown");
+    }
+    return { ok: false, reason: reason || "unknown", message, row: data };
+  }
+
+  /* Checks a watch code for this device.
+       options.requiredAge / options.cert  the title's age rating
+       options.silent                      the code remembered on this device (not
+                                           typed): it only works while it is still
+                                           linked to this device
+       options.link                        "Remember the code": only then is the code
+                                           linked to this device (Linked devices; the
+                                           code this device used before is set free)
+     Without sql/code_devices.sql the code is read directly, as before. */
   async function verifyCode(code, options = {}) {
     const clean = String(code || "").replace(/\D/g, "");
     if (!/^\d{6}$/.test(clean)) {
       return { ok: false, reason: "invalid", message: t("code.invalid") };
     }
+    const args = {
+      p_code: clean,
+      p_mac: deviceMac(),
+      p_name: deviceName(),
+      p_ip: "",
+      p_age: Math.max(0, Math.round(Number(options.requiredAge || 0))),
+      p_silent: Boolean(options.silent),
+    };
+    if (options.link !== undefined) args.p_link = Boolean(options.link);
+    let res;
+    try {
+      res = await rpc("code_use", args);
+      // a database still on the earlier code_devices.sql has no p_link: ask that version
+      if ((res.status === 404 || res.data?.code === "PGRST202") && "p_link" in args) {
+        delete args.p_link;
+        res = await rpc("code_use", args);
+      }
+    } catch {
+      return { ok: false, reason: "error", message: t("code.error") };
+    }
+    if (res.status === 404 || res.data?.code === "PGRST202") return verifyCodeDirect(clean, options);
+    const data = res.ok && res.data && typeof res.data === "object" ? res.data : null;
+    if (!data) return { ok: false, reason: "error", message: t("code.error") };
+    if (!data.ok) return codeFailure(data.reason, data, options, clean);
+    // the gateway did not pass the address on: the browser looks it up itself
+    if (!data.ip) {
+      publicIp().then((ip) => {
+        if (ip) rpc("code_use", { ...args, p_ip: ip, p_silent: true }).catch(() => {});
+      });
+    }
+    return { ok: true, reason: "active", message: t("code.active"), row: data, linked: Boolean(data.linked), kept: data.kept !== false };
+  }
 
+  /* Wrong codes typed on this device: 3 in a row lock code entry for 24 hours
+     (watch page, premium channels). localStorage: { fails, until }. */
+  const CODE_LOCK_KEY = "cineaura_code_lockout";
+  const CODE_FAIL_MAX = 3;
+  const CODE_LOCK_MS = 24 * 60 * 60 * 1000;
+
+  function readCodeLock() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CODE_LOCK_KEY) || "null");
+      if (!raw || typeof raw !== "object") return { fails: 0, until: 0 };
+      const until = Number(raw.until) || 0;
+      if (until && until <= Date.now()) return { fails: 0, until: 0 };
+      return { fails: Math.max(0, Number(raw.fails) || 0), until };
+    } catch {
+      return { fails: 0, until: 0 };
+    }
+  }
+
+  function recordFailedCode() {
+    const lock = readCodeLock();
+    if (lock.until > Date.now()) return lock;
+    lock.fails += 1;
+    if (lock.fails >= CODE_FAIL_MAX) {
+      lock.fails = CODE_FAIL_MAX;
+      lock.until = Date.now() + CODE_LOCK_MS;
+    }
+    try {
+      localStorage.setItem(CODE_LOCK_KEY, JSON.stringify(lock));
+    } catch {
+      /* storage blocked */
+    }
+    return lock;
+  }
+
+  function clearCodeLock() {
+    try {
+      localStorage.setItem(CODE_LOCK_KEY, JSON.stringify({ fails: 0, until: 0 }));
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  const codeLockLeft = () => Math.max(0, readCodeLock().until - Date.now());
+
+  /* ---------- Channel lists of the home page: two playlists in Supabase Storage ----------
+     Free channels (Listchannels.html?free=1): IPTV-Free.m3u, played as they are.
+     Premium channels (Listchannels.html?premium=1): IPTV-Premuim.m3u. Its links
+     carry the words Username and Password (http://line.ottcst.net:80/Username/Password/1784957),
+     replaced with the username and password of a premium IPTV account: typed on
+     the page, or found with a watch code (sql/iptv_premium.sql). */
+  const IPTV_LISTS = {
+    free: { key: "free", name: "IPTV-Free", url: "https://mxdsgnlmfpaekgmswjou.supabase.co/storage/v1/object/public/IPTV/IPTV-Free.m3u" },
+    premium: { key: "premium", name: "IPTV-Premium", url: "https://mxdsgnlmfpaekgmswjou.supabase.co/storage/v1/object/public/IPTV/IPTV-Premuim.m3u" },
+  };
+
+  const SLOT_USER = /^username$/i;
+  const SLOT_PASS = /^password$/i;
+
+  // Does this link wait for an account (Username / Password in its path or query)?
+  function hasCredentialSlots(url) {
+    try {
+      const u = new URL(String(url || ""));
+      return u.pathname.split("/").some((seg) => SLOT_USER.test(seg) || SLOT_PASS.test(seg)) ||
+        [...u.searchParams.values()].some((v) => SLOT_USER.test(v) || SLOT_PASS.test(v));
+    } catch {
+      return /\/(username|password)(\/|$)/i.test(String(url || ""));
+    }
+  }
+
+  // http://host:80/Username/Password/1784957 -> the account's own username and password
+  // (path segments, and ?username=Username&password=Password on get.php links)
+  function fillCredentials(url, user, pass) {
+    const raw = String(url || "");
+    if (!raw || !user) return raw;
+    try {
+      const u = new URL(raw);
+      u.pathname = u.pathname
+        .split("/")
+        .map((seg) => (SLOT_USER.test(seg) ? encodeURIComponent(user) : SLOT_PASS.test(seg) ? encodeURIComponent(pass) : seg))
+        .join("/");
+      [...u.searchParams.entries()].forEach(([k, v]) => {
+        if (SLOT_USER.test(v)) u.searchParams.set(k, user);
+        else if (SLOT_PASS.test(v)) u.searchParams.set(k, pass);
+      });
+      return u.href;
+    } catch {
+      return raw.replace(/\/username\//gi, `/${encodeURIComponent(user)}/`).replace(/\/password\//gi, `/${encodeURIComponent(pass)}/`);
+    }
+  }
+
+  // The account typed on the premium list: kept for this visit, and on this device with "Remember".
+  const IPTV_LOGIN_KEY = "cineaura_iptv_login";
+
+  function storedIptvLogin() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(IPTV_LOGIN_KEY) || sessionStorage.getItem(IPTV_LOGIN_KEY) || "null");
+      return raw && raw.user && raw.pass ? { user: String(raw.user), pass: String(raw.pass), remembered: Boolean(localStorage.getItem(IPTV_LOGIN_KEY)) } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function storeIptvLogin(user, pass, remember) {
+    try {
+      const raw = JSON.stringify({ user, pass });
+      sessionStorage.setItem(IPTV_LOGIN_KEY, raw);
+      if (remember) localStorage.setItem(IPTV_LOGIN_KEY, raw);
+      else localStorage.removeItem(IPTV_LOGIN_KEY);
+    } catch {
+      /* storage blocked: it works for this page */
+    }
+  }
+
+  function forgetIptvLogin() {
+    try {
+      localStorage.removeItem(IPTV_LOGIN_KEY);
+      sessionStorage.removeItem(IPTV_LOGIN_KEY);
+    } catch {
+      /* storage blocked */
+    }
+  }
+
+  async function premiumCall(name, args) {
+    let res;
+    try {
+      res = await rpc(name, args);
+    } catch {
+      return { ok: false, reason: "error" };
+    }
+    if (res.status === 404 || res.data?.code === "PGRST202") return { ok: false, reason: "setup" };
+    return res.ok && res.data && typeof res.data === "object" ? res.data : { ok: false, reason: "error" };
+  }
+
+  // username + password of a premium IPTV account -> { ok, user, pass } | { ok: false, reason }
+  const premiumLogin = (user, pass) =>
+    premiumCall("iptv_premium_login", { p_user: String(user || "").trim(), p_pass: String(pass || "") });
+
+  // a watch code (or, with none, the code linked to this device) -> the owner's premium account
+  const premiumUnlock = ({ code = "", remember = false, silent = false } = {}) =>
+    premiumCall("iptv_premium_unlock", {
+      p_code: String(code || "").replace(/\D/g, ""),
+      p_mac: deviceMac(),
+      p_name: deviceName(),
+      p_ip: "",
+      p_silent: Boolean(silent),
+      p_type: "web",
+      p_remember: Boolean(remember),
+    });
+
+  // The message of a refused code on the premium list (the watch page's texts, plus its own).
+  function premiumCodeMessage(data, code, silent = false) {
+    const reason = data?.reason || "error";
+    if (reason === "no_premium") return t("iptvp.noPremium");
+    if (reason === "owner_banned") return t("iptvp.ownerBanned");
+    if (reason === "setup") return t("iptvp.setup");
+    return codeFailure(reason, data, { silent }, code).message;
+  }
+
+  // The code read straight from the table (a database without code_devices.sql).
+  async function verifyCodeDirect(clean, options = {}) {
     const url = `${SUPABASE_URL}/rest/v1/codes?code=eq.${encodeURIComponent(clean)}&select=*`;
     let res;
     try {
@@ -880,7 +1827,7 @@
 
     const rows = await res.json();
     if (!Array.isArray(rows) || !rows.length) {
-      return { ok: false, reason: "not_found", message: t("code.not_found") };
+      return codeFailure("not_found", null, options, clean);
     }
 
     const row = rows[0];
@@ -892,34 +1839,13 @@
     if (status === "active") {
       // The code works, but does it reach this title's age rating?
       const required = Number(options.requiredAge || 0);
-      if (required > 0) {
-        const gate = ageGate(row.age_rating, required);
-        if (!gate.allowed) {
-          const vars = {
-            have: t(gate.tier.label),
-            need: t(gate.need.label),
-            cert: String(options.cert || ""),
-            age: required,
-          };
-          return {
-            ok: false,
-            reason: "age",
-            message: vars.cert ? t("code.ageBlockedCert", vars) : t("code.ageBlocked", vars),
-            tier: gate.tier.id,
-            need: gate.need.id,
-            row,
-          };
-        }
+      if (required > 0 && !ageGate(row.age_rating, required).allowed) {
+        return codeFailure("age", row, options, clean);
       }
       return { ok: true, reason: "active", message: t("code.active"), row };
     }
 
-    return {
-      ok: false,
-      reason: status,
-      message: t(`code.${status}`) !== `code.${status}` ? t(`code.${status}`) : t("code.unknown"),
-      row,
-    };
+    return codeFailure(status, row, options, clean);
   }
 
   function getStoredCode() {
@@ -1199,6 +2125,199 @@
     $$(".mobile-auth-user").forEach((el) => inject(el, false));
   }
 
+  /* ---------- Notifications: shared by the header bell and notifications.html ---------- */
+  const NOTES_PAGE = "./notifications.html";
+
+  // The title follows the reader's language. The sender's page stored it in the
+  // sender's language, so the kinds the site creates use their own interface
+  // text; anything else shows the stored title (translated when it is English).
+  const NOTE_TITLES = {
+    follow: "prof.reqTitle",
+    recommend: "prof.recAcc",
+    vote_up: "prof.notifVote",
+    vote_down: "prof.notifVote",
+    post: "prof.newPost",
+    message: "prof.newMsg",
+    iptv: "notif.iptv",
+    iptv_renew: "notif.iptvRenew",
+    // a member shared a private IPTV list (sql/iptv_lists.sql); the body is its name
+    iptv_list: "notif.iptvList",
+    // the review of a prize claim (sql/prize_claims.sql)
+    prize_claim_review: "notif.claimReview",
+    prize_claim_accepted: "notif.claimAccepted",
+    prize_claim_rejected: "notif.claimRejected",
+    prize_claim_unblocked: "notif.claimUnblocked",
+    // a watched minute took the member to a new level (sql/point_levels.sql); the body is "LV2 · ×2"
+    points_level: "notif.levelUp",
+    // a points code was used (sql/point_codes.sql); the body is "+500"
+    points_code: "notif.pointsCode",
+    // videos (sql/content.sql): a followed member published one; somebody commented on yours
+    content: "notif.newVideo",
+    content_comment: "notif.videoComment",
+    // the market (sql/market.sql); the body is the product (and the reason, the points…)
+    market_order: "notif.mktOrder",
+    market_request: "notif.mktRequest",
+    market_accepted: "notif.mktAccepted",
+    market_declined: "notif.mktDeclined",
+    market_cancelled: "notif.mktCancelled",
+    market_shipped: "notif.mktShipped",
+    market_received: "notif.mktReceived",
+    market_return: "notif.mktReturn",
+    market_returned: "notif.mktReturned",
+    market_refused: "notif.mktRefused",
+    market_paid: "notif.mktPaid",
+    market_commission: "notif.mktCommission",
+    market_review: "notif.mktReview",
+    market_question: "notif.mktQuestion",
+    market_reply: "notif.mktReply",
+    // sold: the buyer gives the delivery address / the buyer gave it / a digital order delivered
+    market_address_needed: "notif.mktAddressNeeded",
+    market_address: "notif.mktAddress",
+    market_download: "notif.mktDownload",
+    // the team suspended / restored a product, or a store (its link is Store settings)
+    market_suspended: (n) => (String(n?.href || "").includes("#settings") ? "notif.mktSuspendedStore" : "notif.mktSuspendedProduct"),
+    market_restored: (n) => (String(n?.href || "").includes("#settings") ? "notif.mktRestoredStore" : "notif.mktRestoredProduct"),
+    // somebody recommended again your recommendation / purchase list (its link: ?List=…); you got
+    // your equal share of the commission of a sale made through it
+    market_rerec: (n) => (String(n?.href || "").includes("List=") ? "notif.mktRerecList" : "notif.mktRerec"),
+    market_root_commission: "notif.mktRootCommission",
+    // the team (Panel > Content, Panel > Market); the body is the item and the reason
+    content_suspended: (n) => (String(n?.href || "").includes("#playlists") ? "notif.plSuspended" : "notif.videoSuspended"),
+    content_restored: (n) => (String(n?.href || "").includes("#playlists") ? "notif.plRestored" : "notif.videoRestored"),
+    content_deleted: (n) => (String(n?.href || "").includes("#playlists") ? "notif.plDeleted" : "notif.videoDeleted"),
+    iptv_list_suspended: "notif.iptvListSuspended",
+    iptv_list_restored: "notif.iptvListRestored",
+    iptv_list_deleted: "notif.iptvListDeleted",
+    market_deleted: "notif.mktDeletedProduct",
+    market_staff_refund: (n) => (String(n?.href || "").includes("#sales") ? "notif.mktStaffRefundSeller" : "notif.mktStaffRefundBuyer"),
+    market_staff_release: (n) => (String(n?.href || "").includes("#sales") ? "notif.mktStaffReleaseSeller" : "notif.mktStaffReleaseBuyer"),
+    market_social_suspended: (n) => `notif.mktSocialSuspended.${socialKind(n)}`,
+    market_social_restored: (n) => `notif.mktSocialRestored.${socialKind(n)}`,
+    market_social_deleted: (n) => `notif.mktSocialDeleted.${socialKind(n)}`,
+    // an account code of Panel > Packages activated the membership (sql/packages.sql); the body is "Gold · 2027-01-18"
+    account_code: "notif.accountCode",
+    // a private code of Panel > Membership went to the member by itself (no serial typed): the
+    // membership ("Gold · 2027-01-18"), the points ("+500"), a prize discount waiting ("−300 PT")
+    account_gift: "notif.accountGift",
+    points_gift: "notif.pointsGift",
+    prize_gift: "notif.prizeGift",
+    // a store gave the member an exclusive coupon (sql/market.sql); the body is "Store · -20%"
+    market_coupon: "notif.mktCoupon",
+    // a withdrawal (sql/withdrawals.sql); the body is "WDR0123456789 · 12.50 USD", then the reference
+    // of the transfer (sent) or the reason (rejected)
+    withdraw_new: "notif.wdNew",
+    withdraw_processing: "notif.wdProcessing",
+    withdraw_paid: "notif.wdPaid",
+    withdraw_rejected: "notif.wdRejected",
+    // (round 31) a request to join a private IPTV list (sql/iptv_lists.sql): to its publisher (the body is
+    // "@member · list · note"), then the answer to the member (the body is the name of the list)
+    iptv_join: "notif.iptvJoin",
+    iptv_join_ok: "notif.iptvJoinOk",
+    iptv_join_no: "notif.iptvJoinNo",
+  };
+  // a review, a purchase list or a recommendation: the Market tab of the profile it links to
+  function socialKind(n) {
+    const href = String(n?.href || "");
+    return href.includes("/reviews") ? "review" : href.includes("/lists") ? "list" : "rec";
+  }
+
+  function noteTitle(n) {
+    const kind = String(n?.kind || "");
+    const key = NOTE_TITLES[kind];
+    if (key) return t(typeof key === "function" ? key(n) : key);
+    return tr(n?.title || kind);
+  }
+
+  // Anyone can insert a notification, so its link is checked: only web links,
+  // never javascript: or data: URLs.
+  function noteHref(n) {
+    const raw = String(n?.href || "").trim();
+    if (raw) {
+      try {
+        const url = new URL(raw, location.href);
+        if (url.protocol === "http:" || url.protocol === "https:") return raw;
+      } catch {
+        /* not a link */
+      }
+    }
+    return "./Profile.html";
+  }
+
+  function dateFormat(options) {
+    try {
+      return new Intl.DateTimeFormat(getLocale(), { ...options, numberingSystem: "latn" });
+    } catch {
+      return new Intl.DateTimeFormat(undefined, options);
+    }
+  }
+
+  // When a notification arrived, in the reader's language and local time:
+  // "now", "5 minutes ago", "3 hours ago" today; the weekday and time during the
+  // last 7 days; the date and time this year; the date before that.
+  function noteWhen(value, now = new Date()) {
+    const d = new Date(value);
+    if (!value || Number.isNaN(d.getTime())) return "";
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const diff = now.getTime() - d.getTime();
+    if (d >= today || diff < 60000) {
+      const mins = Math.max(0, Math.floor(diff / 60000));
+      try {
+        const rtf = new Intl.RelativeTimeFormat(`${getLocale()}-u-nu-latn`, { numeric: "auto" });
+        if (mins < 1) return rtf.format(0, "second");
+        return mins < 60 ? rtf.format(-mins, "minute") : rtf.format(-Math.floor(mins / 60), "hour");
+      } catch {
+        return dateFormat({ hour: "numeric", minute: "2-digit" }).format(d);
+      }
+    }
+    const weekAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6);
+    if (d >= weekAgo) return dateFormat({ weekday: "long", hour: "numeric", minute: "2-digit" }).format(d);
+    if (d.getFullYear() === now.getFullYear()) {
+      return dateFormat({ day: "numeric", month: "long", hour: "numeric", minute: "2-digit" }).format(d);
+    }
+    return dateFormat({ day: "numeric", month: "long", year: "numeric" }).format(d);
+  }
+
+  // Notification text as HTML, isolated from the page direction: an English
+  // line keeps its order in an Arabic page ("@ali: hello?" never turns into
+  // "?ali: hello@"), and every @username stays in one piece.
+  function noteTextHtml(text) {
+    const html = escapeHtml(text).replace(/@[A-Za-z0-9_](?:[A-Za-z0-9._]*[A-Za-z0-9_])?/g, (m) => `<bdi>${m}</bdi>`);
+    return `<bdi>${html}</bdi>`;
+  }
+
+  // The full local date and time, for a tooltip.
+  function noteFullDate(value) {
+    const d = new Date(value);
+    if (!value || Number.isNaN(d.getTime())) return "";
+    try {
+      return dateFormat({ dateStyle: "full", timeStyle: "short" }).format(d);
+    } catch {
+      return d.toLocaleString();
+    }
+  }
+
+  // Marks notifications of the signed-in member as read: one request per 100
+  // notifications instead of one per row. The bell hears about it too.
+  async function markNotesRead(ids) {
+    const me = getSession()?.member_id;
+    const list = [...new Set((ids || []).map((id) => String(id ?? "")).filter((id) => /^\d+$/.test(id)))];
+    if (!me || !list.length) return true;
+    document.dispatchEvent(new CustomEvent("cineaura:notes-read", { detail: { ids: list } }));
+    let ok = true;
+    for (let i = 0; i < list.length; i += 100) {
+      try {
+        const res = await supabaseRequest(
+          `/rest/v1/notifications?member_id=eq.${restValue(me)}&id=in.(${list.slice(i, i + 100).join(",")})`,
+          { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ read: true }) }
+        );
+        ok = ok && res.ok;
+      } catch {
+        ok = false;
+      }
+    }
+    return ok;
+  }
+
   /* ---------- Header Bell Notifications ---------- */
   function initHeaderBell() {
     const bellBtn = $("#header-bell-btn");
@@ -1207,43 +2326,63 @@
     if (!bellBtn || !bellPanel) return;
 
     let notes = [];
+    const syncDot = () => {
+      if (bellDot) bellDot.hidden = !notes.some((n) => !n.read);
+    };
+
+    function paint() {
+      const rows = notes.length
+        ? notes
+            .map((n) => {
+              const when = noteWhen(n.created_at);
+              const time = when
+                ? `<time datetime="${escapeHtml(n.created_at)}" title="${escapeHtml(noteFullDate(n.created_at))}">${escapeHtml(when)}</time>`
+                : "";
+              return `
+          <a class="hnote-row" href="${escapeHtml(noteHref(n))}" data-note="${escapeHtml(n.id)}">
+            <div class="hnote-dot ${n.read ? "read" : ""}"></div>
+            <div>
+              <strong>${noteTextHtml(noteTitle(n) || t("prof.notif"))}</strong>
+              <div class="hnote-sub">${n.body ? noteTextHtml(n.body) : ""}${n.body && time ? " · " : ""}${time}</div>
+            </div>
+          </a>`;
+            })
+            .join("")
+        : `<p class="hnote-empty">${escapeHtml(t("prof.noNotes"))}</p>`;
+      bellPanel.innerHTML = `
+        <div class="hnote-head"><strong>${escapeHtml(t("prof.notif"))}</strong></div>
+        <div class="hnote-list">${rows}</div>
+        <div class="hnote-foot"><a class="hnote-all" href="${NOTES_PAGE}">${escapeHtml(t("notes.viewAll"))}</a></div>`;
+    }
 
     bellBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const open = !bellPanel.hidden;
       bellPanel.hidden = open;
       if (open) return;
-      // render notes
-      if (notes.length) {
-        bellPanel.innerHTML = notes.map((n) => {
-          const href = n.href || "./Profile.html";
-          return `
-          <a class="hnote-row" href="${escapeHtml(href)}" data-note="${escapeHtml(n.id)}">
-            <div class="hnote-dot ${n.read ? 'read' : ''}"></div>
-            <div>
-              <strong>${escapeHtml(tr(n.title || n.kind))}</strong>
-              <div style="color:var(--muted);font-size:12px;margin-top:2px">${escapeHtml(n.body || "")} · ${String(n.created_at || "").slice(0, 16).replace("T", " ")}</div>
-            </div>
-          </a>`;
-        }).join("");
-      } else {
-        bellPanel.innerHTML = `<p style="color:var(--muted);text-align:center;padding:16px 0">${t("prof.noNotes")}</p>`;
-      }
-      // mark all as read
-      notes.filter((n) => !n.read).forEach((n) => {
-        supabaseRequest(`/rest/v1/notifications?id=eq.${n.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ read: true }),
-        });
+      paint();
+      // opening the bell marks what it shows as read
+      const unread = notes.filter((n) => !n.read);
+      unread.forEach((n) => {
         n.read = true;
       });
-      if (bellDot) bellDot.hidden = true;
+      syncDot();
+      markNotesRead(unread.map((n) => n.id));
     });
 
     document.addEventListener("click", (e) => {
       if (!bellPanel.hidden && !e.target.closest(".header-bell-wrap")) {
         bellPanel.hidden = true;
       }
+    });
+
+    // notifications.html marked some as read
+    document.addEventListener("cineaura:notes-read", (e) => {
+      const ids = new Set((e.detail?.ids || []).map(String));
+      notes.forEach((n) => {
+        if (ids.has(String(n.id))) n.read = true;
+      });
+      syncDot();
     });
 
     async function poll() {
@@ -1253,9 +2392,11 @@
         const res = await supabaseRequest(
           `/rest/v1/notifications?member_id=eq.${restValue(sess.member_id)}&select=*&order=created_at.desc&limit=30`
         );
-        notes = res.ok && Array.isArray(res.data) ? res.data : [];
-        const unread = notes.some((n) => !n.read);
-        if (bellDot) bellDot.hidden = !unread;
+        if (!res.ok || !Array.isArray(res.data)) return;
+        notes = res.data;
+        syncDot();
+        // notifications.html follows the bell to show new notifications
+        document.dispatchEvent(new CustomEvent("cineaura:notes", { detail: { notes } }));
       } catch { /* offline */ }
     }
 
@@ -1312,6 +2453,13 @@
   // option only decides whether minutes are counted).
   const PREMIUM_ADS_BY_DEFAULT = true;
   const membershipCache = {};
+  // A members row on a paid plan that hasn't ended.
+  function planIsPremium(row) {
+    if (!row) return false;
+    const paid = ["Silver", "Gold", "Diamond"].includes(row.membership_type);
+    const active = !row.membership_expires_at || new Date(row.membership_expires_at).getTime() > Date.now();
+    return paid && active;
+  }
   function membership() {
     const session = getSession();
     if (!session?.member_id) return Promise.resolve({ guest: true, premium: false });
@@ -1323,9 +2471,7 @@
         .then((res) => {
           const row = res.ok ? res.data?.[0] : null;
           if (!row) return { guest: false, premium: false, unknown: true };
-          const paid = ["Silver", "Gold", "Diamond"].includes(row.membership_type);
-          const active = !row.membership_expires_at || new Date(row.membership_expires_at).getTime() > Date.now();
-          return { guest: false, premium: paid && active, type: row.membership_type };
+          return { guest: false, premium: planIsPremium(row), type: row.membership_type };
         })
         .catch(() => ({ guest: false, premium: false, unknown: true }));
     }
@@ -1451,6 +2597,24 @@
     document.dispatchEvent(new CustomEvent("cineaura:geo", { detail: { country: currentCountry() } }));
   }
 
+  // The country of the content (watch providers, prices…): "" follows the IP.
+  // Guests pick it in Site Settings, members in Dashboard > Settings.
+  function setSiteCountry(cc) {
+    try {
+      if (/^[A-Z]{2}$/.test(cc || "")) localStorage.setItem(COUNTRY_KEY, cc);
+      else localStorage.removeItem(COUNTRY_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+    document.dispatchEvent(new CustomEvent("cineaura:geo", { detail: { country: currentCountry() } }));
+  }
+
+  function countryChoices() {
+    return COUNTRY_CODES.map((cc) => [cc, countryName(cc)])
+      .filter(([, n]) => n)
+      .sort((a, b) => a[1].localeCompare(b[1], getLocale()));
+  }
+
   function countryName(cc) {
     try {
       const n = new Intl.DisplayNames([getLocale()], { type: "region" }).of(cc);
@@ -1519,9 +2683,7 @@
 
     function fillCountries() {
       const cur = currentCountry();
-      const rows = COUNTRY_CODES.map((cc) => [cc, countryName(cc)])
-        .filter(([, n]) => n)
-        .sort((a, b) => a[1].localeCompare(b[1], getLocale()));
+      const rows = countryChoices();
       countrySel.innerHTML =
         `<option value="">${escapeHtml(t("set.countryNone"))}</option>` +
         rows.map(([cc, n]) => `<option value="${cc}">${escapeHtml(n)}</option>`).join("");
@@ -1737,20 +2899,287 @@
     translateDom(inner);
     if (menu) translateDom(menu);
 
-    // Show the name next to the icon only while the header has room for it.
-    let fitTimer = 0;
-    const fit = () => {
-      btn.classList.remove("compact");
-      if (inner.scrollWidth > inner.clientWidth + 1) btn.classList.add("compact");
+    // the header keeps every item in sight (fitHeader)
+    watchHeaderFit();
+  }
+
+  /* ---------- The header row never spills over ----------
+     Logo, menu links, the bell, the avatar and the buttons share one row. When they
+     don't fit (a long language, a member's buttons, a mid-size screen), the header
+     gives up room step by step, and checks again whenever the row changes:
+       1. the Site Settings button shows its icon only (.compact)
+       2. the menu links get closer together (html.nav-tight)
+       3. the menu links move into the burger menu, as on tablets (html.nav-fold) */
+  let headerFitTimer = 0;
+  function fitHeader() {
+    const inner = document.querySelector("#site-header .header-inner");
+    if (!inner) return;
+    const root = document.documentElement;
+    const btn = inner.querySelector(".settings-btn");
+    const over = () => inner.scrollWidth > inner.clientWidth + 1;
+    btn?.classList.remove("compact");
+    root.classList.remove("nav-tight", "nav-tighter", "nav-fold");
+    if (!over()) return;
+    if (btn && btn.offsetParent) {
+      btn.classList.add("compact");
+      if (!over()) return;
+    }
+    const nav = inner.querySelector("nav.nav");
+    if (!nav || !nav.offsetParent) return; // the burger menu already holds the links
+    root.classList.add("nav-tight");
+    if (!over()) return;
+    // still a little too wide (a long language, a signed-in header): closer still, before the burger
+    root.classList.add("nav-tighter");
+    if (!over()) return;
+    root.classList.add("nav-fold");
+  }
+
+  function refitHeader() {
+    clearTimeout(headerFitTimer);
+    headerFitTimer = setTimeout(fitHeader, 60);
+  }
+
+  let headerFitWatched = false;
+  function watchHeaderFit() {
+    if (headerFitWatched) return refitHeader();
+    const inner = document.querySelector("#site-header .header-inner");
+    if (!inner) return;
+    headerFitWatched = true;
+    window.addEventListener("resize", refitHeader);
+    document.addEventListener("cineaura:prefs", refitHeader);
+    document.fonts?.ready?.then(refitHeader);
+    // the buttons change once the member is known (avatar, bell, Dashboard / Log Out)
+    if (typeof ResizeObserver === "function") {
+      let last = "";
+      const ro = new ResizeObserver(() => {
+        const key = [...inner.children].map((el) => el.offsetWidth).join(",");
+        if (key !== last) {
+          last = key;
+          refitHeader();
+        }
+      });
+      [...inner.children].forEach((el) => {
+        if (!el.matches("nav.nav")) ro.observe(el);
+      });
+    }
+    refitHeader();
+  }
+
+  // The member videos (Content.html) get a place in the header menu of every page, after
+  // Series, and in the phone menu.
+  // "Videos" in every header: Content.html, the search box and the 50 videos with the
+  // most watched minutes, recommendations or shares. (Search.html searches the whole site
+  // since round 31: no longer marked as Videos.)
+  function addVideosNav() {
+    const here = /\/content(\.html)?$/i.test(location.pathname);
+    const make = () => {
+      const a = document.createElement("a");
+      a.href = "./Content.html";
+      a.dataset.i18n = "nav.videos";
+      a.dataset.videosNav = "1";
+      a.textContent = t("nav.videos");
+      if (here) a.setAttribute("aria-current", "page");
+      return a;
     };
-    const refit = () => {
-      clearTimeout(fitTimer);
-      fitTimer = setTimeout(fit, 60);
+    const nav = document.querySelector("#site-header nav.nav");
+    if (nav && !nav.querySelector("[data-videos-nav]")) {
+      const series = [...nav.querySelectorAll("a")].find((x) => /#series$/.test(x.getAttribute("href") || ""));
+      if (series) series.after(make());
+      else nav.appendChild(make());
+    }
+    const menu = document.querySelector("#mobile-menu");
+    if (menu && !menu.querySelector("[data-videos-nav]")) {
+      const series = [...menu.querySelectorAll(":scope > a")].find((x) => /#series$/.test(x.getAttribute("href") || ""));
+      const auth = menu.querySelector(":scope > div");
+      if (series) series.after(make());
+      else if (auth) auth.before(make());
+      else menu.appendChild(make());
+    }
+  }
+
+  /* Links the staff set in Panel > Settings (sql/point_codes.sql, site_links):
+       patreon_points  Dashboard > Points > Buy points
+       patreon_plans   the premium codes of the activation page
+     Read once per page; until the table exists (or while a link is empty) the
+     Patreon home page is used. */
+  const PATREON_DEFAULT = "https://www.patreon.com/";
+  let siteLinksReq = null;
+  async function siteLink(key, fallback = PATREON_DEFAULT) {
+    siteLinksReq =
+      siteLinksReq ||
+      supabaseRequest("/rest/v1/site_links?select=key,url")
+        .then((res) => (res.ok && Array.isArray(res.data) ? res.data : []))
+        .catch(() => []);
+    const rows = await siteLinksReq;
+    const url = String(rows.find((r) => r.key === key)?.url || "").trim();
+    return /^https:\/\/[^\s<>"'`]+$/i.test(url) ? url : fallback;
+  }
+
+  /* ---------- The value of a point (sql/withdrawals.sql, Panel > Withdrawals > Settings) ----------
+     How many points make one unit of the currency members withdraw in: 100 points = 1 USD (one
+     point is one cent) until the team changes it. The Market shows its prices in money with it.
+     Kept for 10 minutes in this tab; without the SQL: the default. */
+  const POINT_VALUE_KEY = "cineaura_point_value";
+  const POINT_VALUE_DEFAULT = { rate: 100, currency: "USD" };
+  let pointValueReq = null;
+  function pointValue() {
+    if (!pointValueReq) {
+      pointValueReq = (async () => {
+        try {
+          const kept = JSON.parse(sessionStorage.getItem(POINT_VALUE_KEY) || "null");
+          if (kept && Date.now() - kept.at < 600000 && kept.rate > 0) return { ...POINT_VALUE_DEFAULT, ...kept.info };
+        } catch {
+          /* nothing kept */
+        }
+        const res = await rpc("withdraw_info", {}).catch(() => null);
+        const info = res?.ok && res.data && Number(res.data.rate) > 0 ? res.data : null;
+        if (!info) return { ...POINT_VALUE_DEFAULT };
+        try {
+          sessionStorage.setItem(POINT_VALUE_KEY, JSON.stringify({ at: Date.now(), rate: Number(info.rate), info }));
+        } catch {
+          /* storage full or blocked */
+        }
+        return { ...POINT_VALUE_DEFAULT, ...info };
+      })();
+    }
+    return pointValueReq;
+  }
+  // An amount of money in the reader's language ("$12.50", "12,50 €"), Latin digits.
+  function moneyText(amount, currency = "USD") {
+    const n = Number(amount) || 0;
+    const cur = /^[A-Z]{3}$/.test(String(currency || "")) ? currency : "USD";
+    try {
+      return new Intl.NumberFormat(`${getLocale()}-u-nu-latn`, { style: "currency", currency: cur }).format(n);
+    } catch {
+      return `${n.toFixed(2)} ${cur}`;
+    }
+  }
+
+  /* ---------- Activation deadline (sql/account_deadline.sql) ----------
+     An account that is not activated within 30 days of signing up, or not
+     re-activated within 30 days after its membership ends, is fully banned.
+     account_check() applies a ban whose day has passed and says what is left to
+     do: need = "activate" | "renew" (with due_at, the day of the ban) or nothing.
+     The answer is kept for 10 minutes in this tab. Without the SQL: null. */
+  const ACCT_KEY = "cineaura_acct_check";
+  const ACCT_HIDE_KEY = "cineaura_acct_hide";
+  async function accountCheck({ fresh = false } = {}) {
+    const s = getSession();
+    if (!s?.member_id) return null;
+    if (fresh) {
+      // the answer kept so far is dropped at once: a page opened before the new answer
+      // arrives (right after activating) asks again instead of showing the old banner
+      try {
+        sessionStorage.removeItem(ACCT_KEY);
+      } catch {
+        /* nothing kept */
+      }
+    } else {
+      try {
+        const hit = JSON.parse(sessionStorage.getItem(ACCT_KEY) || "null");
+        if (hit && hit.id === s.member_id && Date.now() - hit.at < 10 * 60 * 1000) return hit.data;
+      } catch {
+        /* checked again */
+      }
+    }
+    let res;
+    try {
+      res = await rpc("account_check", { p_member: s.member_id });
+    } catch {
+      return null;
+    }
+    if (!res.ok || !res.data || res.data.ok === false) return null;
+    try {
+      sessionStorage.setItem(ACCT_KEY, JSON.stringify({ id: s.member_id, at: Date.now(), data: res.data }));
+    } catch {
+      /* asked again on the next page */
+    }
+    return res.data;
+  }
+
+  // "3 days left" / "less than a day left", in the reader's language
+  function accountLeftText(dueAt) {
+    const ms = Date.parse(dueAt || "") - Date.now();
+    if (!Number.isFinite(ms)) return "";
+    if (ms < 86400000) return t("acct.leftHours");
+    const days = Math.ceil(ms / 86400000);
+    let time;
+    try {
+      time = new Intl.NumberFormat(getLocale(), { style: "unit", unit: "day", unitDisplay: "long", numberingSystem: "latn" }).format(days);
+    } catch {
+      time = `${days} days`;
+    }
+    return t("acct.left", { time });
+  }
+
+  function accountDateText(value) {
+    const d = new Date(value || "");
+    if (Number.isNaN(d.getTime())) return "";
+    return dateFormat({ day: "numeric", month: "long", year: "numeric" }).format(d);
+  }
+
+  // The sentence for a countdown: "gate" = the dashboard / activation page wording,
+  // "bar" = the banner of the other pages. "" when nothing is due.
+  function accountDeadlineText(info, kind = "bar") {
+    if (!info?.need || !info.due_at) return "";
+    const vars = {
+      date: escapeHtml(accountDateText(info.due_at)),
+      left: escapeHtml(accountLeftText(info.due_at)),
+      end: escapeHtml(accountDateText(info.expires_at)),
     };
-    window.addEventListener("resize", refit);
-    document.addEventListener("cineaura:prefs", refit);
-    document.fonts?.ready?.then(refit);
-    refit();
+    return t(`acct.${kind}.${info.need === "activate" ? "activate" : "renew"}`, vars);
+  }
+
+  // Why the rule banned an account (login page, dashboard, activation page); "" otherwise.
+  function accountBanText(reason) {
+    return reason === "not_activated" || reason === "not_renewed" ? t(`acct.banned.${reason}`) : "";
+  }
+
+  // The banner: at the bottom of every page of a signed-in member whose countdown runs
+  // (the activation page shows it in its own card). "Hide" keeps it away for this tab.
+  async function showAccountDeadline() {
+    if (/\/activate(\.html)?$/i.test(location.pathname)) return;
+    const info = await accountCheck();
+    document.getElementById("acct-due")?.remove();
+    if (!info) return;
+    let text = "";
+    let action = "";
+    let kind = "warn";
+    if (info.status === "banned" && accountBanText(info.ban_reason)) {
+      text = escapeHtml(accountBanText(info.ban_reason));
+      action = `<button class="btn btn-sm btn-danger" type="button" data-acct-logout>${escapeHtml(t("nav.logout"))}</button>`;
+      kind = "banned";
+    } else if (info.need && info.due_at) {
+      try {
+        if (sessionStorage.getItem(ACCT_HIDE_KEY) === String(info.due_at)) return;
+      } catch {
+        /* shown */
+      }
+      text = accountDeadlineText(info, "bar");
+      action = `<a class="btn btn-sm btn-primary" href="./activate.html">${escapeHtml(t(info.need === "activate" ? "acct.btn.activate" : "acct.btn.renew"))}</a>`;
+    }
+    // a page that already shows the date in its own card (dashboard gate) needs no banner
+    if (!text || document.querySelector(".acct-gate-due")) return;
+    const bar = document.createElement("div");
+    bar.id = "acct-due";
+    bar.className = `acct-due is-${kind}`;
+    bar.setAttribute("role", kind === "banned" ? "alert" : "status");
+    bar.innerHTML = `
+      <span class="acct-due-ico" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5v.01"/></svg></span>
+      <p class="acct-due-txt">${text}</p>
+      <span class="acct-due-acts">${action}${kind === "banned" ? "" : `<button class="acct-due-x" type="button" data-acct-hide aria-label="${escapeHtml(t("acct.hide"))}" title="${escapeHtml(t("acct.hide"))}">×</button>`}</span>`;
+    bar.addEventListener("click", (e) => {
+      if (e.target.closest("[data-acct-logout]")) logout();
+      if (e.target.closest("[data-acct-hide]")) {
+        try {
+          sessionStorage.setItem(ACCT_HIDE_KEY, String(info.due_at));
+        } catch {
+          /* hidden for this page */
+        }
+        bar.remove();
+      }
+    });
+    document.body.appendChild(bar);
   }
 
   function setupChrome() {
@@ -1766,6 +3195,9 @@
     initHeaderBell();
     pollSectionBadges();
     hydratePrefsFromProfile();
+    addVideosNav();
+    watchHeaderFit();
+    showAccountDeadline().catch(() => {});
     const header = $("#site-header");
     if (header) {
       const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 8);
@@ -1910,6 +3342,154 @@
     return `${server}/get.php?username=${encodeURIComponent(a.xstream_user)}&password=${encodeURIComponent(a.xstream_password || "")}&type=m3u_plus&output=ts`;
   }
 
+  // Programme guide (XMLTV) of an account: the one saved with it (Panel > IPTV,
+  // or the url-tvg of an imported playlist); an Xtream account without one uses
+  // the provider's own xmltv.php.
+  function firstHttpUrl(value) {
+    return String(value || "").split(/[\s,]+/).map((u) => u.trim()).find((u) => /^https?:\/\/\S+$/i.test(u)) || "";
+  }
+
+  function iptvEpgUrl(a) {
+    const own = firstHttpUrl(a?.epg_url);
+    if (own) return own;
+    if (!a || iptvKind(a) !== "xtream") return "";
+    const server = iptvServer(a);
+    if (!server || !a.xstream_user) return "";
+    return `${server}/xmltv.php?username=${encodeURIComponent(a.xstream_user)}&password=${encodeURIComponent(a.xstream_password || "")}`;
+  }
+
+  // The guide announced by a playlist itself: #EXTM3U url-tvg="…" (or x-tvg-url / tvg-url).
+  function m3uHeaderEpg(text) {
+    const head = String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/, 8).find((l) => /^#EXTM3U/i.test(l.trim()));
+    if (!head) return "";
+    const attrs = {};
+    head.replace(/([\w-]+)=("([^"]*)"|'([^']*)'|(\S+))/g, (_, k, _v, a, b, c) => {
+      attrs[k.toLowerCase()] = a ?? b ?? c ?? "";
+      return "";
+    });
+    return firstHttpUrl(attrs["url-tvg"] || attrs["x-tvg-url"] || attrs["tvg-url"] || "");
+  }
+
+  // ---- premium accounts: who owns one, and until when ----
+  const iptvIsFree = (a) => String(a?.type || "").trim().toLowerCase() === "free";
+  const ownerKey = (v) => String(v || "").trim().replace(/^@/, "").toLowerCase();
+
+  // owner_id holds the member id (Panel > IPTV always writes it). A row typed by
+  // hand may hold the username, in another case, or with an @: all of them count.
+  function iptvOwnedBy(a, member) {
+    const key = ownerKey(a?.owner_id);
+    if (!key || !member) return false;
+    return key === ownerKey(member.member_id) || (Boolean(member.username) && key === ownerKey(member.username));
+  }
+
+  // PostgREST filter for "free packages + the premium ones of this member". It
+  // may return a little more than it should (ilike treats _ as a wildcard), so
+  // the rows are checked again with iptvOwnedBy.
+  function iptvVisibleFilter(member) {
+    const parts = ["type.ilike.free"];
+    const id = String(member?.member_id || "").trim();
+    const user = String(member?.username || "").trim().replace(/^@/, "");
+    if (id) parts.push(`owner_id.ilike.${restValue(id)}`);
+    if (/^[A-Za-z0-9._]{2,40}$/.test(user)) parts.push(`owner_id.ilike.${restValue(user)}`, `owner_id.ilike.${restValue("@" + user)}`);
+    return `or=(${parts.join(",")})`;
+  }
+
+  function iptvVisibleTo(a, member) {
+    return iptvIsFree(a) || iptvOwnedBy(a, member);
+  }
+
+  // "1 month", "3 months", "1 year", "7 days", "2 weeks" — and the same in the
+  // other site languages ("3 أشهر", "شهرين", "6 mois", "1 Jahr", …). Returns the
+  // end date, or null for "unlimited" and for anything it cannot read.
+  const DURATION_UNITS = [
+    ["day", /^(d|days?|jours?|j|tage?n?|tag|d[ií]as?|dag(en)?|giorn[oi]|يوم|ايام|أيام|يوما|يومًا)$/i],
+    ["week", /^(w|wks?|weeks?|semaines?|wochen?|semanas?|weken|settiman[ae]|اسبوع|أسبوع|اسابيع|أسابيع|اسبوعا|أسبوعًا)$/i],
+    ["month", /^(mo|mos|months?|mois|monate?n?|mes(es)?|maand(en)?|mes[ei]|شهر|اشهر|أشهر|شهور|شهرا|شهرًا)$/i],
+    ["year", /^(y|yrs?|years?|ans?|ann[ée]es?|jahre?n?|años?|anos?|jaar|jaren|ann[oi]|سنة|سنه|سنوات|سنين|عام|اعوام|أعوام|عاما|عامًا)$/i],
+  ];
+  const DUAL = [
+    ["day", /^(يومين|يومان)$/],
+    ["week", /^(اسبوعين|أسبوعين|اسبوعان|أسبوعان)$/],
+    ["month", /^(شهرين|شهران)$/],
+    ["year", /^(سنتين|سنتان|عامين|عامان)$/],
+  ];
+  const UNLIMITED = /^(unlimited|lifetime|forever|∞|غير\s*محدود[ةه]?|مدى\s*الحياة|illimit[ée]e?|unbegrenzt|ilimitad[oa]|onbeperkt|illimitat[oa]|sin\s*l[ií]mite|senza\s*limiti)$/i;
+
+  // -> { n, unit } | { unlimited: true } | null (unreadable)
+  function parseDuration(duration) {
+    const text = String(duration || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x660))
+      .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+    if (!text) return null;
+    if (UNLIMITED.test(text)) return { unlimited: true };
+    let n = 1;
+    let unitWord = text;
+    const m = /^(\d{1,4})\s*([^\d\s].*)?$/.exec(text);
+    if (m) {
+      if (!m[2]) return null; // a bare number: days? months? shown as typed
+      n = Number(m[1]);
+      unitWord = m[2].trim();
+    } else {
+      const dual = DUAL.find(([, re]) => re.test(text));
+      if (dual) {
+        n = 2;
+        unitWord = dual[0];
+      }
+    }
+    unitWord = unitWord.replace(/^(a|an|one|un|une|ein|eine|uno|una|een|واحد|واحدة)\s+/, "").replace(/\s+(واحد|واحدة)$/, "");
+    const unit = ["day", "week", "month", "year"].includes(unitWord) ? unitWord : DURATION_UNITS.find(([, re]) => re.test(unitWord))?.[0];
+    return unit && n ? { n, unit } : null;
+  }
+
+  function iptvExpiry(from, duration) {
+    const start = new Date(from);
+    const d = parseDuration(duration);
+    if (Number.isNaN(start.getTime()) || !d || d.unlimited) return null;
+    const end = new Date(start.getTime());
+    if (d.unit === "day" || d.unit === "week") {
+      end.setDate(end.getDate() + d.n * (d.unit === "week" ? 7 : 1));
+      return end;
+    }
+    // 31 January + 1 month = 28 (or 29) February, not 3 March
+    const day = end.getDate();
+    end.setDate(1);
+    end.setMonth(end.getMonth() + d.n * (d.unit === "year" ? 12 : 1));
+    end.setDate(Math.min(day, new Date(end.getFullYear(), end.getMonth() + 1, 0).getDate()));
+    return end;
+  }
+
+  // "3 months" in the language of the page ("3 أشهر", "3 mois", …); text it
+  // cannot read is shown as it was typed.
+  function durationLabel(duration) {
+    const d = parseDuration(duration);
+    if (!d) return String(duration || "").trim() || t("common.unlimited");
+    if (d.unlimited) return t("common.unlimited");
+    try {
+      return new Intl.NumberFormat(getLocale(), { style: "unit", unit: d.unit, unitDisplay: "long", numberingSystem: "latn" }).format(d.n);
+    } catch {
+      return `${d.n} ${d.unit}${d.n === 1 ? "" : "s"}`;
+    }
+  }
+
+  // { start, exp, left, share, open }: exp null = no end date known; open = none
+  // by design ("unlimited", or no duration at all). expires_at wins; older rows
+  // count their duration from when they were given (or created).
+  function iptvTiming(a, now = Date.now()) {
+    const start = Date.parse(a?.assigned_at || a?.created_at || "");
+    let exp = Date.parse(a?.expires_at || "");
+    if (!Number.isFinite(exp) && Number.isFinite(start)) exp = iptvExpiry(start, a?.duration)?.getTime() ?? NaN;
+    if (!Number.isFinite(exp)) {
+      const d = parseDuration(a?.duration);
+      const open = !String(a?.duration || "").trim() || Boolean(d?.unlimited) || Boolean(d && !Number.isFinite(start));
+      return { start: Number.isFinite(start) ? start : null, exp: null, left: Infinity, share: 1, open };
+    }
+    const total = Number.isFinite(start) && exp > start ? exp - start : 0;
+    const left = exp - now;
+    return { start: Number.isFinite(start) ? start : null, exp, left, share: left <= 0 ? 0 : total ? Math.min(1, left / total) : 1, open: false };
+  }
+
   function fileSlug(name) {
     return String(name || "iptv").trim().replace(/[^\w\u0600-\u06FF.-]+/g, "_").replace(/^_+|_+$/g, "") || "iptv";
   }
@@ -1936,11 +3516,86 @@
     return r2.text();
   }
 
+  // cyrb53: a short, stable 53-bit key (base 36) of a text.
+  function cyrb53(str) {
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    const text = String(str || "");
+    for (let i = 0; i < text.length; i += 1) {
+      const c = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 2654435761);
+      h2 = Math.imul(h2 ^ c, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+    h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+    h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+  }
+
+  // The id of a playlist row on Listchannels.html (&channel=<id>): its stream link (else
+  // its name) and its group. The members' IPTV lists keep the same id with each channel,
+  // so a result of Search.html > Channels opens that very channel.
+  function m3uRowId(row) {
+    const name = String(row?.channel_name || "").trim().toLowerCase().replace(/\s+/g, " ");
+    return `m${cyrb53(`${row?.stream_url || name}\n${row?.group_name}`)}`;
+  }
+
+  // M3U playlist -> public.listchannels rows (Panel > IPTV import, channel player).
+  // "Animation;Kids;Religious" puts the channel once inside each of those groups.
+  // stream_url is the URL line under #EXTINF: the link the channel player opens;
+  // epg_id is its tvg-id, the key of the channel in the programme guide.
+  function parseM3U(text) {
+    const out = [];
+    let cur = null;
+    String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).forEach((raw) => {
+      const line = raw.trim();
+      if (!line) return;
+      if (/^#EXTINF/i.test(line)) {
+        const attrs = {};
+        const stripped = line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ""; });
+        const name = stripped.slice(stripped.indexOf(",") + 1).trim() || attrs["tvg-name"] || "";
+        cur = { name, group: (attrs["group-title"] || "").trim() || "General", logo: attrs["tvg-logo"] || "", epg: (attrs["tvg-id"] || "").trim() };
+      } else if (/^#EXTGRP:/i.test(line) && cur) {
+        cur.group = line.slice(8).trim() || cur.group;
+      } else if (!line.startsWith("#")) {
+        if (cur && cur.name) {
+          const u = line.toLowerCase();
+          const type = u.includes("/movie/") ? "movie" : u.includes("/series/") ? "series" : "live";
+          const stream = /^[a-z][a-z0-9+.-]*:\/\//i.test(line) ? line.slice(0, 2000) : "";
+          const groups = [...new Set(cur.group.split(";").map((g) => g.trim()).filter(Boolean))];
+          (groups.length ? groups : ["General"]).forEach((g) => {
+            out.push({
+              channel_name: cur.name.slice(0, 200),
+              group_name: g.slice(0, 120),
+              logo_url: /^https?:\/\//i.test(cur.logo) ? cur.logo : "",
+              channel_type: type,
+              stream_url: stream,
+              epg_id: cur.epg.slice(0, 200),
+            });
+          });
+        }
+        cur = null;
+      }
+    });
+    return out;
+  }
+
+  // The guide of the account goes into the playlist header, where IPTV apps
+  // (TiviMate, IPTV Smarters, VLC, …) look for it.
+  function withEpgHeader(text, epg) {
+    if (!epg || m3uHeaderEpg(text)) return text;
+    const body = String(text).replace(/^\uFEFF/, "");
+    const tag = `url-tvg="${epg.replace(/"/g, "%22")}" x-tvg-url="${epg.replace(/"/g, "%22")}"`;
+    if (/^#EXTM3U/i.test(body)) return body.replace(/^#EXTM3U[^\r\n]*/i, (line) => `${line.trimEnd()} ${tag}`);
+    return `#EXTM3U ${tag}\n${body}`;
+  }
+
   async function iptvDownloadM3u(a) {
     const url = iptvM3uUrl(a);
     if (!url) return toast(t("dash.iptvDlFail"));
     try {
-      const text = await fetchPlaylistText(url);
+      const text = withEpgHeader(await fetchPlaylistText(url), iptvEpgUrl(a));
       if (!/#EXTM3U|#EXTINF/i.test(text)) throw new Error("not an m3u");
       saveTextFile(`${fileSlug(a.name)}.m3u`, text, "audio/x-mpegurl");
       toast(t("dash.iptvDlOk"));
@@ -1960,7 +3615,7 @@
       `Username: ${a.xstream_user || ""}`,
       `Password: ${a.xstream_password || ""}`,
       `M3U: ${iptvM3uUrl(a)}`,
-      `EPG: ${server}/xmltv.php?${q}`,
+      `EPG: ${iptvEpgUrl(a) || `${server}/xmltv.php?${q}`}`,
       `Duration: ${a.duration || "unlimited"}`,
       "",
     ].join("\r\n");
@@ -1981,8 +3636,9 @@
         </div>
       </div>`;
     };
-    if (iptvKind(a) === "m3u") return row("M3U", a.m3u_url);
-    return row(t("panel.iptv.server"), iptvServer(a)) + row(t("panel.iptv.user"), a.xstream_user) + row(t("panel.iptv.pass"), a.xstream_password, true) + row("M3U", iptvM3uUrl(a));
+    const epg = row(t("iptv.epg"), iptvEpgUrl(a));
+    if (iptvKind(a) === "m3u") return row("M3U", a.m3u_url) + epg;
+    return row(t("panel.iptv.server"), iptvServer(a)) + row(t("panel.iptv.user"), a.xstream_user) + row(t("panel.iptv.pass"), a.xstream_password, true) + row("M3U", iptvM3uUrl(a)) + epg;
   }
 
   function iptvActionsHtml(a) {
@@ -2053,6 +3709,51 @@
 
   // Adds a "Hide menu / Show menu" button above the sidebar layout and applies the
   // remembered state. Call it again after every re-render of the layout.
+  /* Icons of the side menus (dashboard, profile, panel): 24x24 line drawings in the
+     colour of the text. navIcon(name) -> <svg>, "" for a name without one. */
+  const NAV_ICONS = {
+    overview: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/>',
+    playlists: '<path d="M4 6h11M4 11h11M4 16h7"/><path d="M15.5 14.5v6l5-3z"/>',
+    links: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>',
+    reports: '<path d="M5.5 21V4"/><path d="M5.5 4.5h11l-2 4 2 4h-11"/>',
+    codes: '<circle cx="8" cy="15.5" r="4"/><path d="M10.9 12.6L20 3.5M16.5 7l2.5 2.5M14 9.5l2 2"/>',
+    iptv: '<rect x="3" y="6.5" width="18" height="12.5" rx="2"/><path d="M8.5 3l3.5 3.5L15.5 3M9 22h6"/>',
+    views: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+    analytics: '<path d="M3.5 20.5h17"/><path d="M7 17v-5M12 17V6M17 17v-8"/>',
+    prizes: '<rect x="3.5" y="8" width="17" height="4.5" rx="1"/><path d="M5 12.5V20.5h14v-8M12 8v12.5"/><path d="M12 8C10.5 4.5 6.5 4 6.5 6.3S9.5 8 12 8zM12 8c1.5-3.5 5.5-4 5.5-1.7S14.5 8 12 8z"/>',
+    history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5"/><path d="M12 7.5V12l3 2"/>',
+    settings: '<path d="M4 6.5h9M17 6.5h3M4 12h3M11 12h9M4 17.5h11M19 17.5h1"/><circle cx="15" cy="6.5" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17.5" r="2"/>',
+    panel: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><path d="M9 12l2.2 2.2L15.5 10"/>',
+    home: '<path d="M3.5 11L12 4l8.5 7"/><path d="M5.5 9.5v11h4.5v-6h4v6h4.5v-11"/>',
+    create: '<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/><path d="M12 8v8M8 12h8"/>',
+    posts: '<path d="M6.5 3.5h8l4 4v13h-12z"/><path d="M14 3.5V8h4.5M9.5 12.5h6M9.5 16.5h4"/>',
+    points: '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+    messages: '<path d="M20.5 12a8 8 0 0 1-11.7 7.1L3.5 20.5l1.4-4.9A8 8 0 1 1 20.5 12z"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/>',
+    following: '<circle cx="9" cy="8.5" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5a3.5 3.5 0 0 1 0 7M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/>',
+    blocked: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
+    accounts: '<circle cx="12" cy="8.5" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+    apps: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/>',
+    staff: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/><circle cx="12" cy="10.5" r="2.3"/><path d="M8.3 16.2a4.2 4.2 0 0 1 7.4 0"/>',
+  };
+  NAV_ICONS.content = '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10.5 9.3v5.4l4.5-2.7z"/>';
+  NAV_ICONS.notifications = '<path d="M6 16.5V11a6 6 0 1 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>';
+  // the Panel: Market and Announcements
+  NAV_ICONS.market = '<path d="M4.5 8.5h15l-1.2 11a1.6 1.6 0 0 1-1.6 1.5H7.3a1.6 1.6 0 0 1-1.6-1.5z"/><path d="M8.8 8.5V7a3.2 3.2 0 0 1 6.4 0v1.5"/>';
+  NAV_ICONS.announce = '<path d="M4 10.2v3.6a1 1 0 0 0 1 1h2.2L12.5 19V5L7.2 9.2H5a1 1 0 0 0-1 1z"/><path d="M16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/>';
+  // the Panel: Packages (account, points and prize codes)
+  NAV_ICONS.packages = '<path d="M3.5 7.5L12 3.2l8.5 4.3v9L12 20.8l-8.5-4.3z"/><path d="M3.5 7.5L12 11.8l8.5-4.3M12 11.8v9M7.8 5.3l8.4 4.3"/>';
+  // Dashboard > Withdraw and Panel > Withdrawals (sql/withdrawals.sql): a banknote going out
+  NAV_ICONS.withdraw = '<rect x="2.5" y="4.5" width="19" height="11" rx="2"/><circle cx="12" cy="10" r="2.4"/><path d="M6 7.5v5M18 7.5v5M12 17.5v4M9.6 19.4L12 21.8l2.4-2.4"/>';
+  NAV_ICONS.withdrawals = NAV_ICONS.withdraw;
+
+  function navIcon(name) {
+    const body = NAV_ICONS[name];
+    return body
+      ? `<svg class="nav-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${body}</svg>`
+      : "";
+  }
+
   function mountSideToggle(layout) {
     if (!layout || !layout.querySelector("aside")) return;
     layout.querySelector(":scope > .side-toggle-bar")?.remove();
@@ -2086,29 +3787,113 @@
   /* ════════════════════════════════════════════════════════════════════
      Points
 
-     A member earns points from six sources, each at its own rate:
+     A member earns points from these sources, each at its own rate:
 
-       1 watch minute — yours or through your link —   = 1 point
+       watch minutes — yours or through your link —  see "Watch rates and levels" below
        5 new members registered through your shared links = 1 point
        500 watch links published (banned links excluded) = 1 point
        10 public or exclusive playlists                = 1 point
        50 public or exclusive recommendations          = 1 point
        100 comments                                    = 1 point
+       your videos (sql/content.sql): each counted minute, share, comment and
+         positive recommendation — yours on other members' videos, or other
+         members' on yours — is worth one watched minute (country tier x level)
+       points codes (sql/point_codes.sql): the points of every package serial used
 
      Fractions are dropped (12 referred registrations are worth 2 points, not 2.4). What a
      member can spend is what they earned minus what they already spent
      (profiles.points_spent), so the bonus points of a source cannot be spent
      twice and the watch minutes themselves are never destroyed.
+
+     Watch rates and levels (sql/point_levels.sql holds the same tables):
+     one watched minute is worth  level multiplier ÷ minutes of the viewer's country tier.
+       Tier 1  US CA GB                       1 point / 1 minute
+       Tier 2  DE FR NL BE AT CH IE LU SE NO DK FI IS IT ES PT GR MT CY   1 point / 5 minutes
+       Tier 3  SA AE QA KW BH OM PL CZ HU RO BG HR SI SK EE LV LT SG ID MY  1 point / 10 minutes
+       Tier 4  every other country            1 point / 50 minutes
+       LV0 0+ ×1 · LV1 10+ ×1 · LV2 100+ ×2 · LV3 1K+ ×3 … LV9 1B+ ×9 · LV Max 10B+ ×10
+     The level counts every point earned (spending never lowers it). The server credits
+     each minute into profiles.watch_points (watch_minute()); before that file existed a
+     minute was worth 1 point, which is what the minutes give when the column is missing.
      ════════════════════════════════════════════════════════════════════ */
   const POINT_RATES = [
     { key: "minutes", per: 1, src: "points.src.minutes", rate: "points.rate.minutes" },
+    // stored by the server: profiles.content_points (sql/content.sql), counted in content_units
+    { key: "videos", per: 1, src: "points.src.videos", rate: "points.rate.videos" },
     { key: "shares", per: 5, src: "points.src.shares", rate: "points.rate.shares" },
     { key: "links", per: 500, src: "points.src.links", rate: "points.rate.links" },
     { key: "downloads", per: 1000, src: "points.src.downloads", rate: "points.rate.downloads" },
     { key: "playlists", per: 10, src: "points.src.playlists", rate: "points.rate.playlists" },
     { key: "recommendations", per: 50, src: "points.src.recs", rate: "points.rate.recs" },
     { key: "comments", per: 100, src: "points.src.comments", rate: "points.rate.comments" },
+    // stored by the server: profiles.code_points (sql/point_codes.sql), counted in code_count
+    { key: "codes", per: 1, src: "points.src.codes", rate: "points.rate.codes" },
+    // the market (sql/market.sql): profiles.market_points for the sales of the member's store,
+    // less the share commissions they pay (counted in market_sales), and market_ref_points, the
+    // commissions of the sales made through their share links (counted in market_refs)
+    { key: "market", per: 1, src: "points.src.market", rate: "points.rate.market" },
+    { key: "marketRefs", per: 1, src: "points.src.marketRefs", rate: "points.rate.marketRefs" },
   ];
+  // Columns of profiles that hold points the server credits (absent until their SQL file ran).
+  const STORED_POINT_COLUMNS = [
+    "watch_points", "content_points", "content_units", "code_points", "code_count",
+    "market_points", "market_sales", "market_ref_points", "market_refs",
+  ];
+
+  const WATCH_TIERS = [
+    { tier: 1, minutes: 1, countries: ["US", "CA", "GB"] },
+    {
+      tier: 2,
+      minutes: 5,
+      countries: ["DE", "FR", "NL", "BE", "AT", "CH", "IE", "LU", "SE", "NO", "DK", "FI", "IS", "IT", "ES", "PT", "GR", "MT", "CY"],
+    },
+    {
+      tier: 3,
+      minutes: 10,
+      countries: ["SA", "AE", "QA", "KW", "BH", "OM", "PL", "CZ", "HU", "RO", "BG", "HR", "SI", "SK", "EE", "LV", "LT", "SG", "ID", "MY"],
+    },
+    { tier: 4, minutes: 50, countries: [] }, // every other country
+  ];
+  // Points earned to reach each level: index = level, LV0 … LV Max (10).
+  const POINT_LEVELS = [0, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
+  const LEVEL_MAX = POINT_LEVELS.length - 1;
+
+  function watchTier(cc) {
+    const code = String(cc || "").trim().toUpperCase();
+    return WATCH_TIERS.find((x) => x.countries.includes(code)) || WATCH_TIERS[WATCH_TIERS.length - 1];
+  }
+  function pointLevel(earned) {
+    const n = Math.max(0, Number(earned) || 0);
+    let lv = 0;
+    for (let i = 1; i <= LEVEL_MAX; i += 1) if (n >= POINT_LEVELS[i]) lv = i;
+    return lv;
+  }
+  const levelMultiplier = (lv) => Math.max(1, Math.min(LEVEL_MAX, Number(lv) || 0));
+  const levelName = (lv) => (Number(lv) >= LEVEL_MAX ? "LV Max" : `LV${Math.max(0, Math.floor(Number(lv) || 0))}`);
+  // 10 → "10", 1000 → "1K", 10^10 → "10B": the notation of the levels table, the same in every language.
+  function compactPoints(n) {
+    const v = Number(n) || 0;
+    for (const [div, unit] of [[1e9, "B"], [1e6, "M"], [1e3, "K"]]) {
+      if (v >= div && v % div === 0) return `${v / div}${unit}`;
+    }
+    return String(v);
+  }
+  // Where `earned` points put a member: level, multiplier, the next level and the way to it.
+  function levelInfo(earned) {
+    const have = Math.max(0, Math.floor(Number(earned) || 0));
+    const level = pointLevel(have);
+    const from = POINT_LEVELS[level];
+    const to = level < LEVEL_MAX ? POINT_LEVELS[level + 1] : null;
+    return {
+      level,
+      name: levelName(level),
+      multiplier: levelMultiplier(level),
+      earned: have,
+      from,
+      next: to == null ? null : { level: level + 1, name: levelName(level + 1), at: to, multiplier: levelMultiplier(level + 1) },
+      progress: to == null ? 1 : Math.min(1, Math.max(0, (have - from) / (to - from))),
+    };
+  }
 
   // Total number of rows of a query, read from the content-range header so the
   // rows themselves never travel over the wire.
@@ -2131,6 +3916,13 @@
   async function pointParts(memberId, profile = {}) {
     const id = restValue(memberId);
     const minutes = Number(profile.private_minutes || 0) + Number(profile.public_minutes || 0);
+    // profiles.watch_points (sql/point_levels.sql): null on a database without the column
+    const stored = (v) => (v == null || v === "" ? null : Number(v));
+    const watchPoints = stored(profile.watch_points);
+    const videoPoints = stored(profile.content_points);
+    const codePoints = stored(profile.code_points);
+    const marketPoints = stored(profile.market_points);
+    const marketRefPoints = stored(profile.market_ref_points);
     const [shares, playlists, recommendations, comments, movieLinks, tvLinks, movieDl, tvDl] =
       await Promise.all([
         countRows(`/rest/v1/post_events?kind=eq.share&network=eq.referral&member_id=eq.${id}&select=id`),
@@ -2146,6 +3938,15 @@
       ]);
     return {
       minutes,
+      watchPoints: Number.isFinite(watchPoints) ? watchPoints : null,
+      videos: Number(profile.content_units || 0),
+      videoPoints: Number.isFinite(videoPoints) ? videoPoints : null,
+      codes: Number(profile.code_count || 0),
+      codePoints: Number.isFinite(codePoints) ? codePoints : null,
+      market: Number(profile.market_sales || 0),
+      marketPoints: Number.isFinite(marketPoints) ? marketPoints : null,
+      marketRefs: Number(profile.market_refs || 0),
+      marketRefPoints: Number.isFinite(marketRefPoints) ? marketRefPoints : null,
       shares,
       playlists,
       recommendations,
@@ -2156,21 +3957,96 @@
   }
 
   // One row per source: what the member has, the rate, and the points it gives.
+  // Watch minutes give the stored watch points (whole points) once sql/point_levels.sql
+  // is in place, 1 point a minute before.
   function pointBreakdown(parts) {
+    const storedOf = {
+      minutes: parts?.watchPoints,
+      videos: parts?.videoPoints,
+      codes: parts?.codePoints,
+      market: parts?.marketPoints,
+      marketRefs: parts?.marketRefPoints,
+    };
     return POINT_RATES.map((r) => {
       const count = Number(parts?.[r.key] || 0);
-      return { key: r.key, per: r.per, src: r.src, rate: r.rate, count, points: Math.floor(count / r.per) };
+      let points;
+      if (r.key in storedOf) {
+        const v = storedOf[r.key];
+        // watch minutes give 1 point a minute until sql/point_levels.sql stores them
+        points = v != null ? Math.floor(Number(v) + 1e-9) : r.key === "minutes" ? Math.floor(count / r.per) : 0;
+      } else {
+        points = Math.floor(count / r.per);
+      }
+      return { key: r.key, per: r.per, src: r.src, rate: r.rate, count, points };
     });
   }
 
   const pointsEarned = (parts) => pointBreakdown(parts).reduce((sum, r) => sum + r.points, 0);
 
+  // The rate line of the watch row: the viewer's country (the IP country, never the one
+  // picked in Site Settings — the server decides from the same IP) and the member's level.
+  function watchRateText(level, cc) {
+    const lv = level || levelInfo(0);
+    const code = String(cc || "").toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code)) return t("points.rate.watchAny", { n: lv.multiplier, level: lv.name });
+    const tier = watchTier(code);
+    return t("points.rate.watch", {
+      country: countryName(code) || code,
+      tier: tier.tier,
+      min: tier.minutes,
+      n: lv.multiplier,
+      level: lv.name,
+    });
+  }
+
   async function memberPoints(memberId, profile = {}) {
-    const parts = await pointParts(memberId, profile);
+    let prof = profile || {};
+    // Callers that loaded only some columns: read the stored points (absent on a database
+    // that never ran their SQL file — the minutes count then, as before, and the rest is 0).
+    // A caller with no profile at all (Market.html) gets the minutes and the spent points too.
+    const BASIC = ["points_spent", "private_minutes", "public_minutes"];
+    if (memberId && [...STORED_POINT_COLUMNS, ...BASIC].some((c) => !(c in prof))) {
+      const res = await supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(memberId)}&select=*`).catch(() => null);
+      const row = res?.ok && Array.isArray(res.data) ? res.data[0] : null;
+      if (row) {
+        const add = {};
+        STORED_POINT_COLUMNS.forEach((c) => {
+          if (c in row) add[c] = row[c];
+        });
+        BASIC.forEach((c) => {
+          if (!(c in prof) && c in row) add[c] = row[c];
+        });
+        prof = { ...prof, ...add };
+      }
+    }
+    const parts = await pointParts(memberId, prof);
     const breakdown = pointBreakdown(parts);
     const earned = breakdown.reduce((sum, r) => sum + r.points, 0);
-    const spent = Math.max(0, Number(profile.points_spent || 0));
-    return { parts, breakdown, earned, spent, available: Math.max(0, earned - spent) };
+    const spent = Math.max(0, Number(prof.points_spent || 0));
+    const levels = parts.watchPoints != null;
+    const level = levelInfo(earned);
+    const country = levels ? readGeo()?.cc || "" : "";
+    if (levels) {
+      const watch = breakdown.find((r) => r.key === "minutes");
+      if (watch) {
+        watch.rateText = watchRateText(level, country);
+        watch.exact = Number(parts.watchPoints);
+      }
+    }
+    // videos: hundredths kept, like the watch minutes
+    const vids = breakdown.find((r) => r.key === "videos");
+    if (vids && parts.videoPoints != null) vids.exact = Number(parts.videoPoints);
+    return {
+      parts,
+      breakdown,
+      earned,
+      spent,
+      available: Math.max(0, earned - spent),
+      levels,
+      level,
+      country,
+      tier: country ? watchTier(country) : null,
+    };
   }
 
   // Where the spent points went: one row per spend (sql/points.sql, point_spends), newest first.
@@ -2183,7 +4059,8 @@
       `/rest/v1/point_spends?member_id=eq.${id}&select=prize_title,mode,amount,created_at&order=created_at.desc&limit=500`
     );
     const rows = res.ok && Array.isArray(res.data) ? res.data : [];
-    const logged = rows.reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
+    // market refunds are rows with a negative amount (sql/market.sql): they lower the total too
+    const logged = rows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
     return { rows, total, earlier: Math.max(0, total - logged) };
   }
 
@@ -2194,28 +4071,93 @@
     return supabaseRequest(`/rest/v1/rpc/${name}`, { method: "POST", body: JSON.stringify(args) });
   }
 
-  // The "how you earn points" panel shared by the prize dialog and dashboard.
-  function pointsHtml(mp) {
-    if (!mp) return "";
-    const rows = mp.breakdown
-      .map(
-        (r) => `
-        <li class="pt-row">
+  // One source row of a points list (the watch row carries its own rate line and the
+  // exact watch points, hundredths included).
+  function pointRowHtml(r) {
+    const exact =
+      r.exact != null && Number.isFinite(r.exact)
+        ? `<small class="pt-exact">${escapeHtml(t("points.watchExact", { n: r.exact.toFixed(2) }))}</small>`
+        : "";
+    return `
+        <li class="pt-row${r.key === "minutes" ? " pt-row-watch" : ""}">
           <span class="pt-src">
             <b>${escapeHtml(t(r.src))}</b>
-            <small>${escapeHtml(t(r.rate))}</small>
+            <small>${escapeHtml(r.rateText || t(r.rate))}</small>${exact}
           </span>
           <span class="pt-count">${r.count}</span>
           <span class="pt-pts">+${r.points}</span>
-        </li>`
-      )
-      .join("");
+        </li>`;
+  }
+
+  // The level of a member: badge, multiplier, the way to the next level, and the
+  // tables of levels and country rates. Empty until sql/point_levels.sql is in place.
+  function levelHtml(mp) {
+    if (!mp?.levels || !mp.level) return "";
+    const lv = mp.level;
+    const pct = Math.round(lv.progress * 100);
+    const nextText = lv.next
+      ? t("points.levelNext", { have: lv.earned, need: compactPoints(lv.next.at), level: lv.next.name })
+      : t("points.levelTop");
+    const levelRows = POINT_LEVELS.map((at, i) => {
+      const you = i === lv.level;
+      return `<tr${you ? ' class="is-you" aria-current="true"' : ""}>
+            <td><bdi dir="ltr">${escapeHtml(levelName(i))}</bdi>${you ? ` <span class="pt-you">${escapeHtml(t("points.you"))}</span>` : ""}</td>
+            <td><bdi dir="ltr">${compactPoints(at)}+</bdi>${i === 0 ? ` <small>${escapeHtml(t("points.newAccount"))}</small>` : ""}</td>
+            <td><bdi dir="ltr">×${levelMultiplier(i)}</bdi></td>
+          </tr>`;
+    }).join("");
+    const myTier = mp.tier?.tier || 0;
+    const tierRows = WATCH_TIERS.map((x) => {
+      const you = x.tier === myTier;
+      const where = x.countries.length
+        ? `<bdi dir="ltr">${x.countries.join(", ")}</bdi>`
+        : escapeHtml(t("points.tierOther"));
+      return `<tr${you ? ' class="is-you" aria-current="true"' : ""}>
+            <td>${escapeHtml(t("points.tierN", { n: x.tier }))}${you ? ` <span class="pt-you">${escapeHtml(t("points.you"))}</span>` : ""}</td>
+            <td class="pt-countries">${where}</td>
+            <td class="pt-rate">${escapeHtml(t("points.perMin", { n: x.minutes }))}</td>
+          </tr>`;
+    }).join("");
+    return `
+        <div class="pt-level" data-level="${lv.level}">
+          <span class="pt-lv-badge"><bdi dir="ltr">${escapeHtml(lv.name)}</bdi></span>
+          <div class="pt-lv-main">
+            <div class="pt-lv-top">
+              <b>${escapeHtml(t("points.levelMult", { n: lv.multiplier }))}</b>
+              <span class="pt-lv-next">${escapeHtml(nextText)}</span>
+            </div>
+            <div class="pt-lv-bar" role="progressbar" aria-label="${escapeHtml(nextText)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
+          </div>
+        </div>
+        <details class="pt-rules">
+          <summary>${escapeHtml(t("points.levelsTitle"))}</summary>
+          <div class="pt-rules-grid">
+            <table class="pt-table">
+              <caption>${escapeHtml(t("points.levelsCap"))}</caption>
+              <thead><tr><th scope="col">${escapeHtml(t("points.colLevel"))}</th><th scope="col">${escapeHtml(t("points.colPoints"))}</th><th scope="col">${escapeHtml(t("points.colMult"))}</th></tr></thead>
+              <tbody>${levelRows}</tbody>
+            </table>
+            <table class="pt-table">
+              <caption>${escapeHtml(t("points.tiersCap"))}</caption>
+              <thead><tr><th scope="col">${escapeHtml(t("points.colTier"))}</th><th scope="col">${escapeHtml(t("points.colCountries"))}</th><th scope="col">${escapeHtml(t("points.colRate"))}</th></tr></thead>
+              <tbody>${tierRows}</tbody>
+            </table>
+          </div>
+          <p class="pt-rules-note">${escapeHtml(t("points.levelsNote"))}</p>
+        </details>`;
+  }
+
+  // The "how you earn points" panel shared by the prize dialog and dashboard.
+  function pointsHtml(mp) {
+    if (!mp) return "";
+    const rows = mp.breakdown.map(pointRowHtml).join("");
     return `
       <div class="pt-box">
         <div class="pt-head">
           <span>${escapeHtml(t("points.title"))}</span>
           <b class="pt-total">${mp.available}</b>
         </div>
+        ${levelHtml(mp)}
         <ul class="pt-list">${rows}</ul>
         <div class="pt-foot">
           <span>${escapeHtml(t("points.earned"))} <b>${mp.earned}</b></span>
@@ -2672,6 +4614,127 @@
     return total;
   }
 
+
+  // ---------- apps: the "Get the app" cards of the home page and Panel > Apps ----------
+  // One entry per platform. The download link and version of each come from the
+  // app_downloads table (sql/apps.sql), written from Panel > Apps: a platform with
+  // a link is available, one without shows "Coming soon". The logos come from
+  // Simple Icons (CC0); Windows and Android TV are drawn here.
+  const OS_LOGOS = {
+    windows: '<svg viewBox="0 0 24 24" width="30" height="30" focusable="false" aria-hidden="true"><path fill="#2f9bf1" d="M2.5 2.5h9v9h-9zM12.5 2.5h9v9h-9zM2.5 12.5h9v9h-9zM12.5 12.5h9v9h-9z"/></svg>',
+    linux: '<svg viewBox="0 0 24 24" width="30" height="30" focusable="false" aria-hidden="true"><path fill="currentColor" d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></svg>',
+    apple: '<svg viewBox="0 0 24 24" width="30" height="30" focusable="false" aria-hidden="true"><path fill="currentColor" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>',
+    android: '<svg viewBox="0 0 24 24" width="30" height="30" focusable="false" aria-hidden="true"><path fill="#3ddc84" d="M18.4395 5.5586c-.675 1.1664-1.352 2.3318-2.0274 3.498-.0366-.0155-.0742-.0286-.1113-.043-1.8249-.6957-3.484-.8-4.42-.787-1.8551.0185-3.3544.4643-4.2597.8203-.084-.1494-1.7526-3.021-2.0215-3.4864a1.1451 1.1451 0 0 0-.1406-.1914c-.3312-.364-.9054-.4859-1.379-.203-.475.282-.7136.9361-.3886 1.5019 1.9466 3.3696-.0966-.2158 1.9473 3.3593.0172.031-.4946.2642-1.3926 1.0177C2.8987 12.176.452 14.772 0 18.9902h24c-.119-1.1108-.3686-2.099-.7461-3.0683-.7438-1.9118-1.8435-3.2928-2.7402-4.1836a12.1048 12.1048 0 0 0-2.1309-1.6875c.6594-1.122 1.312-2.2559 1.9649-3.3848.2077-.3615.1886-.7956-.0079-1.1191a1.1001 1.1001 0 0 0-.8515-.5332c-.5225-.0536-.9392.3128-1.0488.5449zm-.0391 8.461c.3944.5926.324 1.3306-.1563 1.6503-.4799.3197-1.188.0985-1.582-.4941-.3944-.5927-.324-1.3307.1563-1.6504.4727-.315 1.1812-.1086 1.582.4941zM7.207 13.5273c.4803.3197.5506 1.0577.1563 1.6504-.394.5926-1.1038.8138-1.584.4941-.48-.3197-.5503-1.0577-.1563-1.6504.4008-.6021 1.1087-.8106 1.584-.4941z"/></svg>',
+    androidtv: '<svg viewBox="0 0 24 24" width="30" height="30" focusable="false" aria-hidden="true"><rect x="1.75" y="2.75" width="20.5" height="14.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 21h8M12 17.25V21" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path fill="#3ddc84" transform="translate(5.2 3.15) scale(.5667)" d="M18.4395 5.5586c-.675 1.1664-1.352 2.3318-2.0274 3.498-.0366-.0155-.0742-.0286-.1113-.043-1.8249-.6957-3.484-.8-4.42-.787-1.8551.0185-3.3544.4643-4.2597.8203-.084-.1494-1.7526-3.021-2.0215-3.4864a1.1451 1.1451 0 0 0-.1406-.1914c-.3312-.364-.9054-.4859-1.379-.203-.475.282-.7136.9361-.3886 1.5019 1.9466 3.3696-.0966-.2158 1.9473 3.3593.0172.031-.4946.2642-1.3926 1.0177C2.8987 12.176.452 14.772 0 18.9902h24c-.119-1.1108-.3686-2.099-.7461-3.0683-.7438-1.9118-1.8435-3.2928-2.7402-4.1836a12.1048 12.1048 0 0 0-2.1309-1.6875c.6594-1.122 1.312-2.2559 1.9649-3.3848.2077-.3615.1886-.7956-.0079-1.1191a1.1001 1.1001 0 0 0-.8515-.5332c-.5225-.0536-.9392.3128-1.0488.5449zm-.0391 8.461c.3944.5926.324 1.3306-.1563 1.6503-.4799.3197-1.188.0985-1.582-.4941-.3944-.5927-.324-1.3307.1563-1.6504.4727-.315 1.1812-.1086 1.582.4941zM7.207 13.5273c.4803.3197.5506 1.0577.1563 1.6504-.394.5926-1.1038.8138-1.584.4941-.48-.3197-.5503-1.0577-.1563-1.6504.4008-.6021 1.1087-.8106 1.584-.4941z"/></svg>',
+  };
+  const APP_PLATFORMS = [
+    { key: "windows", os: "Windows", app: "CineAura PC", logo: OS_LOGOS.windows },
+    { key: "linux", os: "Linux", app: "CineAura PC", logo: OS_LOGOS.linux },
+    { key: "macos", os: "macOS", app: "CineAura PC", logo: OS_LOGOS.apple },
+    { key: "android", os: "Android", app: "CineAura Mobile", logo: OS_LOGOS.android },
+    { key: "ios", os: "iPhone", app: "CineAura Mobile", logo: OS_LOGOS.apple },
+    { key: "androidtv", os: "Android TV", app: "CineAura TV", logo: OS_LOGOS.androidtv },
+  ];
+
+  // A download link is a web address (http/https) or a file on this site
+  // (/downloads/…). Anything else (javascript:, data:, //host) counts as none.
+  function appDownloadUrl(value) {
+    const url = String(value || "").trim();
+    if (!url || url.length > 1000 || /[\s<>"'`]/.test(url)) return "";
+    if (/^https?:\/\/[^/?#\s]+/i.test(url)) return url;
+    if (/^\/[^/\\]/.test(url)) return url;
+    return "";
+  }
+
+  // "1.0", "v1.0" and "1.0v" all read 1.0
+  const appVersion = (value) => String(value || "").trim().replace(/^v\s*/i, "").replace(/\s*v$/i, "").slice(0, 20);
+
+  /* ---------- Report (round 31, sql/search.sql: content_report) ----------
+     The Report button of a video, a playlist, an IPTV list and a post: a reason and a note. The team
+     reads the reports in Panel > Reports > Content; a report it finds valid costs the item 60 ranking
+     points in Search.html.
+       reportDialog({ kind: video | playlist | iptv_list | post, id, title, onDone(ok) }) */
+  const REPORT_REASONS = ["spam", "misleading", "offensive", "violent", "copyright", "broken", "other"];
+  function reportDialog({ kind, id, title = "", onDone } = {}) {
+    const me = getSession()?.member_id;
+    if (!me) {
+      location.href = `./login.html?next=${encodeURIComponent(`${location.pathname.replace(/^\//, "")}${location.search}${location.hash}`)}`;
+      return;
+    }
+    document.querySelector(".rep-modal")?.remove();
+    const wrap = document.createElement("div");
+    wrap.className = "rep-modal";
+    wrap.innerHTML = `
+      <form class="glass rep-dialog" role="dialog" aria-modal="true" aria-labelledby="rep-title" novalidate>
+        <h2 id="rep-title">${escapeHtml(t(`rep.title.${kind}`))}</h2>
+        ${title ? `<p class="rep-what" dir="auto">${escapeHtml(title)}</p>` : ""}
+        <fieldset class="rep-reasons">
+          <legend>${escapeHtml(t("rep.why"))}</legend>
+          ${REPORT_REASONS.map((r, i) => `<label class="rep-reason"><input type="radio" name="rep-r" value="${r}" ${i === 0 ? "checked" : ""} /> <span>${escapeHtml(t(`rep.r.${r}`))}</span></label>`).join("")}
+        </fieldset>
+        <label class="field-label" for="rep-note">${escapeHtml(t("rep.note"))}</label>
+        <textarea id="rep-note" rows="3" maxlength="500" placeholder="${escapeHtml(t("rep.notePh"))}"></textarea>
+        <p class="rep-hint">${escapeHtml(t("rep.hint"))}</p>
+        <p class="rep-msg" role="alert"></p>
+        <div class="rep-acts">
+          <button class="btn btn-sm btn-ghost" type="button" data-rep-close>${escapeHtml(t("common.cancel"))}</button>
+          <button class="btn btn-sm btn-danger" type="submit">${escapeHtml(t("rep.send"))}</button>
+        </div>
+      </form>`;
+    document.body.appendChild(wrap);
+    const form = wrap.querySelector("form");
+    const opener = document.activeElement;
+    const close = (ok = false) => {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.remove();
+      if (opener && document.contains(opener)) opener.focus();
+      if (typeof onDone === "function") onDone(ok);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close(false);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    wrap.addEventListener("mousedown", (e) => {
+      if (e.target === wrap) close(false);
+    });
+    form.addEventListener("click", (e) => {
+      if (e.target.closest("[data-rep-close]")) close(false);
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = form.querySelector('button[type="submit"]');
+      const msg = form.querySelector(".rep-msg");
+      btn.disabled = true;
+      let res = null;
+      try {
+        res = await rpc("content_report", {
+          p_member: String(me), p_kind: kind, p_id: String(id || ""),
+          p_reason: form.querySelector('input[name="rep-r"]:checked')?.value || "other",
+          p_note: form.querySelector("#rep-note").value.trim(),
+        });
+      } catch {
+        res = null;
+      }
+      btn.disabled = false;
+      if (res?.ok && res.data?.ok) {
+        toast(t("rep.sent"));
+        close(true);
+        return;
+      }
+      const reason = res?.status === 404 || res?.data?.code === "PGRST202" ? "setup" : res?.data?.reason || "failed";
+      if (reason === "already") {
+        toast(t("rep.already"));
+        close(true);
+        return;
+      }
+      msg.textContent = t({ own: "rep.own", limit: "rep.limit", not_found: "rep.notFound", member: "rep.member", note: "rep.noteLong", setup: "rep.setup" }[reason] || "rep.failed");
+    });
+    form.querySelector('input[name="rep-r"]')?.focus();
+  }
+
   window.CineAura = {
     API_KEY,
     API,
@@ -2738,14 +4801,39 @@
     sortLinksForViewer,
     countLinkClick,
     stableGuestId,
+    reportDialog,
     sumColumn,
     detectGeo,
     manualCountry,
     currentCountry,
     countryName,
+    countryChoices,
+    setSiteCountry,
+    membership,
+    adFreeFlag,
+    setAdFreeFlag,
     fetchProviderOffers,
     iptvKind,
     iptvM3uUrl,
+    iptvEpgUrl,
+    m3uHeaderEpg,
+    iptvIsFree,
+    iptvOwnedBy,
+    iptvVisibleFilter,
+    iptvVisibleTo,
+    iptvExpiry,
+    iptvTiming,
+    APP_PLATFORMS,
+    appDownloadUrl,
+    appVersion,
+    parseDuration,
+    durationLabel,
+    fetchPlaylistText,
+    parseM3U,
+    cyrb53,
+    m3uRowId,
+    LANG_NAMES,
+    fitHeader,
     iptvDetailRows,
     iptvActionsHtml,
     bindIptvActions,
@@ -2767,16 +4855,55 @@
     primeAvatars,
     hydrateAvatars,
     refreshAvatar,
+    uploadAvatar,
+    avatarPublicUrl,
+    avatarFieldHtml,
+    pictureFieldHtml,
+    wirePictureField,
+    uploadPictures,
+    pictureErrorText,
+    picturePublicUrl,
+    fitPicture,
+    wireAvatarField,
+    planIsPremium,
     profilesByIds,
     profilesByUsernames,
     fetchStaff,
     photo,
     tmdb,
     verifyCode,
+    codeFailure,
+    accountCheck,
+    accountDeadlineText,
+    accountBanText,
+    accountDateText,
+    readCodeLock,
+    recordFailedCode,
+    clearCodeLock,
+    codeLockLeft,
+    CODE_FAIL_MAX,
+    IPTV_LISTS,
+    hasCredentialSlots,
+    fillCredentials,
+    storedIptvLogin,
+    storeIptvLogin,
+    forgetIptvLogin,
+    premiumLogin,
+    premiumUnlock,
+    premiumCodeMessage,
+    navIcon,
+    deviceMac,
+    deviceName,
+    publicIp,
+    DEVICE_TYPES,
+    deviceType,
+    deviceTypeIcon,
+    normalizeMac,
     AGE_TIERS,
     AGE_UNKNOWN,
     AGE_GATE_MIN,
     AGE_NO_PREVIEW,
+    CODE_SCORE_OVER,
     certAge,
     titleCerts,
     titleAge,
@@ -2784,6 +4911,7 @@
     codeAgeTier,
     tierForAge,
     ageGate,
+    titleNeedsCode,
     getStoredCode,
     setStoredCode,
     clearStoredCode,
@@ -2801,16 +4929,38 @@
     sha256,
     supabaseRequest,
     POINT_RATES,
+    STORED_POINT_COLUMNS,
+    siteLink,
+    pointValue,
+    moneyText,
+    PATREON_DEFAULT,
     countRows,
     pointParts,
     pointBreakdown,
     pointsEarned,
+    WATCH_TIERS,
+    POINT_LEVELS,
+    watchTier,
+    pointLevel,
+    levelMultiplier,
+    levelName,
+    levelInfo,
+    compactPoints,
+    levelHtml,
+    pointRowHtml,
     memberPoints,
     memberSpends,
     rpc,
     pointsHtml,
     normalizeAccountStatus,
     notifyFollowers,
+    NOTES_PAGE,
+    noteTitle,
+    noteHref,
+    noteWhen,
+    noteFullDate,
+    noteTextHtml,
+    markNotesRead,
     showAuthGate,
     hideAuthGate,
     syncAuthGate,

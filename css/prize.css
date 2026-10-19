@@ -291,6 +291,8 @@ body.pz-modal-open { overflow: hidden; }
 .pz-cond-n { margin-inline-start: auto; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 .pz-terms-extra { margin-top: 8px; }
 .pz-lock-reason { color: #ff9b9b; font-size: 13.5px; text-align: center; margin: 0; }
+/* a code applied (the prize's coupon, a prize code, a private code filled in by itself): good news */
+.pz-lock-reason.pz-coupon-on { color: #86e0ad; }
 
 /* People lists */
 .pz-people-h { font-size: 17px; margin: 24px 0 10px; display: flex; align-items: center; gap: 8px; }
@@ -383,4 +385,25 @@ body.pz-modal-open { overflow: hidden; }
 
 /* Discount coupon of the gift mode */
 .pz-coupon { display: flex; gap: 8px; align-items: center; justify-content: center; margin: 4px 0 10px; flex-wrap: wrap; }
-.pz-coupon input { min-width: 0; flex: 1 1 160px; max-width: 260px; text-transform: uppercase; }
+/* a private prize code of the member, filled in by itself (Panel > Membership > Prize packages) */
+.pz-pack-auto { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; }
+.pz-pack-auto .btn { padding-block: 4px; }
+.pz-pack-use { display: flex; margin: -4px auto 10px; }
+.pz-coupon input {
+  min-width: 0;
+  flex: 1 1 160px;
+  max-width: 260px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  outline: none;
+}
+.pz-coupon input::placeholder { text-transform: none; letter-spacing: 0; }
+.pz-coupon input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(1, 180, 228, 0.14); }

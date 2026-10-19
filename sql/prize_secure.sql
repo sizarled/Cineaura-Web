@@ -22,6 +22,8 @@
 -- ORDER: always run this file LAST, and run it again after re-running panel.sql,
 -- prize_center.sql, prize_modes.sql or prize_admin.sql (those files re-create the old
 -- open policies that this file removes). Make sure profile.sql is installed for notifications.
+-- The review of prize claims (Panel > Prizes > Prize claims) lives in prize_claims.sql,
+-- which is run after this file; re-running this file keeps it working.
 --
 -- NOT covered here (needs Supabase Auth, a separate migration): member identity.
 -- Members still sign in with the custom login, so the member RPCs trust the member id
@@ -263,10 +265,12 @@ begin
   select * into m from public.members where member_id = p_member;
   if not found then return 0; end if;
   note_title := case when p_kind = 'prize_win' then 'Prize winner' else 'Prize claim request' end;
+  -- a claim opens Panel > Prizes > Prize claims (sql/prize_claims.sql)
   insert into public.notifications (member_id, kind, title, body, href, from_id, from_username)
   select s.member_id, p_kind, note_title,
          coalesce(nullif(m.username, ''), p_member) || ' · ' || p.title,
-         './Panel.html?section=prizes', p_member, coalesce(m.username, '')
+         case when p_kind = 'prize_claim' then './Panel.html?section=prizes&tab=claims' else './Panel.html?section=prizes' end,
+         p_member, coalesce(m.username, '')
   from public.staff s
   where s.role in ('super', 'admin', 'moderator')
     and coalesce(s.member_id, '') <> ''
@@ -309,15 +313,33 @@ end $$;
 revoke all on function public._notify_prize_staff(bigint, text, text) from public, anon, authenticated;
 revoke all on function public._notify_new_prize(bigint) from public, anon, authenticated;
 
+-- The points formula. Same body in prize_secure.sql, point_levels.sql, point_codes.sql,
+-- content.sql and market.sql (kept identical, so the file run last always leaves the same formula).
 create or replace function public._points(p_member text) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare
-  pr record; earned int; sh int; pl int; rc int; cm int; lk int := 0;
-  dl int := 0; clicks int; has_dl boolean;
+  pr record; earned bigint; watch bigint; vids bigint; codes bigint; mk bigint; mr bigint; sh int; pl int; rc int; cm int; lk int := 0;
+  dl bigint := 0; clicks bigint; has_dl boolean;
 begin
-  select coalesce(private_minutes, 0) + coalesce(public_minutes, 0) as mins, coalesce(points_spent, 0) as spent into pr
-  from public.profiles where member_id = p_member;
-  if not found then return jsonb_build_object('earned', 0, 'spent', 0, 'available', 0); end if;
+  select coalesce(p.private_minutes, 0) + coalesce(p.public_minutes, 0) as mins,
+         coalesce(p.points_spent, 0) as spent,
+         to_jsonb(p) ->> 'watch_points' as wp,
+         to_jsonb(p) ->> 'content_points' as vp,
+         to_jsonb(p) ->> 'code_points' as cp,
+         to_jsonb(p) ->> 'market_points' as mp,
+         to_jsonb(p) ->> 'market_ref_points' as mrp
+    into pr
+  from public.profiles p where p.member_id = p_member;
+  if not found then return jsonb_build_object('earned', 0, 'spent', 0, 'available', 0, 'watch', 0, 'videos', 0, 'codes', 0, 'market', 0, 'market_refs', 0); end if;
+  -- watch points: stored by sql/point_levels.sql (country tier x level); before that file, 1 a minute
+  watch := case when pr.wp is null then pr.mins else floor(pr.wp::numeric)::bigint end;
+  -- videos (sql/content.sql): minutes watched, shares, comments and positive recommendations
+  vids := floor(coalesce(pr.vp, '0')::numeric)::bigint;
+  -- points codes (sql/point_codes.sql)
+  codes := floor(coalesce(pr.cp, '0')::numeric)::bigint;
+  -- the market (sql/market.sql): sales of the member's store (less the share commissions they pay), and the commissions of the sales made through their share links
+  mk := floor(coalesce(pr.mp, '0')::numeric)::bigint;
+  mr := floor(coalesce(pr.mrp, '0')::numeric)::bigint;
   select count(*) into sh from public.post_events where kind = 'share' and network = 'referral' and member_id = p_member;
   select count(*) into pl from public.playlists where owner_id = p_member and visibility in ('public', 'exclusive');
   select count(*) into rc from public.posts where owner_id = p_member and kind in ('recommendation', 'reclist') and visibility in ('public', 'exclusive');
@@ -352,8 +374,9 @@ begin
       dl := dl + coalesce(clicks, 0);
     end if;
   end if;
-  earned := pr.mins + sh / 5 + pl / 10 + rc / 50 + cm / 100 + lk / 500 + dl / 1000;
-  return jsonb_build_object('earned', earned, 'spent', pr.spent, 'available', greatest(0, earned - pr.spent));
+  earned := watch + vids + codes + mk + mr + sh / 5 + pl / 10 + rc / 50 + cm / 100 + lk / 500 + dl / 1000;
+  return jsonb_build_object('earned', earned, 'spent', pr.spent, 'available', greatest(0, earned - pr.spent),
+                            'watch', watch, 'videos', vids, 'codes', codes, 'market', mk, 'market_refs', mr);
 end $$;
 
 -- Locks the profile row, checks the balance, spends and writes the spending ledger
@@ -366,7 +389,7 @@ begin
   perform 1 from public.profiles where member_id = p_member for update;
   if not found then return false; end if;
   pts := public._points(p_member);
-  if (pts->>'available')::int < p_amount then return false; end if;
+  if (pts->>'available')::bigint < p_amount then return false; end if;
   update public.profiles set points_spent = coalesce(points_spent, 0) + p_amount where member_id = p_member;
   insert into public.point_spends (member_id, amount, prize_title, mode) values (p_member, p_amount, coalesce(p_prize, ''), coalesce(p_mode, ''));
   return true;
@@ -435,7 +458,7 @@ end $$;
 -- ------------------------------------------------------------------ 3. member RPCs
 create or replace function public.prize_coupon_check(p_member text, p_prize bigint, p_code text)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare b public.prize_code_blocks; c public.prize_codes; m public.members; valid boolean := false; f int;
+declare b public.prize_code_blocks; c public.prize_codes; m public.members; valid boolean := false; f int; pk jsonb;
 begin
   select * into m from public.members where member_id = p_member;
   if not found then return jsonb_build_object('ok', false, 'error', 'member'); end if;
@@ -453,7 +476,20 @@ begin
   if valid then
     insert into public.prize_code_blocks (member_id, fails, blocked_until) values (p_member, 0, null)
     on conflict (member_id) do update set fails = 0, blocked_until = null, updated_at = now();
-    return jsonb_build_object('ok', true, 'id', c.id, 'code', c.code, 'percent', c.percent);
+    return jsonb_build_object('ok', true, 'kind', 'coupon', 'id', c.id, 'code', c.code, 'percent', c.percent);
+  end if;
+  -- a prize code of Panel > Packages (sql/packages.sql): points off the cost, in every mode. A real
+  -- code this member cannot use says why, without counting as a wrong code.
+  if c.id is null and to_regprocedure('public._prize_pack_check(text, text)') is not null then
+    pk := public._prize_pack_check(p_member, p_code);
+    if coalesce((pk->>'ok')::boolean, false) then
+      insert into public.prize_code_blocks (member_id, fails, blocked_until) values (p_member, 0, null)
+      on conflict (member_id) do update set fails = 0, blocked_until = null, updated_at = now();
+      return jsonb_build_object('ok', true, 'kind', 'pack', 'code', pk->>'code', 'points_off', (pk->>'points_off')::int);
+    end if;
+    if pk->>'reason' <> 'not_found' then
+      return jsonb_build_object('ok', false, 'error', 'pack', 'reason', pk->>'reason', 'why', pk->>'why');
+    end if;
   end if;
   f := coalesce(b.fails, 0) + 1;
   if f >= 3 then
@@ -471,7 +507,7 @@ returns jsonb language plpgsql security definer set search_path = public as $$
 declare
   m public.members; pz public.prizes; md public.prize_modes; c public.prize_codes;
   w record; today date := current_date; cost int; base int; cap int; taken int;
-  lim int; per text; used int; entry_id bigint; st text; drawn boolean := false; names text[];
+  lim int; per text; used int; entry_id bigint; st text; drawn boolean := false; names text[]; pk jsonb; pack text;
 begin
   if p_mode not in ('gift', 'challenge', 'lottery') then return jsonb_build_object('ok', false, 'error', 'mode'); end if;
   -- Serialise every join of the same member (also guards the balance).
@@ -533,14 +569,30 @@ begin
 
   base := coalesce(md.points_cost, 0);
   cost := base;
-  if p_code is not null and trim(p_code) <> '' and p_mode = 'gift' then
-    select * into c from public.prize_codes where prize_id = p_prize and lower(code) = lower(trim(p_code)) for update;
-    if not found or not c.active or (c.expires_at is not null and c.expires_at <= now())
-       or (c.max_uses is not null and c.uses >= c.max_uses) or not public._aud_ok(public._code_aud(c), m)
-       or exists (select 1 from public.prize_code_uses where code_id = c.id and member_id = p_member) then
+  if p_code is not null and trim(p_code) <> '' then
+    -- the discount coupon of this prize (gift mode) …
+    if p_mode = 'gift' then
+      select * into c from public.prize_codes where prize_id = p_prize and lower(code) = lower(trim(p_code)) for update;
+    end if;
+    if c.id is not null then
+      if not c.active or (c.expires_at is not null and c.expires_at <= now())
+         or (c.max_uses is not null and c.uses >= c.max_uses) or not public._aud_ok(public._code_aud(c), m)
+         or exists (select 1 from public.prize_code_uses where code_id = c.id and member_id = p_member) then
+        return jsonb_build_object('ok', false, 'error', 'coupon');
+      end if;
+      cost := greatest(0, ceil(base * (100 - c.percent) / 100.0)::int);
+    -- … or a prize code of Panel > Packages (sql/packages.sql): its points off the cost, in every mode
+    elsif to_regprocedure('public._prize_pack_check(text, text)') is not null then
+      pk := public._prize_pack_check(p_member, p_code);
+      if not coalesce((pk->>'ok')::boolean, false) then
+        return jsonb_build_object('ok', false, 'error', 'coupon', 'reason', pk->>'reason', 'why', pk->>'why');
+      end if;
+      if base <= 0 then return jsonb_build_object('ok', false, 'error', 'coupon', 'reason', 'free'); end if;
+      pack := pk->>'code';
+      cost := greatest(0, base - (pk->>'points_off')::int);
+    else
       return jsonb_build_object('ok', false, 'error', 'coupon');
     end if;
-    cost := greatest(0, ceil(base * (100 - c.percent) / 100.0)::int);
   end if;
 
   if not public._spend_prize(p_member, cost, pz.title, p_mode) then return jsonb_build_object('ok', false, 'error', 'points', 'need', cost); end if;
@@ -554,6 +606,9 @@ begin
   if c.id is not null then
     insert into public.prize_code_uses (code_id, prize_id, member_id, points_saved) values (c.id, p_prize, p_member, base - cost);
     update public.prize_codes set uses = uses + 1 where id = c.id;
+  end if;
+  if pack is not null then
+    perform public._prize_pack_take(p_member, pack, p_prize, p_mode, entry_id, base - cost);
   end if;
   if p_mode = 'gift' then
     insert into public.winners (prize_title, member_id, minutes_paid, group_name, ends_at)
@@ -579,9 +634,12 @@ end $$;
 
 -- A selected winner can ask the team to arrange prize fulfillment. Locking the
 -- entry makes this idempotent: repeated clicks produce only one staff alert.
+-- With sql/prize_claims.sql installed, the claim also gets its review row
+-- (Panel > Prizes > Prize claims), and a member whose earlier claim was rejected
+-- with a block cannot claim until the block ends.
 create or replace function public.prize_request_claim(p_member text, p_entry bigint)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare e public.prize_mode_entries;
+declare e public.prize_mode_entries; blocked timestamptz; claims boolean := to_regclass('public.prize_claims') is not null;
 begin
   select * into e from public.prize_mode_entries
   where id = p_entry and member_id = p_member for update;
@@ -590,7 +648,18 @@ begin
   if e.claim_requested_at is not null then
     return jsonb_build_object('ok', true, 'already', true, 'requested_at', e.claim_requested_at);
   end if;
+  if claims then
+    select max(restricted_until) into blocked from public.prize_claims
+    where member_id = p_member and status = 'rejected' and lifted_at is null and restricted_until > now();
+    if blocked is not null then return jsonb_build_object('ok', false, 'error', 'claim_restricted', 'until', blocked); end if;
+  end if;
   update public.prize_mode_entries set claim_requested_at = now() where id = e.id;
+  if claims then
+    insert into public.prize_claims (member_id, prize_id, prize_title, mode, entry_id, points_paid)
+    select p_member, e.prize_id, coalesce((select title from public.prizes where id = e.prize_id), ''),
+           coalesce(e.mode, ''), e.id, coalesce(e.points_paid, 0)
+    on conflict do nothing;
+  end if;
   perform public._notify_prize_staff(e.prize_id, p_member, 'prize_claim');
   return jsonb_build_object('ok', true, 'already', false);
 end $$;
@@ -659,6 +728,8 @@ begin
 end $$;
 
 -- Prizes that have no subscription modes (dashboard "claim"). Prizes with modes are joined with prize_join.
+-- With sql/prize_claims.sql installed: a blocked member cannot claim, a prize whose claim
+-- was rejected cannot be claimed again, and every claim gets its review row.
 create or replace function public.prize_claim_simple(p_member text, p_prize bigint)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
@@ -667,10 +738,21 @@ declare
   pr public.profiles;
   today date := current_date;
   yrs int;
+  wid bigint;
+  blocked timestamptz;
+  claims boolean := to_regclass('public.prize_claims') is not null;
 begin
   select * into pr from public.profiles where member_id = p_member for update;
   select * into m from public.members where member_id = p_member;
   if not found or m.status <> 'active' then return jsonb_build_object('ok', false, 'error', 'inactive'); end if;
+  if claims then
+    select max(restricted_until) into blocked from public.prize_claims
+    where member_id = p_member and status = 'rejected' and lifted_at is null and restricted_until > now();
+    if blocked is not null then return jsonb_build_object('ok', false, 'error', 'claim_restricted', 'until', blocked); end if;
+    if exists (select 1 from public.prize_claims where member_id = p_member and prize_id = p_prize and status = 'rejected') then
+      return jsonb_build_object('ok', false, 'error', 'claim_rejected');
+    end if;
+  end if;
   select * into pz from public.prizes where id = p_prize for update;
   if not found or coalesce(pz.status, 'active') = 'ended' then return jsonb_build_object('ok', false, 'error', 'closed'); end if;
   if exists (select 1 from public.prize_modes where prize_id = p_prize) then return jsonb_build_object('ok', false, 'error', 'use_modes'); end if;
@@ -707,8 +789,14 @@ begin
     return jsonb_build_object('ok', false, 'error', 'points', 'need', pz.minutes_required);
   end if;
   insert into public.winners (prize_title, member_id, minutes_paid, group_name, claim_requested_at)
-  values (pz.title, p_member, coalesce(pz.minutes_required, 0), coalesce(pz.group_name, ''), now());
+  values (pz.title, p_member, coalesce(pz.minutes_required, 0), coalesce(pz.group_name, ''), now())
+  returning id into wid;
   update public.prizes set winners_count = coalesce(winners_count, 0) + 1 where id = p_prize;
+  if claims then
+    insert into public.prize_claims (member_id, prize_id, prize_title, mode, winner_id, points_paid)
+    values (p_member, p_prize, pz.title, 'claim', wid, coalesce(pz.minutes_required, 0))
+    on conflict do nothing;
+  end if;
   perform public._notify_prize_staff(pz.id, p_member, 'prize_claim');
   return jsonb_build_object('ok', true, 'cost', coalesce(pz.minutes_required, 0));
 end $$;
@@ -946,13 +1034,17 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
+-- 'add' answers the id of the new group too (its picture is uploaded under that id:
+-- sql/image_uploads.sql).
 create or replace function public.prize_admin_group(p_token text, p_op text, p_id bigint, p_name text, p_thumb text, p_visible boolean)
 returns jsonb language plpgsql security definer set search_path = public as $$
+declare gid bigint;
 begin
   perform public._staff_prizes(p_token);
   if p_op = 'add' then
     if coalesce(trim(p_name), '') = '' then return jsonb_build_object('ok', false, 'error', 'name'); end if;
-    insert into public.prize_groups (name, thumb, visible) values (trim(p_name), coalesce(p_thumb, ''), true);
+    insert into public.prize_groups (name, thumb, visible) values (trim(p_name), coalesce(p_thumb, ''), true) returning id into gid;
+    return jsonb_build_object('ok', true, 'id', gid);
   elsif p_op = 'visible' then
     update public.prize_groups set visible = coalesce(p_visible, true) where id = p_id;
   elsif p_op = 'delete' then
@@ -1090,8 +1182,11 @@ end $$;
 do $$
 declare f record;
 begin
+  -- (not _account_ban_due of account_deadline.sql: the trigger of the members table runs as whoever
+  -- writes a member — the activation page, the Panel — and calls it; it only does date arithmetic)
   for f in select p.oid::regprocedure as sig, p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and (p.proname like '\_%' or p.proname in ('prize_run_scheduled'))
+             and p.proname <> '_account_ban_due'
   loop
     execute format('revoke all on function %s from public, anon, authenticated', f.sig);
   end loop;
@@ -1108,5 +1203,13 @@ end $$;
 
 revoke all on function public._notify_prize_staff(bigint, text, text) from public, anon, authenticated;
 revoke all on function public._notify_new_prize(bigint) from public, anon, authenticated;
+-- an older version of this file took it away from the members' trigger (sql/account_deadline.sql):
+-- given back, or members could no longer be changed by the activation page and the Panel
+do $$
+begin
+  if to_regprocedure('public._account_ban_due(text, timestamptz, timestamptz, timestamptz, timestamptz)') is not null then
+    grant execute on function public._account_ban_due(text, timestamptz, timestamptz, timestamptz, timestamptz) to public, anon, authenticated;
+  end if;
+end $$;
 
 notify pgrst, 'reload schema';

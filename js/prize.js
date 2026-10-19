@@ -23,6 +23,7 @@
     counts: {},
     mine: new Set(),
     winners: [],
+    claims: [], // the member's prize claims and their review (sql/prize_claims.sql)
     entryRows: [],
     schemaOk: true,
     entriesOk: true,
@@ -103,28 +104,58 @@
     });
     state.mine = new Set();
     state.winners = [];
+    state.claims = [];
     const id = sess()?.member_id;
     if (id) {
-      const [mine, wins] = await Promise.all([
+      const [mine, wins, claims] = await Promise.all([
         state.entriesOk
           ? supabaseRequest(`/rest/v1/prize_entries?member_id=eq.${restValue(id)}&select=prize_id`)
           : Promise.resolve({ ok: false, data: null }),
         supabaseRequest(`/rest/v1/winners?member_id=eq.${restValue(id)}&select=*`),
+        R?.loadClaims ? R.loadClaims(id) : Promise.resolve({ rows: [] }),
       ]);
       if (mine.ok && Array.isArray(mine.data)) state.mine = new Set(mine.data.map((r) => r.prize_id));
       if (wins.ok && Array.isArray(wins.data)) state.winners = wins.data;
+      state.claims = claims.rows || [];
     }
+  }
+
+  async function reloadClaims() {
+    const id = sess()?.member_id;
+    if (!id || !R?.loadClaims) return;
+    const res = await R.loadClaims(id);
+    if (res.ok) state.claims = res.rows;
+  }
+
+  // ---------- prize claims (sql/prize_claims.sql) ----------
+  // After "Claim prize" the button shows the claim's state: Claim submitted, Claim
+  // under review, Claim accepted or Claim rejected (with the reason and the action
+  // the team took). A member whose claim was rejected with a block cannot claim
+  // any prize until the block ends.
+  const claimBlock = () => (R?.claimBlock ? R.claimBlock(state.claims) : null);
+  const blockText = (until) => t("pzc.blocked", { d: R.claimWhen(typeof until === "number" ? new Date(until).toISOString() : until) });
+
+  function claimStateHtml(c) {
+    const st = R.claimState(c);
+    const mark = st === "rejected" ? "✕ " : st === "review" ? "" : "✓ ";
+    return `<button class="btn btn-lg btn-primary pz-sub ${st === "rejected" ? "is-locked" : "is-done"}" type="button" disabled data-claim-state="${st}">${mark}${escapeHtml(t(`pzc.st.${st}`))}</button>
+      <p class="pz-lock-reason${st === "accepted" ? " pz-success-note" : ""}">${escapeHtml(t(`pzc.hint.${st}`))}</p>
+      ${R.claimVerdictHtml(c)}
+      <p class="pz-lock-reason"><a class="pzc-follow" href="./dashboard.html#claims">${escapeHtml(t("pzc.follow"))}</a></p>`;
   }
 
   async function loadMemberContext() {
     state.ctx = null;
     const id = sess()?.member_id;
     if (!id) return;
-    const [m, pr, h] = await Promise.all([
+    const [m, pr, h, pk] = await Promise.all([
       supabaseRequest(`/rest/v1/members?member_id=eq.${restValue(id)}&select=*`),
       supabaseRequest(`/rest/v1/profiles?member_id=eq.${restValue(id)}&select=*`),
       supabaseRequest(`/rest/v1/hestory?visitor_id=eq.${restValue(id)}&select=tmdb_id,media_type`),
+      C.rpc("prize_pack_mine", { p_member: id }).catch(() => null),
     ]);
+    // the member's private prize codes (Panel > Membership > Prize packages): they fill themselves in
+    state.myPacks = pk?.ok && Array.isArray(pk.data?.items) ? pk.data.items : [];
     const member = m.ok && Array.isArray(m.data) ? m.data[0] : null;
     if (!member) return;
     const profile = pr.ok && Array.isArray(pr.data) ? pr.data[0] || {} : {};
@@ -469,12 +500,17 @@
     const cost = Math.max(0, Number(p.minutes_required || 0));
     const points = Number(state.ctx?.points || 0);
     const winner = state.winners.find((w) => String(w.prize_title || "") === String(p.title || ""));
-    const claimed = Boolean(winner);
+    const claim = R?.claimForPrize ? R.claimForPrize(state.claims, p) : null;
+    const rejected = R?.claimState?.(claim) === "rejected"; // the prize was taken back: it cannot be claimed again
+    const claimed = Boolean(winner) || rejected;
     const claimRequested = Boolean(winner?.claim_requested_at);
+    const block = claimed ? null : claimBlock();
     const soldOut = p.quantity != null && Number(p.winners_count || 0) >= Number(p.quantity);
-    const can = st === "open" && !claimed && !soldOut && eligible(p) && points >= cost;
+    const can = st === "open" && !claimed && !block && !soldOut && eligible(p) && points >= cost;
     let btn;
-    if (claimed) {
+    if (claim && claimed) {
+      btn = claimStateHtml(claim);
+    } else if (claimed) {
       btn = `<button class="btn btn-lg btn-primary pz-sub is-done" type="button" disabled>✓ ${escapeHtml(claimRequested ? t("prize.claimRequested") : t("prize.status.winner"))}</button>`;
     } else if (can) {
       btn = `<button class="btn btn-lg btn-primary pz-sub" type="button" data-claim-simple>${escapeHtml(t("prize.claim"))} · ${escapeHtml(t("prize.points", { n: cost }))}</button>`;
@@ -482,9 +518,10 @@
       btn = `<button class="btn btn-lg btn-primary pz-sub is-locked" type="button" aria-disabled="true" data-locked>${escapeHtml(t("prize.claim"))}</button>`;
     }
     let reason = "";
-    if (claimed && claimRequested) reason = t("prize.claimRequestSent");
+    if (claimed && claimRequested && !claim) reason = t("prize.claimRequestSent");
     else if (!claimed && !can) {
-      if (soldOut) reason = t("prize.soldOut");
+      if (block) reason = blockText(block.until);
+      else if (soldOut) reason = t("prize.soldOut");
       else if (st === "open" && eligible(p) && points < cost) reason = t("prize.needPoints", { need: cost, have: points });
       else reason = lockReason(p);
     }
@@ -612,6 +649,8 @@
   }
 
   function simpleLockReason(p) {
+    const block = claimBlock();
+    if (block) return blockText(block.until);
     const st = statusOf(p);
     if (st === "ended") return t("prize.closed");
     if (st === "upcoming") return t("prize.notStarted");
@@ -632,7 +671,7 @@
       if (!btn) return;
       const s = sess();
       if (!s?.member_id || !state.ctx) return toast(t("prize.signinNeeded"));
-      if (statusOf(p) !== "open" || !eligible(p)) return toast(simpleLockReason(p));
+      if (claimBlock() || statusOf(p) !== "open" || !eligible(p)) return toast(simpleLockReason(p));
       const cost = Math.max(0, Number(p.minutes_required || 0));
       if (Number(state.ctx.points || 0) < cost) return toast(simpleLockReason(p));
       if (!confirm(t("prize.confirmClaim", { n: cost, title: p.title }))) return;
@@ -651,6 +690,10 @@
       } else if (result.data?.error === "already") {
         await reloadSimpleWinners();
         toast(t("prize.status.winner"));
+      } else if (result.data?.error === "claim_restricted") {
+        toast(blockText(result.data.until));
+      } else if (result.data?.error === "claim_rejected") {
+        toast(t("pzc.rejectedPrize"));
       } else if (result.data?.error === "points") {
         toast(t("prize.needPoints", { need: result.data.need ?? cost, have: state.ctx.points }));
       } else if (["incomplete", "audience", "inactive"].includes(result.data?.error)) {
@@ -658,6 +701,7 @@
       } else {
         toast(t("prize.subFail"));
       }
+      await reloadClaims();
       await refreshDetail(p);
     };
   }
@@ -700,11 +744,13 @@
       const sub = e.target.closest("[data-sub-mode]");
       if (sub) return subscribeMode(p, modesOf(p).find((row) => modeKey(row) === sub.dataset.subMode));
       const claim = e.target.closest("[data-claim-challenge]");
-      if (claim) return claimChallenge(p, modesOf(p).find((row) => String(row.id) === String(claim.dataset.claimChallenge)));
+      if (claim) return claimChallenge(p, modeOfEntry(p, claim.dataset.claimChallenge));
       const request = e.target.closest("[data-request-claim]");
-      if (request) return requestPrizeClaim(p, modesOf(p).find((row) => String(row.id) === String(request.dataset.requestClaim)));
+      if (request) return requestPrizeClaim(p, modeOfEntry(p, request.dataset.requestClaim));
       const coupon = e.target.closest("[data-coupon-apply]");
       if (coupon) return applyCoupon(p, modesOf(p).find((row) => modeKey(row) === coupon.dataset.couponApply), coupon.parentElement.querySelector("[data-coupon-input]")?.value);
+      const pack = e.target.closest("[data-pack-keep], [data-pack-use]");
+      if (pack) return keepPack(p, modesOf(p).find((row) => modeKey(row) === (pack.dataset.packKeep || pack.dataset.packUse)), "packKeep" in pack.dataset);
       const withdrawButton = e.target.closest("[data-withdraw]");
       if (withdrawButton) return withdraw(p, modesOf(p).find((row) => modeKey(row) === withdrawButton.dataset.withdraw));
     };
@@ -768,7 +814,8 @@
     dates: [], // per-country windows (prize_country_dates)
     limits: null, // participation limits per tier
     act: {}, // mode_id -> what the signed-in member did since joining
-    coupon: {}, // mode_id -> applied discount { id, code, percent }
+    coupon: {}, // mode_id -> applied code: { kind: "coupon", id, code, percent } | { kind: "pack", code, off } (Panel > Packages > Prizes)
+    keepPack: {}, // mode_id -> true: the member keeps their private prize code for another prize
     activityLoaded: new Set(), // entries whose live activity counts were loaded
     open: null, // prize row with the dialog open
     tab: "", // active mode key in the dialog
@@ -862,6 +909,9 @@
     return Boolean(id && e && String(e.member_id || "").toLowerCase() === String(id).toLowerCase());
   };
   const myEntry = (p, m) => entriesOf(p, m).find(isMine) || null;
+  // "Claim prize" / "Confirm my win" carry the id of the member's entry: the mode
+  // is the one that entry belongs to (an entry id is not a mode id).
+  const modeOfEntry = (p, entryId) => modesOf(p).find((m) => String(myEntry(p, m)?.id ?? "") === String(entryId)) || null;
   const statusLabel = (e) => {
     const s = String(e?.status || "competitor").toLowerCase();
     return ["winner", "excluded", "withdrawn"].includes(s) ? t(`prize.status.${s}`) : t("prize.status.competitor");
@@ -994,12 +1044,26 @@
     return { can: true, reason: "" };
   }
 
-  // Points to pay after the coupon of this mode (if any).
+  // Points to pay after the code of this mode (if any): the prize's coupon takes a percentage off,
+  // a prize code of Panel > Packages a number of points.
   function costOf(m) {
     const base = Number(m.points_cost || 0);
-    const c = center.coupon[m.id];
-    return c ? Math.max(0, Math.ceil((base * (100 - c.percent)) / 100)) : base;
+    const c = codeOf(m);
+    if (!c) return base;
+    if (c.kind === "pack") return Math.max(0, base - Number(c.off || 0));
+    return Math.max(0, Math.ceil((base * (100 - c.percent)) / 100));
   }
+  // A private prize code of the member (Panel > Membership > Prize packages, private: no serial to
+  // type) fills itself in on a mode that costs points — the biggest first — unless they keep it.
+  function autoPack(m) {
+    if (center.coupon[m.id] || center.keepPack[m.id] || !(Number(m.points_cost || 0) > 0)) return null;
+    const best = (state.myPacks || [])[0];
+    return best ? { kind: "pack", code: best.code, off: Number(best.points_off) || 0, auto: true } : null;
+  }
+  const codeOf = (m) => center.coupon[m.id] || autoPack(m);
+  // (a code keeps its order in a right-to-left line: LRI … PDI)
+  const isoCode = (code) => `\u2066${code}\u2069`;
+  const couponLine = (c) => (c.kind === "pack" ? t("pzm.packApplied", { code: isoCode(c.code), n: c.off }) : t("pzm.couponApplied", { code: isoCode(c.code), n: c.percent }));
 
   function constraintHtml(p, m) {
     const k = modeKey(m);
@@ -1217,13 +1281,20 @@
     const challenge = mine && key === "challenge" ? challengeClaimState(p, m, mine) : null;
     let btn;
     let note = "";
+    const claim = mine && R?.claimForEntry ? R.claimForEntry(state.claims, mine.id) : null;
     if (mine) {
       const status = String(mine.status || "competitor").toLowerCase();
-      if (status === "winner") {
+      const block = status === "winner" && !mine.claim_requested_at ? claimBlock() : null;
+      if (claim) {
+        btn = claimStateHtml(claim);
+      } else if (status === "winner") {
         const message = key === "challenge" ? t("pzm.challengeWon") : key === "lottery" ? t("prize.drawWon") : t("prize.giftWon");
         if (mine.claim_requested_at) {
           btn = `<button class="btn btn-lg btn-primary pz-sub is-done" type="button" disabled>✓ ${escapeHtml(t("prize.claimRequested"))}</button>`;
           note = `<p class="pz-lock-reason pz-success-note">${escapeHtml(t("prize.claimRequestSent"))}</p>`;
+        } else if (block) {
+          btn = `<button class="btn btn-lg btn-primary pz-sub is-locked" type="button" data-request-claim="${escapeHtml(String(mine.id))}" aria-disabled="true">${escapeHtml(t("prize.claim"))}</button>`;
+          note = `<p class="pz-lock-reason pz-success-note">${escapeHtml(message)}</p><p class="pz-lock-reason">${escapeHtml(blockText(block.until))}</p>`;
         } else {
           btn = `<button class="btn btn-lg btn-primary pz-sub" type="button" data-request-claim="${escapeHtml(String(mine.id))}">${escapeHtml(t("prize.claim"))}</button>`;
           note = `<p class="pz-lock-reason pz-success-note">${escapeHtml(message)}</p>`;
@@ -1248,12 +1319,22 @@
     return `<div class="pz-action">${btn}${note}${!mine && !st.can && st.reason ? `<p class="pz-lock-reason">${escapeHtml(st.reason)}</p>` : ""}</div>`;
   }
 
+  // the code field: every mode that costs points (the prize's coupons: gift only; the prize codes of
+  // Panel > Packages: any mode)
   function couponHtml(p, m) {
-    if (modeKey(m) !== "gift" || myEntry(p, m) || !sess()?.member_id) return "";
-    const c = center.coupon[m.id];
-    if (c) return `<p class="pz-lock-reason">${escapeHtml(t("pzm.couponApplied", { code: c.code, n: c.percent }))}</p>`;
+    if (myEntry(p, m) || !sess()?.member_id) return "";
+    if (modeKey(m) !== "gift" && !(Number(m.points_cost || 0) > 0)) return "";
+    const c = codeOf(m);
+    const key = escapeHtml(modeKey(m));
+    if (c?.auto) {
+      return `<p class="pz-lock-reason pz-coupon-on pz-pack-auto"><span>${escapeHtml(t("pzm.packAuto", { code: isoCode(c.code), n: c.off }))}</span>
+        <button type="button" class="btn btn-sm btn-ghost" data-pack-keep="${key}">${escapeHtml(t("pzm.packKeep"))}</button></p>`;
+    }
+    if (c) return `<p class="pz-lock-reason pz-coupon-on">${escapeHtml(couponLine(c))}</p>`;
+    const mine = center.keepPack[m.id] && Number(m.points_cost || 0) > 0 ? (state.myPacks || [])[0] : null;
     return `<div class="pz-coupon"><input data-coupon-input placeholder="${escapeHtml(t("pzm.couponPh"))}" autocomplete="off" />
-      <button type="button" class="btn btn-sm btn-ghost" data-coupon-apply="${escapeHtml(modeKey(m))}">${escapeHtml(t("pzm.couponApply"))}</button></div>`;
+      <button type="button" class="btn btn-sm btn-ghost" data-coupon-apply="${key}">${escapeHtml(t("pzm.couponApply"))}</button></div>${mine
+        ? `<button type="button" class="btn btn-sm btn-ghost pz-pack-use" data-pack-use="${key}">${escapeHtml(t("pzm.packUse", { n: Number(mine.points_off) || 0 }))}</button>` : ""}`;
   }
 
   function deadlineHtml(p, m) {
@@ -1385,11 +1466,13 @@
         const sub = e.target.closest("[data-sub-mode]");
         if (sub) return subscribeMode(cur, modesOf(cur).find((x) => modeKey(x) === sub.dataset.subMode));
         const claim = e.target.closest("[data-claim-challenge]");
-        if (claim) return claimChallenge(cur, modesOf(cur).find((x) => String(x.id) === String(claim.dataset.claimChallenge)));
+        if (claim) return claimChallenge(cur, modeOfEntry(cur, claim.dataset.claimChallenge));
         const request = e.target.closest("[data-request-claim]");
-        if (request) return requestPrizeClaim(cur, modesOf(cur).find((x) => String(x.id) === String(request.dataset.requestClaim)));
+        if (request) return requestPrizeClaim(cur, modeOfEntry(cur, request.dataset.requestClaim));
         const cp = e.target.closest("[data-coupon-apply]");
         if (cp) return applyCoupon(cur, modesOf(cur).find((x) => modeKey(x) === cp.dataset.couponApply), cp.parentElement.querySelector("[data-coupon-input]")?.value);
+        const pk = e.target.closest("[data-pack-keep], [data-pack-use]");
+        if (pk) return keepPack(cur, modesOf(cur).find((x) => modeKey(x) === (pk.dataset.packKeep || pk.dataset.packUse)), "packKeep" in pk.dataset);
         const wd = e.target.closest("[data-withdraw]");
         if (wd) return withdraw(cur, modesOf(cur).find((x) => modeKey(x) === wd.dataset.withdraw));
       });
@@ -1466,6 +1549,8 @@
     if (!s?.member_id) return toast(t("prize.signinNeeded"));
     if (!entry || String(entry.status || "").toLowerCase() !== "winner") return toast(t("prize.notWinner"));
     if (entry.claim_requested_at) return toast(t("prize.claimRequestAlready"));
+    const block = claimBlock();
+    if (block) return toast(blockText(block.until));
     const button = [...document.querySelectorAll("[data-request-claim]")]
       .find((el) => el.dataset.requestClaim === String(entry.id));
     if (button) {
@@ -1475,12 +1560,14 @@
     const result = await C.rpc("prize_request_claim", { p_member: s.member_id, p_entry: entry.id });
     const data = result.ok ? result.data : null;
     if (!data?.ok) {
-      toast(data?.error === "not_winner" ? t("prize.notWinner") : t("prize.claimRequestFail"));
-      await reloadEntries();
+      toast(data?.error === "not_winner" ? t("prize.notWinner")
+        : data?.error === "claim_restricted" ? blockText(data.until)
+          : t("prize.claimRequestFail"));
+      await Promise.all([reloadEntries(), reloadClaims()]);
       await refreshPrizeViews(p);
       return;
     }
-    await reloadEntries();
+    await Promise.all([reloadEntries(), reloadClaims()]);
     toast(data.already ? t("prize.claimRequestAlready") : t("prize.claimRequestOk"));
     refreshLists();
     await refreshPrizeViews(p);
@@ -1497,10 +1584,25 @@
     if (!d) return toast(t("prize.subFail"));
     if (!d.ok) {
       if (d.error === "blocked") return toast(t("pzm.couponBlocked", { h: d.hours || 24 }));
+      if (d.error === "pack") return toast(packError(d));
       return toast(t("pzm.couponWrong", { n: d.left ?? 0 }));
     }
-    center.coupon[m.id] = { id: d.id, code: d.code, percent: Number(d.percent) };
-    toast(t("pzm.couponApplied", { code: d.code, n: d.percent }));
+    if (d.kind === "pack") {
+      center.coupon[m.id] = { kind: "pack", code: d.code, off: Number(d.points_off) || 0 };
+    } else {
+      // the prize's own coupons are for the gift mode
+      if (modeKey(m) !== "gift") return toast(t("pzm.couponGiftOnly"));
+      center.coupon[m.id] = { kind: "coupon", id: d.id, code: d.code, percent: Number(d.percent) };
+    }
+    toast(couponLine(center.coupon[m.id]));
+    await refreshPrizeViews(p);
+  }
+
+  // "Keep it for later" / "Use my private code": the member's private prize code on this mode or not.
+  async function keepPack(p, m, keep) {
+    if (!m) return;
+    if (keep) center.keepPack[m.id] = true;
+    else delete center.keepPack[m.id];
     await refreshPrizeViews(p);
   }
 
@@ -1546,6 +1648,13 @@
     }
   }
 
+  // A prize code of Panel > Packages this member cannot use (sql/packages.sql _prize_pack_check)
+  function packError(d) {
+    if (d.reason === "audience") return t(`pack.no.${["membership", "country", "language", "level", "age"].includes(d.why) ? d.why : "fit"}`);
+    const key = { used: "pzm.packUsed", used_mine: "pzm.packUsedMine", expired: "pzm.packExpired", other: "points.err.other", free: "pzm.packFree" }[d.reason];
+    return t(key || "pzm.couponInvalid");
+  }
+
   function joinError(d, m) {
     switch (d?.error) {
       case "closed": return t("prize.closed");
@@ -1555,7 +1664,7 @@
       case "inactive":
       case "incomplete": return t("prize.notEligible");
       case "points": return t("prize.needPoints", { need: d.need ?? costOf(m), have: state.ctx?.points ?? 0 });
-      case "coupon": return t("pzm.couponInvalid");
+      case "coupon": return d.reason ? packError(d) : t("pzm.couponInvalid");
       case "quota":
         return t(d.period === "concurrent" ? "pzm.quota.concurrent" : "pzm.quota.month", { n: d.cap, mode: t(`prize.mode.${modeKey(m)}`) });
       default: return t("prize.subFail");
@@ -1572,7 +1681,7 @@
     const st = modeStatus(p, m);
     if (!st.can) return toast(st.reason);
     const cost = costOf(m);
-    const coupon = center.coupon[m.id] || null;
+    const coupon = codeOf(m);
     const k = modeKey(m);
     const confirmed = k === "gift"
       ? confirm(t("prize.confirmClaim", { n: cost, title: p.title }))
@@ -1584,11 +1693,17 @@
     if (!d.ok) {
       if (d.error === "already") await reloadEntries();
       else toast(joinError(d, m));
+      if (d.error === "coupon") {
+        delete center.coupon[m.id];
+        if (coupon?.auto) state.myPacks = (state.myPacks || []).filter((x) => x.code !== coupon.code);
+      }
       await refreshPrizeViews(p);
       return;
     }
     applySpent(d.cost);
     delete center.coupon[m.id];
+    // a private prize code is used once
+    if (coupon?.kind === "pack") state.myPacks = (state.myPacks || []).filter((x) => x.code.replace(/-/g, "") !== String(coupon.code).replace(/-/g, ""));
     if (!state.mine.has(p.id)) {
       state.counts[p.id] = countOf(p) + 1;
       state.entryRows.push({ prize_id: p.id, member_id: s.member_id });

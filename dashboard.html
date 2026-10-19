@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- YouTube needs the site in the Referer of its player (else error 153): this policy wins over
+       a stricter one a host or a CDN may add (Referrer-Policy: no-referrer or same-origin) -->
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <script src="js/prefs.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title data-i18n-title="nav.dashboard">Dashboard — CineAura</title>
@@ -13,6 +16,7 @@
   <link rel="stylesheet" href="css/pages.css" />
   <link rel="stylesheet" href="css/dashboard.css" />
   <link rel="stylesheet" href="css/prize.css" />
+  <link rel="stylesheet" href="css/iptv.css" />
   <link rel="stylesheet" href="css/facebook.css" />
   <link rel="stylesheet" href="css/mobile.css" />
 </head>
@@ -69,6 +73,8 @@
   <script src="js/lang.js"></script>
   <script src="js/common.js"></script>
   <script src="js/prize-rules.js"></script>
+  <script src="js/iptv-lists.js"></script>
+  <script src="js/withdraw.js"></script>
   <script src="js/dashboard.js"></script>
 </body>
 </html>
